@@ -73,6 +73,7 @@ class DCS:
                 # calculate extracellular potential
                 e = conversion*intensity*mag*np.cos(angle_field)
 
+                # print sec.name(), seg_i, e
                 # insert calculated extracellular potential in mV
                 seg.e_extracellular = conversion*intensity*mag*np.cos(angle_field)
 

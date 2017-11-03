@@ -365,98 +365,149 @@ class Spikes():
 			spike_train[0,time] = 1 
 		# detect indeces where vector crosses threshold in the positive direction
 		return {'times':spike_times,'train':spike_train}
-		
-class Voltage():
-	""" plot voltage in specific sections 
+
+
+class PlotRangeVar():
+	""" plot different range variables over time 
 	"""
 	def __init__(self):
 		pass
 
 	def plot_all(self, p):
+		""" Plot times series data for all data files in folder
+
+		Arguments:
+
+		p : parameter dictionary containing the following entries
+			'data_folder' : string specifying the folder containing data and plots
+
+			'tree' : neuron subtree containing the data to plot
+
+			'sec_idx' : list of section indeces to plot
+
+			'seg_idx' : list of segments for each section to plot [section_num][segment] 
+
+			'plot_variables' : list of range variables to plot; e.g. ['v', 'i_hd']
+
 		"""
-		"""
+		# all files in directory
+		files = os.listdir(p['data_folder'])
+		# files containing plot figures
+		plot_files = [file for file in files if 'trace' in file]
+		# data files
+		data_files = [file for file in files if 'data' in file]
+		# unique identifiers for each file type
+		plot_files_id = [file[-36:-1] for file in files if 'trace' in file]
+		data_files_id= [file[-36:-1] for file in files if 'data' in file]
+		
 		# iterate over all data files in folder
-		for data_file in os.listdir(p['data_folder']):
-			# check for proper data file format
-			if 'data' in data_file:
-				print data_file
+		for file_i, file in data_files:
+			# check if plot already exists matching uid's
+			if data_file_id[file_i] not in plot_files_id:
 				# open data file
-				with open(p['data_folder']+data_file, 'rb') as pkl_file:
+				with open(p['data_folder']+file, 'rb') as pkl_file:
 					data = pickle.load(pkl_file)
-					print 'file loaded'
+
 				# update specific experiment parameters
 				p_data = data['p']
-				# plot voltage traces in specified segments (automatically saved to same folder)
+				
+				# plot range variables (automatically saved to same folder)
 				self.plot_trace(data=data, 
 					tree=p_data['tree'], 
 					sec_idx=p_data['sec_idx'], 
-					seg_idx=p_data['seg_idx'])
+					seg_idx=p_data['seg_idx'],
+					variables=p['plot_variables'])
 
 
-	def plot_trace(self, data, tree, sec_idx, seg_idx, soma=True):
-		"""
+	def plot_trace(self, data, tree, sec_idx, seg_idx, soma=True, variables=['v']):
+		""" Create a figure containing a subplot for each segment specified in seg_idx
+
+		variable is a list of range variable key words indicating which varaible to plot.  A new figure is created and saved for each variable
 		"""
 		# load parameters
 		p = data['p']
+
 		# number field intensities/polarities
 		n_pol = len(p['field'])
+		
 		# number of segments to plot
 		nseg =  sum([sum(seg_i+1 for seg_i,seg in enumerate(sec)) for sec in seg_idx])+1
 
+		# plot soma trace?
 		if soma:
 			nseg+=1
+
+		# columns and rows for subplot array	
 		cols = int(math.ceil(math.sqrt(nseg)))
 		rows = int(math.ceil(math.sqrt(nseg)))
-		# create plot array, axes is a list of figures in the array
-		# fig, axes = plt.subplots(rows, cols )
 
-		fig = plt.figure()
-		
-		# count segments
-		cnt=0
+		# dictionary to hold figures
+		fig={}
+
+		# time vector
 		t = data['t'][0]
-		# iterate over sections
-		for sec_i,sec in enumerate(seg_idx):
-			# iterate over segments
-			for seg in sec:
-				cnt+=1
-				seg_dist = p['seg_dist'][p['tree']][sec_idx[sec_i]][seg]
-				plt.subplot(rows, cols, cnt)
-				plt.title(str(seg_dist))
-				# plt.ylim([-70, -50])
-				# iterate over stimulation polarity
-				for pol in range(n_pol):
-					
-					# time vector
-					# t = data['t'][pol]
-					
-					# voltage vector
-					if soma and cnt<nseg:
-						v = data[tree+'_v'][pol][sec_idx[sec_i]][seg]
 
-					color = p['field_color'][pol]
-					
-					
-					# add to corrsponding axis
-					
-					plt.plot(t, v, color=color)
-					
+		# iterate over list of variables to plot
+		for var in variables:
+
+			# create figure
+			fig[var] = plt.figure()
 		
-		for pol in range(n_pol):
-			# soma
-			v = data['soma_v'][pol][0][0] 
+			# count segments
+			cnt=0
 			
-			color = p['field_color'][pol]
-			
-			# add to corrsponding axis
-			plt.subplot(rows, cols, nseg)
-			plt.plot(t, v, color=color)
-			plt.title('soma')
-			# plt.ylim([-70, -50])
+			# iterate over sections
+			for sec_i,sec in enumerate(seg_idx):
+				
+				# iterate over segments
+				for seg in sec:
+					cnt+=1
+					
+
+					# create subplot
+					plt.subplot(rows, cols, cnt)
+
+					# plot title
+					seg_dist = p['seg_dist'][p['tree']][sec_idx[sec_i]][seg]
+					plt.title(p['tree'] + str(seg_dist) + 'from soma')
+
+					# adjust limits
+					# plt.ylim([-70, -50])
+					
+					# iterate over stimulation polarity
+					for pol in range(n_pol):
+					
+						# check if variable exists in the current section
+						if data[tree+'_'+var][pol][sec_idx[sec_i]]:
+
+							# if not plotting the soma trace
+							if soma and cnt<nseg:
+
+								# retrieve time series to plot
+								v = data[tree+'_'+var][pol][sec_idx[sec_i]][seg]
+
+							# set plot color based on stimulation polarity
+							color = p['field_color'][pol]
+							
+							# add trace to corresponding subplot
+							plt.plot(t, v, color=color)
+
+							# if plotting soma trace
+							if soma and cnt==nseg:
+								# if variable exists in soma
+								if data['soma_'+var][pol][0]:
+									# retrieve data to plot
+									v = data['soma_'+var][pol][0][0] 
+									
+									# set plot color
+									color = p['field_color'][pol]
+									
+									plt.plot(t, v, color=color)
+									plt.title('soma')
 		
-		# save and close figure
-		fig.savefig(p['data_folder']+p['experiment']+'_'+p['tree']+'_trace_'+p['trial_id']+'.png', dpi=300)
-		plt.close(fig)
+			# save and close figure
+			fig[var].savefig(p['data_folder']+p['experiment']+'_'+p['tree']+'_trace_'+var+'_'+p['trial_id']+'.png', dpi=300)
+			plt.close(fig[var])
 
 class Shapeplot():
 	""" create shape plot 
@@ -553,7 +604,7 @@ class Experiment:
 				plt.ylabel('correlation')
 				fig2.savefig(data_folder+'fig_xcorr_'+cell_id+'.png', dpi=300)
 				plt.close(fig2)
-		print w['weight_list']
+
 		# mean for across cells and synapses
 		w_all = {}
 		w_all_mean ={}
@@ -921,7 +972,7 @@ class Experiment:
 				gh_i = [i for i, val in enumerate(g_h) if p['ghd']==val]
 				ka_i = [i for i, val in enumerate(g_ka) if p['KMULT']==val]
 				
-
+				print len(data['soma_v'][1][0])
 				control[gh_i, ka_i] = np.amax(data['soma_v'][1][0][0][(30*40):])
 				print control[gh_i, ka_i]
 				cathodal[gh_i, ka_i] = np.amax(data['soma_v'][0][0][0][(30*40):]) - control[gh_i, ka_i]
@@ -996,9 +1047,9 @@ class Experiment:
 if __name__ =="__main__":
 	# Weights(param.exp_3().p)
 	# # Spikes(param.exp_3().p)
-	kwargs = run_control.Arguments('exp_6').kwargs
-	plots = Voltage()
-	plots.plot_all(param.Experiment(**kwargs).p)
+	# kwargs = run_control.Arguments('exp_6').kwargs
+	# plots = Voltage()
+	# plots.plot_all(param.Experiment(**kwargs).p)
 	Experiment(experiment='exp_6')
 
 

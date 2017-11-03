@@ -25,7 +25,7 @@ PARAMETER {
 NEURON {
 	SUFFIX hd
 	NONSPECIFIC_CURRENT i
-        RANGE ghdbar, vhalfl
+        RANGE ghdbar, vhalfl, i
         GLOBAL linf,taul
 }
 

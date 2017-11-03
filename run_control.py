@@ -267,44 +267,62 @@ class Experiment:
 		w_std = kwargs['w_std']
 		w_rand = kwargs['w_rand']
 		syn_frac = kwargs['syn_frac']
+		plots = analysis.Voltage()
 
 		# loop over trials
 		for tri in range(trials):
 			for gh_i, gh in enumerate(kwargs['conductance_range']):
 				for gka_i, gka in enumerate(kwargs['conductance_range']):
-					
-					# load rest of parameters from parameter module
-					p = param.Experiment(**kwargs).p
-					
-					# set Ih and Ka conductance parameters
-					p['ghd'] = gh*0.00005
-					p['KMULT'] =  0.*gka*0.03
-					p['KMULTP'] =  0.*gka*0.03
+					for gh_grad_i, gh_grad in enumerate(kwargs['grad_range']):
+						if gh==0.:
+							continue
+						for ka_grad_i, ka_grad in enumerate(kwargs['grad_range']):
+							if gka==0.:
+								continue 
 
-					print 'g_h:', p['ghd'], 'g_ka:', p['KMULT']
 
-					# store trial number
-					p['trial']=tri
 					
-					# create unique identifier for each trial
-					p['trial_id'] = str(uuid.uuid4())
-					
-					# start timer
-					start = time.time() 
-					
-					# run simulation
-					sim = run.Run(p)	
+							# load rest of parameters from parameter module
+							p = param.Experiment(**kwargs).p
+							
+							# set Ih and Ka conductance parameters
+							p['ghd'] = gh*0.00005
+							p['KMULT'] =  gka*0.03
+							p['KMULTP'] =  gka*0.03
+							p['ghd_grad'] = gh_grad*.75
+							p['ka_grad'] =ka_grad*.25
 
-					print 'g_h:', p['ghd'], 'g_ka:', p['KMULT']
+							print 'g_h:', p['ghd'], 'g_ka:', p['KMULT']
 
-					# end timer
-					end = time.time() 
+							# store trial number
+							p['trial']=tri
+							
+							# create unique identifier for each trial
+							p['trial_id'] = str(uuid.uuid4())
+							
+							# start timer
+							start = time.time() 
+							
+							# run simulation
+							sim = run.Run(p)	
 
-					# print trial and simulation time
-					print 'trial'+ str(tri) + ' duration:' + str(end -start) 
-					
-					# save data for eahc trial
-					run.save_data(sim.data)
+
+							# end timer
+							end = time.time() 
+
+							# print trial and simulation time
+							print 'trial'+ str(tri) + ' duration:' + str(end -start) 
+							
+							plots.plot_trace(data=sim.data, 
+							tree=p['tree'], 
+							sec_idx=p['sec_idx'], 
+							seg_idx=p['seg_idx'],
+							variables=p['plot_variables'])
+
+							# save data for eahc trial
+							run.save_data(sim.data)
+
+
 
 		self.p = p
 
@@ -406,18 +424,19 @@ class Arguments:
 		""" vary Ih and Ka parameters and measure effects on peak EPSP
 		"""
 		
-		weights = .01
+		weights = 0.03
 		self.kwargs = {
-		'conductance_range' : np.arange(1, 1.5, 1),
+		'conductance_range' : np.arange(0., 3., .5),
+		'grad_range' :  np.arange(0., 3., .5),
 		'experiment' : 'exp_6', 
-		'tree' : 'apical_prox',
+		'tree' : 'apical_dist',
 		'trials' : 1,
 		'w_mean' : weights,#[.001],
 		'w_std' : [.002],
 		'w_rand' : False, 
 		'syn_frac' : 0,
-		'seg_list' : [-1],
-		'sec_list' : [0],
+		'seg_list' : [0, -1],
+		'sec_list' : [ 0, 0],
 		'pulses':3,
 		}
 
@@ -426,6 +445,6 @@ if __name__ =="__main__":
 	kwargs = Arguments('exp_6').kwargs
 	x = Experiment(**kwargs)
 	analysis.Experiment(experiment='exp_6')
-	plots = analysis.Voltage()
-	plots.plot_all(x.p)
+	# plots = analysis.Voltage()
+	# plots.plot_all(x.p)
 	# analysis.Experiment(exp='exp_3')

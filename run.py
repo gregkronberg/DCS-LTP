@@ -75,38 +75,66 @@ class Run():
 		
 		# loop over trees
 		for tree_key, tree in self.cell1.geo.iteritems():
-			self.rec[tree_key+'_v'] = []
-			self.rec[tree_key+'_w'] = []
-			self.data[tree_key + '_v'] = []
-			self.data[tree_key + '_w'] = []
 			
-			# loop over sections
-			for sec_i,sec in enumerate(tree):
-				self.rec[tree_key+'_v'].append([])
-				self.rec[tree_key+'_w'].append([])
-				
-				# loop over segments
-				for seg_i,seg in enumerate(tree[sec_i]):
+			# iterate over variables to record
+			for var_key, var_dic in p['record_variables'].iteritems():
+
+				# create entry for each variable
+				self.rec[tree_key+'_'+var_key] = []
+				self.data[tree_key+'_'+var_key] = []
+			
+				# loop over sections
+				for sec_i,sec in enumerate(tree):
+					# add list for each section
+					self.rec[tree_key+'_'+var_key].append([])
 					
-					# determine relative segment location in (0-1) 
-					seg_loc = (seg_i+1)/(self.cell1.geo[tree_key][sec_i].nseg+1)
-					# record voltage
-					self.rec[tree_key+'_v'][sec_i].append(h.Vector())
-					self.rec[tree_key+'_v'][sec_i][seg_i].record(
-						tree[sec_i](seg_loc)._ref_v)
-					
-					# if segment is in dendrite
-					if ((tree_key == 'basal') or 
-					(tree_key == 'apical_trunk') or 
-					(tree_key == 'apical_tuft')):
+					# loop over segments
+					for seg_i,seg in enumerate(tree[sec_i]):
 						
-						# record clopath weight
-						self.rec[tree_key+'_w'][sec_i].append(h.Vector())
-						self.rec[tree_key+'_w'][sec_i][seg_i].record(
-							self.cell1.syns[tree_key]['clopath'][sec_i][seg_i]._ref_gbar)
-		# time
+						# determine relative segment location in (0-1) 
+						seg_loc = float(seg_i+1)/(self.cell1.geo[tree_key][sec_i].nseg+1)
+
+
+						# if variable occurs in a synapse object
+						if 'syn' in var_dic:
+
+							# check if synapse exists
+							if self.cell1.syns[tree_key][var_dic['syn']][sec_i]:
+
+								# if the desired variable exists in the corresponding synapse
+								if var_key in dir(self.cell1.syns[tree_key][var_dic['syn']][sec_i][seg_i]): 
+									
+									# point to variable to record
+									var_rec = getattr(self.cell1.syns[tree_key][var_dic['syn']][sec_i][seg_i], '_ref_'+var_key)
+
+									# create recording vector
+									self.rec[tree_key+'_'+var_key][sec_i].append(h.Vector())
+
+									# record variable
+									self.rec[tree_key+'_'+var_key][sec_i][seg_i].record(var_rec)
+
+
+						# if variable is a range variable
+						if 'range' in var_dic:
+							# if variable belongs to a range mechanism that exists in this section
+							if var_dic['range'] in dir(tree[sec_i](seg_loc)):
+								
+
+								# point to variable for recording
+								var_rec = getattr(tree[sec_i](seg_loc), '_ref_'+var_key)
+								
+								# create recording vector
+								self.rec[tree_key+'_'+var_key][sec_i].append(h.Vector())
+								
+								# record variable
+								self.rec[tree_key+'_'+var_key][sec_i][seg_i].record(var_rec)
+
+
+		# object for recording time
 		self.data['t'] = []
+		# create time vector
 		self.rec['t'] = h.Vector()
+		# record time
 		self.rec['t'].record(h._ref_t)
 
 	def run_sims(self,p):
@@ -127,6 +155,8 @@ class Run():
 			# store recording vectors as arrays
 			# loop over trees
 			for tree_key,tree in self.rec.iteritems():
+				
+				# print tree_key
 				# add list for each field polarity
 				self.data[tree_key].append([])
 
@@ -137,13 +167,8 @@ class Run():
 						
 						# loop over segments
 						for seg_i,seg in enumerate(sec):
-							if '_v' in tree_key:
-								self.data[tree_key][f_i][sec_i].append(np.array(self.rec[tree_key][sec_i][seg_i]))
-							
-							if ((tree_key == 'basal_w') or 
-							(tree_key == 'apical_trunk_w') or 
-							(tree_key == 'apical_tuft_w')):
-								self.data[tree_key][f_i][sec_i].append(np.array(self.rec[tree_key][sec_i][seg_i]))
+							# print len(self.rec[tree_key][sec_i][seg_i])
+							self.data[tree_key][f_i][sec_i].append(np.array(self.rec[tree_key][sec_i][seg_i]))
 
 			self.data['t'].append([])
 			self.data['t'][f_i] = np.array(self.rec['t'])

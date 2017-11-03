@@ -44,15 +44,24 @@ class PyramidalCell:
 				self.geo[tree].append( h.Section( name=tree))
 
 				# diameter basd on area of full morphology
-				# diam = areas[tree_i]/(np.pi*p['L_'+tree])
 				diam = p['diam_'+tree] 
-				# p['diam_'+tree] = diam
-				# create 3d specification, with cell arranged vertically
-				h.pt3dadd(0, 0, 0, diam, sec=self.geo[tree][sec_i])
-				if tree=='basal':
-					h.pt3dadd(0, -p['L_'+tree], 0, diam, sec=self.geo[tree][sec_i])
-				else:
+
+				if tree=='soma':	
+					# create 3d specification, with cell arranged vertically
+					h.pt3dadd(0, 0, 0, diam, sec=self.geo[tree][sec_i])
 					h.pt3dadd(0, p['L_'+tree], 0, diam, sec=self.geo[tree][sec_i])
+
+				if tree=='basal':
+					h.pt3dadd(0, 0, 0, diam, sec=self.geo[tree][sec_i])
+					h.pt3dadd(0, -p['L_'+tree], 0, diam, sec=self.geo[tree][sec_i])
+					
+				if tree=='apical_prox':
+					h.pt3dadd(0, p['L_soma'], 0, diam, sec=self.geo[tree][sec_i])
+					h.pt3dadd(0, p['L_soma']+p['L_'+tree], 0, diam, sec=self.geo[tree][sec_i])
+
+				if tree=='apical_dist':
+					h.pt3dadd(0, p['L_soma']+p['L_apical_prox'], 0, diam, sec=self.geo[tree][sec_i])
+					h.pt3dadd(0, p['L_soma']+p['L_apical_prox']+p['L_'+tree], 0, diam, sec=self.geo[tree][sec_i])
 
 				# add list to store synapses for each section
 				for syn_key, syn in self.syns[tree].iteritems():

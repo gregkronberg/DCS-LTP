@@ -34,6 +34,14 @@ class Default(object):
 			'nsec_apical_dist' : 1,
 			'syn_types' : ['ampa', 'nmda', 'clopath'],
 
+			'record_variables' : {'v' : {'range':'v'},
+			'gbar' : {'syn':'clopath'},
+			'i_hd' : {'range' : 'hd'},
+			'ik_kad' : {'range': 'kad'},
+			'ik_kap' : {'range': 'kap'}
+			}, 
+			'plot_variables' : ['v','ik_kad','i_hd'],
+
 
 			'syn_frac':[],
 			'trial':0,
@@ -52,8 +60,8 @@ class Default(object):
 			'field':[-20,0,20],
 			'field_color':['b','k','r'],
 			'dt' : .025,
-			'warmup': 30,
-			'tstop' : 80,#5*1000/5 + 30 + 5*1000/100 +30
+			'warmup': 50,
+			'tstop' : 100,#5*1000/5 + 30 + 5*1000/100 +30
 			'bursts':1,
 			'pulses':4,
 			'pulse_freq':100,
@@ -82,28 +90,28 @@ class Default(object):
 			# Parameters from Migliore 2005 (signal propogation in oblique dendrites)
 			
 			# conductances reported as (nS/um2) in paper, but need to be in (mho/cm2)
-			# conversion 10*(nS/um2) = (mho/cm2)
+			# conversion 10,000*(pS/um2) = 10*(nS/um2) = (mho/cm2)
 			# *** units in paper are a typo, values are already reported in (mho/cm2) ***
 			'Vrest' : -65.,				# resting potential (mV)
-			'gna' : 0,# .025,				# peak sodium conductance (mho/cm2)
+			'gna' :  0,#.025,				# peak sodium conductance (mho/cm2)
 			'dgna' : 0,#-.000025,			# change in sodium conductance with distance (ohm/cm2/um) from Kim 2015
 			'ena' : 55.,					# sodium reversal potential (mV)
 			'AXONM' : 5.,				# multiplicative factor for axonal conductance
 			'gkdr' : 0.01,				# delayed rectifier potassium peak conductance (mho/cm2)
 			'ek' : -90,					# potassium reversal potential
 			'celsius' : 35.0,  				# temperature (degrees C)
-			'KMULT' :  0*0.03,			# multiplicative factor for distal A-type potassium conductances
-			'KMULTP' : 0*0.03,				# multiplicative factor for proximal A-type potassium conductances
-			'ghd' : 0.00005,			# peak h-current conductance (mho/cm2)
+			'KMULT' :  1*0.03,			# multiplicative factor for distal A-type potassium conductances
+			'KMULTP' : 1*0.03,				# multiplicative factor for proximal A-type potassium conductances
+			'ghd' : 0.0001,			# peak h-current conductance (mho/cm2)
 			'ehd' : -30.,					# h-current reversal potential (mV)
-			'vhalfl_prox' : -73.,			# activation threshold for proximal a-type potassium (mV)
-			'vhalfl_dist' : -81.,			# activation threshold for distal a-type potassium (mV)
+			'vhalfl_prox' : -73,#-73.,			# activation threshold for proximal a-type potassium (mV)
+			'vhalfl_dist' : -81,#-81.,			# activation threshold for distal a-type potassium (mV)
 			'RaAll' : 150.,				# axial resistance, all compartments (ohm*cm)
 			'RaAx' : 50.,					# axial resistance, axon (ohm*cm)					
 			'RmAll' : 28000.,			# specific membrane resistance (ohm/cm2)
 			'Cm' : 1.,					# specific membrane capacitance (uf/cm2)
-			'ka_grad' : 0.2,#1.,				# slope of a-type potassium channel gradient with distance from soma 
-			'ghd_grad' : .75,#3.,				# slope of a-type potassium channel gradient with distance from soma 
+			'ka_grad' : 1.,#1.,				# slope of a-type potassium channel gradient with distance from soma 
+			'ghd_grad' : 3.,#3.,				# slope of a-type potassium channel gradient with distance from soma 
 			}
 
 	def choose_seg_rand(self, syn_list, syn_frac):
