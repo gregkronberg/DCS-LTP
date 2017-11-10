@@ -8,12 +8,28 @@ Created on Wed Jun 28 03:06:39 2017
 import numpy as np
 from neuron import h
 
+
+class TestStim:
+    def __init__(self):
+        pass
+
+    def xtra(self, v):
+        print 't:', h.t
+        for sec in h.allsec():
+            sec.insert('extracellular')
+            for seg in sec:
+                seg.e_extracellular = v
+
+
+    def hi(self):
+        print 'hello from hi, h.t = %g' % h.t
+
 # extracellular field
 class DCS:
     """
     assumes somatodendritic axis is aligned vertically, y is positive for apical dendrites, y is negative for basal dendrites
     """
-    def __init__(self, cell=0, intensity=0, field_angle=0):
+    def __init__(self, cell=0, intensity=0, field_angle=0, field_on=0, field_off=0):
         self.insert_e(cell=cell, intensity=intensity, field_angle=field_angle)
 
     def insert_e(self, cell=0, intensity=0, field_angle=0):
@@ -26,6 +42,10 @@ class DCS:
         # structure to store location and e_extracellular for each segment.  Organized as ['dimension'][section number][segment number]
         location = {'x':[], 'y':[],'z':[],'e':[]}
         
+        if intensity!=0:
+            print 'field on', h.t
+        elif intensity ==0:
+            print 'field off', h.t
         # loop over sections
         for sec_i,sec in enumerate(cell):
 

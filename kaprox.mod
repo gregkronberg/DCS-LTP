@@ -34,7 +34,7 @@ PARAMETER {
 NEURON {
 	SUFFIX kap
 	USEION k READ ek WRITE ik
-        RANGE gkabar,gka, ik
+        RANGE gkabar,gka, ik, vhalfl, vhalfn
         GLOBAL ninf,linf,taul,taun,lmin
 }
 

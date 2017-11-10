@@ -29,8 +29,8 @@ class Run():
 	def __init__(self, p):
 
 		# create cell
-		# self.cell1 = cell.CellMigliore2005(p)
-		self.cell1 = cell.PyramidalCell(p) #p['cell']
+		self.cell1 = cell.CellMigliore2005(p)
+		# self.cell1 = cell.PyramidalCell(p) #p['cell']
 		self.update_clopath( p, syns=self.cell1.syns[p['tree']]['clopath'])
 		self.activate_synapses(p)
 		self.recording_vectors(p)
@@ -141,15 +141,15 @@ class Run():
 		# data organized as ['tree']['polarity'][section][segment]
 		# loop over dcs fields
 		for f_i,f in enumerate(p['field']):
-
 			# insert extracellular field
 			stims.DCS(cell=0, field_angle=p['field_angle'], intensity=f)
-			
+
 			# run time
 			h.dt = p['dt']
 			h.tstop = p['tstop']
+			h.celsius= p['celsius']
 
-			# run simulation
+			
 			h.run()
 
 			# store recording vectors as arrays
@@ -184,9 +184,11 @@ def save_data(data):	# save data
 
 	with open(p['data_folder']+'data_'+
 		p['experiment']+
-		'_trial_'+str(p['trial'])+
-		'_weight_'+str(p['w_mean'])+
-		'_synfrac_'+str(p['syn_frac'])+
+		# '_trial_'+str(p['trial'])+
+		# '_weight_'+str(p['w_mean'])+
+		# '_synfrac_'+str(p['syn_frac'])+
+		'IhThresh_'+str(p['vhalfl_hd_prox'])+
+		'KaThresh_'+str(p['vhalfn_kap'])+
 		'_'+p['trial_id']+
 		'.pkl', 'wb') as output:
 

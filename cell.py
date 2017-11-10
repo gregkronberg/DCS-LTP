@@ -54,7 +54,7 @@ class PyramidalCell:
 				if tree=='basal':
 					h.pt3dadd(0, 0, 0, diam, sec=self.geo[tree][sec_i])
 					h.pt3dadd(0, -p['L_'+tree], 0, diam, sec=self.geo[tree][sec_i])
-					
+
 				if tree=='apical_prox':
 					h.pt3dadd(0, p['L_soma'], 0, diam, sec=self.geo[tree][sec_i])
 					h.pt3dadd(0, p['L_soma']+p['L_'+tree], 0, diam, sec=self.geo[tree][sec_i])
@@ -126,13 +126,24 @@ class PyramidalCell:
 					# h-current			
 					sec.insert('hd')
 					sec.ghdbar_hd = p['ghd']				
-					sec.vhalfl_hd = p['vhalfl_prox']
+					sec.vhalfl_hd = p['vhalfl_hd_prox']
+					sec.kl_hd = p['kl_hd']
+					sec.ehd_hd =  p['ehd']
+
 					# delayed rectifier potassium		
 					sec.insert('kdr')
 					sec.gkdrbar_kdr = p['gkdr']	
+
 					# a-type potassium		
 					sec.insert('kap')
 					sec.gkabar_kap = p['KMULTP']
+					sec.vhalfl_kap = p['vhalfl_kap']
+					sec.vhalfn_kap = p['vhalfn_kap']
+
+					# L-type calcium channel
+					sec.insert('calH')
+					sec.gcalbar_calH = p['gcalbar']
+
 					# sodium reversal potential 
 					sec.ena = p['ena']		
 					# potassium reversal potential 
@@ -146,6 +157,8 @@ class PyramidalCell:
 					# h-current
 				    sec.insert('hd')
 				    sec.ghdbar_hd = p['ghd']
+				    sec.kl_hd = p['kl_hd']
+				    sec.ehd_hd =  p['ehd']
 				    
 				    # voltage gated sodium		
 				    sec.insert('na3')
@@ -160,6 +173,11 @@ class PyramidalCell:
 				    # a-type potassium distal		
 				    sec.insert('kad')
 				    sec.gkabar_kad = 0	
+
+				    # L-type calcium channel
+				    sec.insert('calH')
+				    sec.gcalbar_calH = p['gcalbar']
+
 				    # sodium reversal potential 
 				    sec.ena = p['ena']
 				    # potassium reversal potential
@@ -180,10 +198,14 @@ class PyramidalCell:
 				    	
 				    	# A-type potassium
 				        if seg_dist > 100:	# distal
-				            seg.vhalfl_hd = p['vhalfl_dist']
+				            seg.vhalfl_hd = p['vhalfl_hd_dist']
+				            seg.vhalfl_kad = p['vhalfl_kad']
+				            seg.vhalfn_kad = p['vhalfn_kad']
 				            seg.gkabar_kad = p['KMULT']*(1+p['ka_grad']*seg_dist/100)
 				        else:	# proximal
-				            seg.vhalfl_hd = p['vhalfl_prox']
+				            seg.vhalfl_hd = p['vhalfl_hd_prox']
+				            seg.vhalfl_kap = p['vhalfl_kap']
+				            seg.vhalfn_kap = p['vhalfn_kap']
 				            seg.gkabar_kap = p['KMULTP']*(1+p['ka_grad']*seg_dist/100)
 
 				        # loop over synapse types
@@ -291,6 +313,8 @@ class CellMigliore2005:
 					# a-type potassium
 					sec.insert('kap')						
 					sec.gkabar_kap = p['KMULTP']
+					sec.vhalfl_kap = p['vhalfl_kap']
+					sec.vhalfn_kap = p['vhalfn_kap']
 					# sodium reversal potential 
 					sec.ena = p['ena']		
 					# potassium reversal potential 
@@ -305,18 +329,27 @@ class CellMigliore2005:
 					# h-current			
 					sec.insert('hd')
 					sec.ghdbar_hd = p['ghd']				
-					sec.vhalfl_hd = p['vhalfl_prox']
+					sec.vhalfl_hd = p['vhalfl_hd_prox']
+					sec.kl_hd = p['kl_hd']
+					sec.ehd_hd = p['ehd']		
+
+
 					# delayed rectifier potassium		
 					sec.insert('kdr')
 					sec.gkdrbar_kdr = p['gkdr']	
 					# a-type potassium		
 					sec.insert('kap')
 					sec.gkabar_kap = p['KMULTP']
+					sec.vhalfl_kap = p['vhalfl_kap']
+					sec.vhalfn_kap = p['vhalfn_kap']
+
+					sec.insert('calH')
+					sec.gcalbar_calH = p['gcalbar']
 					# sodium reversal potential 
 					sec.ena = p['ena']		
 					# potassium reversal potential 
-					sec.ek = p['ek']			
-
+					sec.ek = p['ek']	
+					
 				# dendrites active biophysics
 				elif ((tree_key == 'basal') or 
 				(tree_key == 'apical_trunk') or 
@@ -324,6 +357,8 @@ class CellMigliore2005:
 					# h-current
 				    sec.insert('hd')
 				    sec.ghdbar_hd = p['ghd']
+				    sec.kl_hd = p['kl_hd']
+				    sec.ehd_hd = p['ehd']
 				    
 				    # voltage gated sodium		
 				    sec.insert('na3')
@@ -338,6 +373,11 @@ class CellMigliore2005:
 				    # a-type potassium distal		
 				    sec.insert('kad')
 				    sec.gkabar_kad = 0	
+
+				    # L-type calcium channel
+				    sec.insert('calH')
+				    sec.gcalbar_calH = p['gcalbar']
+
 				    # sodium reversal potential 
 				    sec.ena = p['ena']
 				    # potassium reversal potential
@@ -359,10 +399,14 @@ class CellMigliore2005:
 				    	
 				    	# A-type potassium
 				        if seg_dist > 100:	# distal
-				            seg.vhalfl_hd = p['vhalfl_dist']
+				            seg.vhalfl_hd = p['vhalfl_hd_dist']
+				            seg.vhalfl_kad = p['vhalfl_kad']
+				            seg.vhalfn_kad = p['vhalfn_kad']
 				            seg.gkabar_kad = p['KMULT']*(1+p['ka_grad']*seg_dist/100)
 				        else:	# proximal
-				            seg.vhalfl_hd = p['vhalfl_prox']
+				            seg.vhalfl_hd = p['vhalfl_hd_prox']
+				            seg.vhalfl_kap = p['vhalfl_kap']
+				            seg.vhalfn_kap = p['vhalfn_kap']
 				            seg.gkabar_kap = p['KMULTP']*(1+p['ka_grad']*seg_dist/100)
 
 				        # loop over synapse types

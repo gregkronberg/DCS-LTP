@@ -38,9 +38,10 @@ class Default(object):
 			'gbar' : {'syn':'clopath'},
 			'i_hd' : {'range' : 'hd'},
 			'ik_kad' : {'range': 'kad'},
-			'ik_kap' : {'range': 'kap'}
+			'ik_kap' : {'range': 'kap'},
+			'ica_calH' : {'range':'calH'}
 			}, 
-			'plot_variables' : ['v','ik_kad','i_hd'],
+			'plot_variables' : ['v','ik_kad','i_hd', 'ica_calH'],
 
 
 			'syn_frac':[],
@@ -57,11 +58,13 @@ class Default(object):
 			'seg_idx':[],
 			'seg_dist' : {},
 			'field_angle': 0,#np.pi/2.0,
-			'field':[-20,0,20],
+			'field':[-40,0,40],
 			'field_color':['b','k','r'],
+			'field_on':20,
+			'field_off': 50,
 			'dt' : .025,
-			'warmup': 50,
-			'tstop' : 100,#5*1000/5 + 30 + 5*1000/100 +30
+			'warmup': 30,
+			'tstop' : 60,#5*1000/5 + 30 + 5*1000/100 +30
 			'bursts':1,
 			'pulses':4,
 			'pulse_freq':100,
@@ -90,28 +93,34 @@ class Default(object):
 			# Parameters from Migliore 2005 (signal propogation in oblique dendrites)
 			
 			# conductances reported as (nS/um2) in paper, but need to be in (mho/cm2)
-			# conversion 10,000*(pS/um2) = 10*(nS/um2) = (mho/cm2)
+			# conversion 10,000*(pS/um2) = 10*(nS/um2) = (mho/cm2) = .001*(mS/cm2)
 			# *** units in paper are a typo, values are already reported in (mho/cm2) ***
-			'Vrest' : -65.,				# resting potential (mV)
-			'gna' :  0,#.025,				# peak sodium conductance (mho/cm2)
-			'dgna' : 0,#-.000025,			# change in sodium conductance with distance (ohm/cm2/um) from Kim 2015
+			'Vrest' : -70.,				# resting potential (mV)
+			'gna' :  1.*0.025,#.025,				# peak sodium conductance (mho/cm2)
+			'dgna' : 0.,#-.000025,			# change in sodium conductance with distance (ohm/cm2/um) from Kim 2015
 			'ena' : 55.,					# sodium reversal potential (mV)
 			'AXONM' : 5.,				# multiplicative factor for axonal conductance
-			'gkdr' : 0.01,				# delayed rectifier potassium peak conductance (mho/cm2)
-			'ek' : -90,					# potassium reversal potential
+			'gkdr' : 1.*0.01,#0.01,				# delayed rectifier potassium peak conductance (mho/cm2)
+			'ek' : -90.,					# potassium reversal potential
 			'celsius' : 35.0,  				# temperature (degrees C)
-			'KMULT' :  1*0.03,			# multiplicative factor for distal A-type potassium conductances
-			'KMULTP' : 1*0.03,				# multiplicative factor for proximal A-type potassium conductances
-			'ghd' : 0.0001,			# peak h-current conductance (mho/cm2)
+			'KMULT' :  .2*0.03,#0.03,			# multiplicative factor for distal A-type potassium conductances
+			'KMULTP' : .2*.03,#0.03,				# multiplicative factor for proximal A-type potassium conductances
+			'ghd' : 0.4*0.0001,#0.0001,			# peak h-current conductance (mho/cm2)
+			'gcalbar': 3.*.00125 ,			# L-type calcium conductance from Kim et al. 2015 (mho/cm2)
 			'ehd' : -30.,					# h-current reversal potential (mV)
-			'vhalfl_prox' : -73,#-73.,			# activation threshold for proximal a-type potassium (mV)
-			'vhalfl_dist' : -81,#-81.,			# activation threshold for distal a-type potassium (mV)
+			'kl_hd' : -4,#-8.,
+			'vhalfl_hd_prox' : -80.,#-73,			# activation threshold for proximal h current (mV)
+			'vhalfl_hd_dist' : -81.,#-81,			# activation threshold for distal h-current (mV)
+			'vhalfl_kad' : -56.,#-56.,			# inactivation threshold for distal a-type current (mV)
+			'vhalfl_kap' : -56.,#-56.,			# inactivation threshold for proximal a-type current (mV)
+			'vhalfn_kad' : -1.,#-1.,			# activation threshold for distal a-type urrent (mV)
+			'vhalfn_kap' : -1.,#-1.,			# activation threshold for proximal a-type current (mV)
 			'RaAll' : 150.,				# axial resistance, all compartments (ohm*cm)
 			'RaAx' : 50.,					# axial resistance, axon (ohm*cm)					
 			'RmAll' : 28000.,			# specific membrane resistance (ohm/cm2)
 			'Cm' : 1.,					# specific membrane capacitance (uf/cm2)
-			'ka_grad' : 1.,#1.,				# slope of a-type potassium channel gradient with distance from soma 
-			'ghd_grad' : 3.,#3.,				# slope of a-type potassium channel gradient with distance from soma 
+			'ka_grad' : 1.,#1.,#1.,				# slope of a-type potassium channel gradient with distance from soma 
+			'ghd_grad' : 6.,#1.,#3.,				# slope of a-type potassium channel gradient with distance from soma 
 			}
 
 	def choose_seg_rand(self, syn_list, syn_frac):
@@ -352,6 +361,37 @@ class Experiment(Default):
 
 		# load cell
 		self.p['cell'] = cell.PyramidalCell(self.p)
+		self.seg_distance(self.p['cell'])
+		# randomly choose active segments 
+
+		self.choose_seg_manual(sec_list=self.p['sec_list'], seg_list=self.p['seg_list'])
+		
+		# set weights for active segments
+		self.set_weights(seg_idx=self.p['seg_idx'], w_mean=self.p['w_mean'], w_std=self.p['w_std'], w_rand=self.p['w_rand'])
+
+		print self.p['seg_idx']
+		print self.p['w_list']
+		print self.p['pulses']
+
+		# delete created cell
+		# self.cell=None
+
+	def exp_7(self, **kwargs):
+		""" vary gradient of Ka and Ih
+
+		measure peak membrane depolarization in response to synaptic input
+	
+		"""
+		# update parameters
+		for key, val in kwargs.iteritems():
+			self.p[key] = val
+
+		self.p['data_folder'] = 'Data/'+self.p['experiment']+'/'
+		self.p['fig_folder'] =  'png figures/'+self.p['experiment']+'/'
+
+		# load cell
+		self.p['cell'] = cell.CellMigliore2005(self.p)
+		# self.p['cell'] = cell.PyramidalCell(self.p)
 		self.seg_distance(self.p['cell'])
 		# randomly choose active segments 
 
