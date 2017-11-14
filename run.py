@@ -141,6 +141,13 @@ class Run():
 		# data organized as ['tree']['polarity'][section][segment]
 		# loop over dcs fields
 		for f_i,f in enumerate(p['field']):
+			# FIXME
+			# use Vector.play method to drive time-dependnent extracellular field
+			# create time vector for events
+			# create vector to control field magitude
+			# calculate max e_extracellular for each segment
+			# apply vector.play for each segment
+
 			# insert extracellular field
 			stims.DCS(cell=0, field_angle=p['field_angle'], intensity=f)
 
