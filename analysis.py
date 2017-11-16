@@ -473,7 +473,7 @@ class PlotRangeVar():
 
 					# adjust limits
 					# plt.ylim([-70, -50])
-					plt.xlim([20, p['tstop']])
+					plt.xlim([0, p['tstop']])
 					
 					# iterate over stimulation polarity
 					for pol in range(n_pol):
@@ -507,7 +507,7 @@ class PlotRangeVar():
 					
 					plt.plot(t, v, color=color)
 					plt.title('soma')
-					plt.xlim([20, p['tstop']])
+					plt.xlim([0, p['tstop']])
 		
 			# save and close figure
 			fig[var].savefig(p['data_folder']+p['experiment']+'_'+p['tree']+'_trace_'+var+'_'+p['trial_id']+'.png', dpi=300)

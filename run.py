@@ -148,16 +148,21 @@ class Run():
 			# calculate max e_extracellular for each segment
 			# apply vector.play for each segment
 
+			
 			# insert extracellular field
-			stims.DCS(cell=0, field_angle=p['field_angle'], intensity=f)
+			dcs = stims.DCS(cell=0, field_angle=p['field_angle'], intensity=f, field_on=p['field_on'], field_off=p['field_off'])
+
+			
+			# dcs.e_vec.play_remove()
 
 			# run time
 			h.dt = p['dt']
 			h.tstop = p['tstop']
 			h.celsius= p['celsius']
 
-			
+			# h.finitialize()
 			h.run()
+
 
 			# store recording vectors as arrays
 			# loop over trees

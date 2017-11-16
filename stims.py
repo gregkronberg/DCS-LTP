@@ -30,9 +30,9 @@ class DCS:
     assumes somatodendritic axis is aligned vertically, y is positive for apical dendrites, y is negative for basal dendrites
     """
     def __init__(self, cell=0, intensity=0, field_angle=0, field_on=0, field_off=0):
-        self.insert_e(cell=cell, intensity=intensity, field_angle=field_angle)
+        self.insert_e(cell=cell, intensity=intensity, field_angle=field_angle, field_on=field_on, field_off=field_off)
 
-    def insert_e(self, cell=0, intensity=0, field_angle=0):
+    def insert_e(self, cell=0, intensity=0, field_angle=0, field_on=0, field_off=1000):
         
         if cell == 0:
             cell=[]
@@ -46,9 +46,13 @@ class DCS:
             print 'field on', h.t
         elif intensity ==0:
             print 'field off', h.t
+        
+        self.e_vec = []
+        self.t_vec = []
         # loop over sections
         for sec_i,sec in enumerate(cell):
-
+            self.e_vec.append([])
+            self.t_vec.append([])
             # add list for each section to store data
             for dim_key,dim in location.iteritems():
                 dim.append([])
@@ -65,6 +69,7 @@ class DCS:
 
             # iterate over segments
             for seg_i,seg in enumerate(sec):
+                e=[]
                 # xyz location of each segment
                 seg_x = xyz[0][seg_i]
                 seg_y = xyz[1][seg_i]
@@ -93,11 +98,30 @@ class DCS:
                 # calculate extracellular potential
                 e = conversion*intensity*mag*np.cos(angle_field)
 
+                # create vectors for play mechanism
+                self.e_vec[sec_i].append(h.Vector(3))
+                self.e_vec[sec_i][seg_i].x[0] = 0
+                self.e_vec[sec_i][seg_i].x[1] = e
+                self.e_vec[sec_i][seg_i].x[2] = 0
+                # print self.e_vec[sec_i][seg_i].x[1]
+
+                self.t_vec[sec_i].append(h.Vector(3))
+                self.t_vec[sec_i][seg_i].x[0] = 0
+                self.t_vec[sec_i][seg_i].x[1] = field_on
+                self.t_vec[sec_i][seg_i].x[2] = field_off
+
+                self.e_vec[sec_i][seg_i].play(seg._ref_e_extracellular, self.t_vec[sec_i][seg_i])
+
+
                 # print sec.name(), seg_i, e
                 # insert calculated extracellular potential in mV
-                seg.e_extracellular = conversion*intensity*mag*np.cos(angle_field)
+                # seg.e_extracellular = e
 
                 # print sec.name(), seg_y, seg.x, seg.e_extracellular
+        for sec_i,sec in enumerate(cell):
+            for seg_i,seg in enumerate(sec):
+                print self.e_vec[sec_i][seg_i].x[1]
+
 
     def seg_location(self, sec):
         """ given a neuron section, output the 3d coordinates of each segment in the section

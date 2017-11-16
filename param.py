@@ -61,7 +61,7 @@ class Default(object):
 			'field':[-40,0,40],
 			'field_color':['b','k','r'],
 			'field_on':20,
-			'field_off': 50,
+			'field_off': 70,
 			'dt' : .025,
 			'warmup': 30,
 			'tstop' : 60,#5*1000/5 + 30 + 5*1000/100 +30
@@ -106,7 +106,7 @@ class Default(object):
 			'KMULT' :  .2*0.03,#0.03,			# multiplicative factor for distal A-type potassium conductances
 			'KMULTP' : .2*.03,#0.03,				# multiplicative factor for proximal A-type potassium conductances
 			'ghd' : 0.4*0.0001,#0.0001,			# peak h-current conductance (mho/cm2)
-			'gcalbar': 3.*.00125 ,			# L-type calcium conductance from Kim et al. 2015 (mho/cm2)
+			'gcalbar': 5.*.00125 ,			# L-type calcium conductance from Kim et al. 2015 (mho/cm2)
 			'ehd' : -30.,					# h-current reversal potential (mV)
 			'kl_hd' : -4,#-8.,
 			'vhalfl_hd_prox' : -80.,#-73,			# activation threshold for proximal h current (mV)
