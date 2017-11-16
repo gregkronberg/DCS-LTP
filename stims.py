@@ -47,12 +47,15 @@ class DCS:
         elif intensity ==0:
             print 'field off', h.t
         
+        # vectors for time-dependent control of DCS onset using vector.play
         self.e_vec = []
         self.t_vec = []
         # loop over sections
         for sec_i,sec in enumerate(cell):
+            # add dimension for each section to play vectors
             self.e_vec.append([])
             self.t_vec.append([])
+            
             # add list for each section to store data
             for dim_key,dim in location.iteritems():
                 dim.append([])
@@ -103,13 +106,13 @@ class DCS:
                 self.e_vec[sec_i][seg_i].x[0] = 0
                 self.e_vec[sec_i][seg_i].x[1] = e
                 self.e_vec[sec_i][seg_i].x[2] = 0
-                # print self.e_vec[sec_i][seg_i].x[1]
 
                 self.t_vec[sec_i].append(h.Vector(3))
                 self.t_vec[sec_i][seg_i].x[0] = 0
                 self.t_vec[sec_i][seg_i].x[1] = field_on
                 self.t_vec[sec_i][seg_i].x[2] = field_off
 
+                # apply play method to control DCS field during simulation
                 self.e_vec[sec_i][seg_i].play(seg._ref_e_extracellular, self.t_vec[sec_i][seg_i])
 
 
@@ -118,9 +121,7 @@ class DCS:
                 # seg.e_extracellular = e
 
                 # print sec.name(), seg_y, seg.x, seg.e_extracellular
-        for sec_i,sec in enumerate(cell):
-            for seg_i,seg in enumerate(sec):
-                print self.e_vec[sec_i][seg_i].x[1]
+
 
 
     def seg_location(self, sec):

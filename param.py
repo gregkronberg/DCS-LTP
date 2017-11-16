@@ -39,9 +39,10 @@ class Default(object):
 			'i_hd' : {'range' : 'hd'},
 			'ik_kad' : {'range': 'kad'},
 			'ik_kap' : {'range': 'kap'},
-			'ica_calH' : {'range':'calH'}
+			'ica_calH' : {'range':'calH'},
+			'ina_na3' : {'range':'na3'},
 			}, 
-			'plot_variables' : ['v','ik_kad','i_hd', 'ica_calH'],
+			'plot_variables' : ['v','ik_kad','i_hd', 'ica_calH', 'ina_na3'],
 
 
 			'syn_frac':[],
@@ -58,13 +59,13 @@ class Default(object):
 			'seg_idx':[],
 			'seg_dist' : {},
 			'field_angle': 0,#np.pi/2.0,
-			'field':[-40,0,40],
+			'field':[-30,0,30],
 			'field_color':['b','k','r'],
 			'field_on':20,
 			'field_off': 70,
 			'dt' : .025,
 			'warmup': 30,
-			'tstop' : 60,#5*1000/5 + 30 + 5*1000/100 +30
+			'tstop' : 70,#5*1000/5 + 30 + 5*1000/100 +30
 			'bursts':1,
 			'pulses':4,
 			'pulse_freq':100,
@@ -96,7 +97,7 @@ class Default(object):
 			# conversion 10,000*(pS/um2) = 10*(nS/um2) = (mho/cm2) = .001*(mS/cm2)
 			# *** units in paper are a typo, values are already reported in (mho/cm2) ***
 			'Vrest' : -70.,				# resting potential (mV)
-			'gna' :  1.*0.025,#.025,				# peak sodium conductance (mho/cm2)
+			'gna' :  0.*0.025,#.025,				# peak sodium conductance (mho/cm2)
 			'dgna' : 0.,#-.000025,			# change in sodium conductance with distance (ohm/cm2/um) from Kim 2015
 			'ena' : 55.,					# sodium reversal potential (mV)
 			'AXONM' : 5.,				# multiplicative factor for axonal conductance
@@ -105,8 +106,8 @@ class Default(object):
 			'celsius' : 35.0,  				# temperature (degrees C)
 			'KMULT' :  .2*0.03,#0.03,			# multiplicative factor for distal A-type potassium conductances
 			'KMULTP' : .2*.03,#0.03,				# multiplicative factor for proximal A-type potassium conductances
-			'ghd' : 0.4*0.0001,#0.0001,			# peak h-current conductance (mho/cm2)
-			'gcalbar': 5.*.00125 ,			# L-type calcium conductance from Kim et al. 2015 (mho/cm2)
+			'ghd' : 0.5*0.0001,#0.0001,			# peak h-current conductance (mho/cm2)
+			'gcalbar': 0.*.00125 ,			# L-type calcium conductance from Kim et al. 2015 (mho/cm2)
 			'ehd' : -30.,					# h-current reversal potential (mV)
 			'kl_hd' : -4,#-8.,
 			'vhalfl_hd_prox' : -80.,#-73,			# activation threshold for proximal h current (mV)
@@ -120,7 +121,7 @@ class Default(object):
 			'RmAll' : 28000.,			# specific membrane resistance (ohm/cm2)
 			'Cm' : 1.,					# specific membrane capacitance (uf/cm2)
 			'ka_grad' : 1.,#1.,#1.,				# slope of a-type potassium channel gradient with distance from soma 
-			'ghd_grad' : 6.,#1.,#3.,				# slope of a-type potassium channel gradient with distance from soma 
+			'ghd_grad' : 4.,#1.,#3.,				# slope of h channel gradient with distance from soma 
 			}
 
 	def choose_seg_rand(self, syn_list, syn_frac):

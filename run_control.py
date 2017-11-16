@@ -432,18 +432,18 @@ class Arguments:
 		"""
 		weights = np.arange(.005, .03, .005)
 		# weights = np.arange(.5, 1, .1)
-		weights = [0.005]#[.03]
+		weights = [0.001]#[.03]
 		self.kwargs = {
 		'experiment' : 'exp_2', 
-		'tree' : 'apical_trunk',
+		'tree' : 'basal',
 		'trials' : 1,
 		'w_mean' : weights,#[.001],
 		'w_std' : [.0002],
 		'w_rand' : False, 
-		'sec_idx' : [-1], 
-		'seg_idx' : [[-1]],
-		'pulses' : 3,
-		'gna' : 0.,#0.025,
+		'sec_idx' : [-1, -2], 
+		'seg_idx' : [[-1], [-1]],
+		'pulses' : 4,
+		# 'gna' : 0.,#0.025,
 		}
 
 	def exp_3(self):
