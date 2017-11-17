@@ -16,6 +16,7 @@ class PyramidalCell:
 		self.geometry(p)
 		self.mechanisms(p)
 
+
 	def geometry(self, p):
 		"""
 		areas determined from cell geo5038804 from Migliore 2005
@@ -325,7 +326,7 @@ class CellMigliore2005:
 				elif tree_key == 'soma':
 					# voltage gated sodium
 					sec.insert('na3')
-					sec.gbar_na3 = p['gna']	
+					sec.gbar_na3 = p['gna']*p['AXONM']
 					# h-current			
 					sec.insert('hd')
 					sec.ghdbar_hd = p['ghd']				

@@ -473,7 +473,7 @@ class PlotRangeVar():
 
 					# adjust limits
 					# plt.ylim([-70, -50])
-					plt.xlim([0, p['tstop']])
+					plt.xlim([10, p['tstop']])
 					
 					# iterate over stimulation polarity
 					for pol in range(n_pol):
@@ -507,7 +507,7 @@ class PlotRangeVar():
 					
 					plt.plot(t, v, color=color)
 					plt.title('soma')
-					plt.xlim([0, p['tstop']])
+					plt.xlim([10, p['tstop']])
 		
 			# save and close figure
 			fig[var].savefig(p['data_folder']+p['experiment']+'_'+p['tree']+'_trace_'+var+'_'+p['trial_id']+'.png', dpi=300)
@@ -1048,6 +1048,8 @@ class Experiment:
 										print measure, location, condition, ':', mat[measure][condition][location][gh_i, ka_i, grad_h_i, grad_ka_i]
 		# save processed list
 		with open(data_folder+'id_list'+'.pkl', 'wb') as output:pickle.dump(id_list, output,protocol=pickle.HIGHEST_PROTOCOL)
+
+		# save asymmetry data matrix
 		for measure_i, measure in enumerate(measures):
 			for location_i, location in enumerate(locations):
 				for condition_i, condition in enumerate(conditions):
@@ -1067,7 +1069,7 @@ class Experiment:
 		print best_val
 		print best_file
 
-				#FIX MEEEEEEEE
+		#FIX MEEEEEEEE
 		# choose parameters to plot
 		fig={}
 		fig['conductance'] = plt.figure(1)
@@ -1091,7 +1093,7 @@ class Experiment:
 		# things to measure
 		measures = ['epsp', 'ss']
 
-		locations = ['soma', 'apical_dist']
+		locations = ['soma', 'apical_tuft']
 
 		conditions = ['cathodal', 'control', 'anodal', 'asymmetry']
 
@@ -1122,24 +1124,40 @@ class Experiment:
 		# g_range = run_control.Arguments('exp_6').kwargs['conductance_range']
 		# grad_range = run_control.Arguments('exp_6').kwargs['grad_range']
 		g_range = kwargs['conductance_range']
-		grad_range = kwargs['grad_range']
+		activation_range = kwargs['activation_range_h']
+		slope_range = kwargs['slope_range']
 		
 		# N-dimensional array for storing data (each tested parameter is a dimension)
-		mat = {}
+		
+		# varaible to decide whether to create new matrix to store data
+		new_mat=0
+		# iterate over measures, conditions, locations
+		mat={}
 		for measure_key, measure in enumerate(measures):
 			mat[measure] = {}
 			for condition_i, condition in enumerate(conditions):
 				mat[measure][condition]= {}
 				for location_i, location in enumerate(locations):
-					mat[measure][condition][location] = []
-					save_string = '_IhKaMat_'+'_'+measure+'_'+location+'_'+condition+'.pkl'
-
+					# string to save data
+					save_string = '_IhMat_'+'_'+measure+'_'+location+'_'+condition+'.pkl'
+					# if data file already exists
 					if save_string in files:
+						# load data
 						with open(data_folder+save_string, 'rb') as pkl_file:
 							mat[measure][condition][location] = pickle.load(pkl_file)
-
 					else:
-						mat[measure][condition][location] = np.zeros([len(g_range), len(g_range), len(grad_range), len(grad_range)])
+						new_mat=1
+						mat[measure][condition][location] = np.zeros([len(g_range), len(activation_range), len(slope_range)])
+
+		# if new_mat==1:
+		# 	mat = {}
+		# 	for measure_key, measure in enumerate(measures):
+		# 		mat[measure] = {}
+		# 		for condition_i, condition in enumerate(conditions):
+		# 			mat[measure][condition]= {}
+		# 			for location_i, location in enumerate(locations):
+
+		# 				mat[measure][condition][location] = np.zeros([len(g_range), len(activation_range), len(slope_range)])
 
 		# asymmetry = np.zeros([len(g_range), len(g_range), len(grad_range), len(grad_range)])
 		# cathodal = np.zeros([len(g_range), len(g_range), len(grad_range), len(grad_range)])
@@ -1148,10 +1166,8 @@ class Experiment:
 
 		# vectors of parameter values
 		g_h = g_range*kwargs['ghd'] 
-		g_ka = g_range*kwargs['KMULT'] 
-		grad_h = grad_range*kwargs['ghd_grad']
-		grad_ka = grad_range*kwargs['ka_grad']
-
+		activations = activation_range+kwargs['vhalfl_hd_prox']
+		slopes = kwargs['kl_hd'] - slope_range
 		# iterate over data files
 		for data_file_i, data_file in enumerate(data_files):
 			
@@ -1175,17 +1191,20 @@ class Experiment:
 
 					# detect parameter combination for specific file
 					gh_i = [i for i, val in enumerate(g_h) if p['ghd']==val]
-					ka_i = [i for i, val in enumerate(g_ka) if p['KMULT']==val]
-					grad_h_i = [i for i, val in enumerate(grad_h) if p['ghd_grad']==val]
-					grad_ka_i = [i for i, val in enumerate(grad_ka) if p['ka_grad']==val]
+					activations_i = [i for i, val in enumerate(activations) if p['vhalfl_hd_prox']==val]
+					slopes_i = [i for i, val in enumerate(slopes) if p['kl_hd']==val]
 					
 					# epsp onset
 					onset = int(p['warmup']*1./p['dt'])
 					print onset
 
+					# iterate over things to measure
 					for measure_i, measure in enumerate(measures):
+						# iterate over locations to record from
 						for location_i, location in enumerate(locations):
+							# iterate over stimulation conditions
 							for condition_i, condition in enumerate(conditions):
+								# set window to take measurements
 								if 'epsp' in measure:
 									window1 = onset
 									window2 = len(data['t'][0])
@@ -1195,48 +1214,52 @@ class Experiment:
 
 								if condition is not 'asymmetry':
 									# measure peak epsp and store in data array
-									mat[measure][condition][location][gh_i, ka_i, grad_h_i, grad_ka_i] = np.amax(data[location+'_v'][condition_i][0][-1][window1:window2])
+									mat[measure][condition][location][gh_i, activations_i, slopes_i] = np.amax(data[location+'_v'][condition_i][0][-1][window1:window2])
 									# print measure, location, condition, ':', mat[measure][condition][location][gh_i, ka_i, grad_h_i, grad_ka_i]
 
 								elif condition is 'asymmetry':
-									mat[measure][condition][location][gh_i, ka_i, grad_h_i, grad_ka_i] = mat[measure]['anodal'][location][gh_i, ka_i, grad_h_i, grad_ka_i] + mat[measure]['cathodal'][location][gh_i, ka_i, grad_h_i, grad_ka_i] - 2.*mat[measure]['control'][location][gh_i, ka_i, grad_h_i, grad_ka_i]
+									# measure asymmetry as anodal effect + cathodal effect
+									mat[measure][condition][location][gh_i, activations_i, slopes_i] = mat[measure]['anodal'][location][gh_i, activations_i, slopes_i] + mat[measure]['cathodal'][location][gh_i, activations_i, slopes_i] - 2.*mat[measure]['control'][location][gh_i, activations_i, slopes_i]
 
-									if mat[measure][condition][location][gh_i, ka_i, grad_h_i, grad_ka_i] > 1:
-										print measure, location, condition, ':', mat[measure][condition][location][gh_i, ka_i, grad_h_i, grad_ka_i]
+									if mat[measure][condition][location][gh_i, activations_i, slopes_i] > 1:
+										print measure, location, condition, ':', mat[measure][condition][location][gh_i, activations_i, slopes_i]
 		# save processed list
 		with open(data_folder+'id_list'+'.pkl', 'wb') as output:pickle.dump(id_list, output,protocol=pickle.HIGHEST_PROTOCOL)
+		
+		# save asymmetry data matrix 
 		for measure_i, measure in enumerate(measures):
 			for location_i, location in enumerate(locations):
 				for condition_i, condition in enumerate(conditions):
 					save_data = mat[measure][condition][location]
-					save_string = data_folder+'_IhKaMat_'+'_'+measure+'_'+location+'_'+condition+'.pkl'
+					save_string = data_folder+'_IhMat_'+'_'+measure+'_'+location+'_'+condition+'.pkl'
 
 					# save matrix for each condition separately
 					with open(save_string, 'wb') as output:
 						pickle.dump(save_data, output,protocol=pickle.HIGHEST_PROTOCOL)
 
 		# find maximum asymmetry
-		best_val = np.amax(mat['ss']['asymmetry']['apical_dist'])
-		best = np.argmax(mat['ss']['asymmetry']['apical_dist'])
-		best_idx  = np.unravel_index(best, (len(g_range), len(g_range), len(grad_range), len(grad_range)))
+		best_val = np.amax(mat['epsp']['asymmetry']['soma'])
+		best = np.argmax(mat['epsp']['asymmetry']['soma'])
+		best_idx  = np.unravel_index(best, (len(g_range), len(activation_range), len(slope_range)))
 		best_file = id_list[best]
 		print best_idx
 		print best_val
 		print best_file
 
-				#FIX MEEEEEEEE
+		#FIX MEEEEEEEE
 		# choose parameters to plot
 		fig={}
 		fig['conductance'] = plt.figure(1)
-		plot_mat = mat['ss']['asymmetry']['apical_dist'][:,:,best_idx[2],best_idx[3]]
+		plot_mat = mat['epsp']['asymmetry']['soma'][:,:,1]#best_idx[2]]
 		plt.imshow(plot_mat)
 		plt.colorbar()
 		plt.ylabel('Ih conductance')
-		plt.xlabel('Ka conductance')
+		plt.xlabel('Ih activation gate half max voltage')
 		plt.yticks(range(len(g_h)), g_h)
-		plt.xticks(range(len(g_ka)), g_ka)
-		plt.title('Asymmetry in apical_dist EPSP peak (mV)')
-		fig['conductance'].savefig(data_folder+'_IhKa_conductance'+'.png', dpi=250)
+		plt.xticks(range(len(activations)), activations)
+		print slopes[2]
+		plt.title('Asymmetry in soma EPSP peak (mV), kl='+ str(int(slopes[1])))
+		fig['conductance'].savefig(data_folder+'_Ih_conductance'+'.png', dpi=250)
 		plt.close(fig['conductance'])
 
 if __name__ =="__main__":

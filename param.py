@@ -59,7 +59,7 @@ class Default(object):
 			'seg_idx':[],
 			'seg_dist' : {},
 			'field_angle': 0,#np.pi/2.0,
-			'field':[-30,0,30],
+			'field':[-50,0,50],
 			'field_color':['b','k','r'],
 			'field_on':20,
 			'field_off': 70,
@@ -96,22 +96,22 @@ class Default(object):
 			# conductances reported as (nS/um2) in paper, but need to be in (mho/cm2)
 			# conversion 10,000*(pS/um2) = 10*(nS/um2) = (mho/cm2) = .001*(mS/cm2)
 			# *** units in paper are a typo, values are already reported in (mho/cm2) ***
-			'Vrest' : -70.,				# resting potential (mV)
-			'gna' :  0.*0.025,#.025,				# peak sodium conductance (mho/cm2)
-			'dgna' : 0.,#-.000025,			# change in sodium conductance with distance (ohm/cm2/um) from Kim 2015
+			'Vrest' : -65.,				# resting potential (mV)
+			'gna' :  1.*0.025,#.025,				# peak sodium conductance (mho/cm2)
+			'dgna' : -.000025,			# change in sodium conductance with distance (ohm/cm2/um) from Kim 2015
 			'ena' : 55.,					# sodium reversal potential (mV)
 			'AXONM' : 5.,				# multiplicative factor for axonal conductance
 			'gkdr' : 1.*0.01,#0.01,				# delayed rectifier potassium peak conductance (mho/cm2)
 			'ek' : -90.,					# potassium reversal potential
 			'celsius' : 35.0,  				# temperature (degrees C)
-			'KMULT' :  .2*0.03,#0.03,			# multiplicative factor for distal A-type potassium conductances
-			'KMULTP' : .2*.03,#0.03,				# multiplicative factor for proximal A-type potassium conductances
-			'ghd' : 0.5*0.0001,#0.0001,			# peak h-current conductance (mho/cm2)
-			'gcalbar': 0.*.00125 ,			# L-type calcium conductance from Kim et al. 2015 (mho/cm2)
+			'KMULT' :  1.*0.03,#0.03,			# multiplicative factor for distal A-type potassium conductances
+			'KMULTP' : 1.*.03,#0.03,				# multiplicative factor for proximal A-type potassium conductances
+			'ghd' : 0.*0.75*0.0001,#0.0001,			# peak h-current conductance (mho/cm2)
+			'gcalbar': 1.*.00125 ,			# L-type calcium conductance from Kim et al. 2015 (mho/cm2)
 			'ehd' : -30.,					# h-current reversal potential (mV)
-			'kl_hd' : -4,#-8.,
-			'vhalfl_hd_prox' : -80.,#-73,			# activation threshold for proximal h current (mV)
-			'vhalfl_hd_dist' : -81.,#-81,			# activation threshold for distal h-current (mV)
+			'kl_hd' : -5,#-8.,
+			'vhalfl_hd_prox' : -83.,#-73,			# activation threshold for proximal h current (mV)
+			'vhalfl_hd_dist' : -83.,#-81,			# activation threshold for distal h-current (mV)
 			'vhalfl_kad' : -56.,#-56.,			# inactivation threshold for distal a-type current (mV)
 			'vhalfl_kap' : -56.,#-56.,			# inactivation threshold for proximal a-type current (mV)
 			'vhalfn_kad' : -1.,#-1.,			# activation threshold for distal a-type urrent (mV)
@@ -121,7 +121,7 @@ class Default(object):
 			'RmAll' : 28000.,			# specific membrane resistance (ohm/cm2)
 			'Cm' : 1.,					# specific membrane capacitance (uf/cm2)
 			'ka_grad' : 1.,#1.,#1.,				# slope of a-type potassium channel gradient with distance from soma 
-			'ghd_grad' : 4.,#1.,#3.,				# slope of h channel gradient with distance from soma 
+			'ghd_grad' : 5.,#1.,#3.,				# slope of h channel gradient with distance from soma 
 			}
 
 	def choose_seg_rand(self, syn_list, syn_frac):
@@ -400,10 +400,6 @@ class Experiment(Default):
 		
 		# set weights for active segments
 		self.set_weights(seg_idx=self.p['seg_idx'], w_mean=self.p['w_mean'], w_std=self.p['w_std'], w_rand=self.p['w_rand'])
-
-		print self.p['seg_idx']
-		print self.p['w_list']
-		print self.p['pulses']
 
 		# delete created cell
 		# self.cell=None

@@ -336,7 +336,7 @@ class Experiment:
 		self.p = p
 
 	def exp_7(self, **kwargs):
-		""" vary Ih and Ka parameters and measure effects on peak EPSP
+		""" vary Ih parameters and measure effects on peak EPSP
 		"""
 		exp = 'exp_7'
 		tree = kwargs['tree']
@@ -349,57 +349,57 @@ class Experiment:
 
 		# loop over trials
 		for tri in range(trials):
-			for vhalfl_h_i, vhalfl_h in enumerate(kwargs['activation_range_h']):
-				for vhalfn_ka_i, vhalfn_ka in enumerate(kwargs['activation_range_ka']):
+			for conductance_i, conductance  in enumerate(kwargs['conductance_range']):
+				for vhalfl_h_i, vhalfl_h in enumerate(kwargs['activation_range_h']):
+					for slope_i, slope in enumerate(kwargs['slope_range']):
+						if conductance==0. and (vhalfl_h_i >0 or slope_i> 0):
+							continue
 
-					# load rest of parameters from parameter module
-					p = param.Experiment(**kwargs).p
-					
-					# set Ih and Ka conductance parameters
-					p['ghd'] = kwargs['ghd']
-					p['KMULT'] =  kwargs['KMULT']
-					p['KMULTP'] =  kwargs['KMULTP']
-					p['ghd_grad'] = kwargs['ghd_grad']
-					p['ka_grad'] = kwargs['ka_grad']
-					p['vhalfl_hd_prox'] = vhalfl_h+kwargs['vhalfl_hd_prox']
-					p['vhalfl_hd_dist'] = vhalfl_h+kwargs['vhalfl_hd_dist']
-					p['vhalfn_kad'] = vhalfn_ka+kwargs['vhalfn_kad']
-					p['vhalfn_kap'] = vhalfn_ka+kwargs['vhalfn_kap']
+						# load rest of parameters from parameter module
+						p = param.Experiment(**kwargs).p
+						
+						# set Ih and Ka conductance parameters
+						p['KMULT'] =  kwargs['KMULT']
+						p['KMULTP'] =  kwargs['KMULTP']
+						p['ghd_grad'] = kwargs['ghd_grad']
+						p['ka_grad'] = kwargs['ka_grad']
+						p['vhalfl_hd_prox'] = vhalfl_h+kwargs['vhalfl_hd_prox']
+						p['vhalfl_hd_dist'] = vhalfl_h+kwargs['vhalfl_hd_dist']
+						p['ghd'] = conductance*kwargs['ghd']
+						p['kl_hd'] = kwargs['kl_hd']-slope
 
-					print 'vhalfl_hd_prox:', p['vhalfl_hd_prox'], 'vhalfn_kad:', p['vhalfn_kad'] 
-					# print 'g_h:', p['ghd'], 'g_ka:', p['KMULT'], 'h_grad:', p['ghd_grad'], 'ka_grad:', p['ka_grad']
-
-					# store trial number
-					p['trial']=tri
-					
-					# create unique identifier for each trial
-					p['trial_id'] = str(uuid.uuid4())
-					
-					# start timer
-					start = time.time() 
-					
-					# run simulation
-					sim = run.Run(p)	
+						print 'vhalfl_hd_prox:', p['vhalfl_hd_prox'] 
+						print 'ghd:', p['ghd'] 
+						print 'kl_hd:', p['kl_hd']
 
 
-					# end timer
-					end = time.time() 
-
-					# print trial and simulation time
-					print 'trial'+ str(tri) + ' duration:' + str(end -start) 
-					
-					# save data for eahc trial
-					run.save_data(sim.data)
-
-					plots.plot_trace(data=sim.data, 
-					tree=p['tree'], 
-					sec_idx=p['sec_idx'], 
-					seg_idx=p['seg_idx'],
-					variables=p['plot_variables'])
-
-					
+						# store trial number
+						p['trial']=tri
+						
+						# create unique identifier for each trial
+						p['trial_id'] = str(uuid.uuid4())
+						
+						# start timer
+						start = time.time() 
+						
+						# run simulation
+						sim = run.Run(p)	
 
 
+						# end timer
+						end = time.time() 
+
+						# print trial and simulation time
+						print 'trial'+ str(tri) + ' duration:' + str(end -start) 
+						
+						# save data for eahc trial
+						run.save_data(sim.data)
+
+						plots.plot_trace(data=sim.data, 
+						tree=p['tree'], 
+						sec_idx=p['sec_idx'], 
+						seg_idx=p['seg_idx'],
+						variables=p['plot_variables'])
 
 		self.p = p
 
@@ -432,18 +432,18 @@ class Arguments:
 		"""
 		weights = np.arange(.005, .03, .005)
 		# weights = np.arange(.5, 1, .1)
-		weights = [0.001]#[.03]
+		weights = [0.0015]#[.03]
 		self.kwargs = {
 		'experiment' : 'exp_2', 
-		'tree' : 'basal',
+		'tree' : 'apical_tuft' ,
 		'trials' : 1,
 		'w_mean' : weights,#[.001],
 		'w_std' : [.0002],
 		'w_rand' : False, 
-		'sec_idx' : [-1, -2], 
-		'seg_idx' : [[-1], [-1]],
+		'sec_idx' : [-1, -2, -3, -4, -5, -6, -7, -8, -9,-10,-11,-12,-13,-14,-15,-16], 
+		'seg_idx' : [[0], [0], [0],[0],[0],[0],[0],[0],[0],[0],[0],[0],[0],[0],[0],[0]],
 		'pulses' : 4,
-		# 'gna' : 0.,#0.025,
+		'gna' : 0.025,
 		}
 
 	def exp_3(self):
@@ -525,34 +525,36 @@ class Arguments:
 		}
 
 	def exp_7(self):
-		""" vary Ih and Ka parameters and measure effects on peak EPSP
+		""" vary Ih parameters and measure effects on peak EPSP
 		"""
 		
-		weights = 0.05
+		weights = 0.002
 		self.kwargs = {
-		'conductance_range' : np.arange(0., 3., .3),
-		'grad_range' : np.arange(0.,3., .3),
+		'activation_range_h': np.arange(0., 25., 4.),
+		'conductance_range' : np.arange(0., 3., .5),
+		'slope_range' : np.arange(0.,4., 1.),
 		'gna' : 0.,
-		'ghd' : 0.0001,
-		'KMULT' :  1.*0.03,
-		'KMULTP' :  1.*0.03,
-		'ghd_grad' : 3,
+		'kl_hd' : -4,
+		'ghd' : 0.00005,
+		'KMULT' :  .5*0.03,
+		'KMULTP' :  .5*0.03,
+		'ghd_grad' : 5,
 		'ka_grad' : 1,
 		'vhalfl_hd_prox' : -95.,#-73.,			
 		'vhalfl_hd_dist' : -95.,
-		'vhalfn_kad' : 5,
-		'vhalfn_kap' : 5,
 		'experiment' : 'exp_7', 
-		'tree' : 'basal',
+		'tree' : 'apical_tuft',
 		'trials' : 1,
 		'w_mean' : weights,#[.001],
 		'w_std' : [.002],
 		'w_rand' : False, 
 		'syn_frac' : 0,
-		'seg_list' : [0, ],
-		'sec_list' : [-1, ],
-		'pulses':3,
-		'tstop':60,
+		'seg_list' : [-1, -1,],
+		'sec_list' : [-1, -2,],
+		'pulses':4,
+		'tstop':70,
+		'field_on':15,
+		'field_off':80,
 		}
 
 

@@ -42,11 +42,6 @@ class DCS:
         # structure to store location and e_extracellular for each segment.  Organized as ['dimension'][section number][segment number]
         location = {'x':[], 'y':[],'z':[],'e':[]}
         
-        if intensity!=0:
-            print 'field on', h.t
-        elif intensity ==0:
-            print 'field off', h.t
-        
         # vectors for time-dependent control of DCS onset using vector.play
         self.e_vec = []
         self.t_vec = []
