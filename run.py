@@ -31,7 +31,7 @@ class Run():
 		# create cell
 		# self.cell1 = cell.CellMigliore2005(p)
 		# self.cell1 = cell.PyramidalCylinder(p) 
-		self.cell1 = p['cell']#p['cell']
+		self.cell1 = p['cell'] # cell must be deleted from p before saving
 		self.update_clopath( p, syns=self.cell1.syns[p['tree']]['clopath'])
 		self.activate_synapses(p)
 		self.recording_vectors(p)

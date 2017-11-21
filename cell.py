@@ -46,24 +46,25 @@ class PyramidalCylinder:
 				self.geo[tree].append( h.Section( name=tree))
 
 				# diameter basd on area of full morphology
-				diam = p['diam_'+tree] 
+				diam1 = p['diam1_'+tree]
+				diam2 = p['diam2_'+tree] 
 
 				if tree=='soma':	
 					# create 3d specification, with cell arranged vertically
-					h.pt3dadd(0, 0, 0, diam, sec=self.geo[tree][sec_i])
-					h.pt3dadd(0, p['L_'+tree], 0, diam, sec=self.geo[tree][sec_i])
+					h.pt3dadd(0, 0, 0, diam1, sec=self.geo[tree][sec_i])
+					h.pt3dadd(0, p['L_'+tree], 0, diam2, sec=self.geo[tree][sec_i])
 
 				if tree=='basal':
-					h.pt3dadd(0, 0, 0, diam, sec=self.geo[tree][sec_i])
-					h.pt3dadd(0, -p['L_'+tree], 0, diam, sec=self.geo[tree][sec_i])
+					h.pt3dadd(0, 0, 0, diam1, sec=self.geo[tree][sec_i])
+					h.pt3dadd(0, -p['L_'+tree], 0, diam2, sec=self.geo[tree][sec_i])
 
 				if tree=='apical_prox':
-					h.pt3dadd(0, p['L_soma'], 0, diam, sec=self.geo[tree][sec_i])
-					h.pt3dadd(0, p['L_soma']+p['L_'+tree], 0, diam, sec=self.geo[tree][sec_i])
+					h.pt3dadd(0, p['L_soma'], 0, diam1, sec=self.geo[tree][sec_i])
+					h.pt3dadd(0, p['L_soma']+p['L_'+tree], 0, diam2, sec=self.geo[tree][sec_i])
 
 				if tree=='apical_dist':
-					h.pt3dadd(0, p['L_soma']+p['L_apical_prox'], 0, diam, sec=self.geo[tree][sec_i])
-					h.pt3dadd(0, p['L_soma']+p['L_apical_prox']+p['L_'+tree], 0, diam, sec=self.geo[tree][sec_i])
+					h.pt3dadd(0, p['L_soma']+p['L_apical_prox'], 0, diam1, sec=self.geo[tree][sec_i])
+					h.pt3dadd(0, p['L_soma']+p['L_apical_prox']+p['L_'+tree], 0, diam2, sec=self.geo[tree][sec_i])
 
 				# add list to store synapses for each section
 				for syn_key, syn in self.syns[tree].iteritems():
@@ -77,16 +78,19 @@ class PyramidalCylinder:
 				# specific capacitance (uf/cm2)
 				self.geo[tree][sec_i].cm = p['Cm'] 			
 				# axial resistance (ohm cm) 		
-				self.geo[tree][sec_i].Ra = p['RaAll'] 
+				self.geo[tree][sec_i].Ra = 1.*p['RaAll'] 
 
 				self.geo[tree][sec_i].L = p['L_'+tree]
-				self.geo[tree][sec_i].diam = p['diam_'+tree]
+				# self.geo[tree][sec_i].diam = p['diam_'+tree]
+
+				self.geo[tree][sec_i].nseg=1
 
 		self.geo['basal'][0].connect(self.geo['soma'][0](0),0)
 		self.geo['apical_prox'][0].connect(self.geo['soma'][0](1),0)
 		self.geo['apical_dist'][0].connect(self.geo['apical_prox'][0](1),0)
 
-		h.xopen('fixnseg.hoc')
+		if p['fixnseg']==True:
+			h.xopen('fixnseg.hoc')
 
 		# set temperature in hoc
 		h.celsius = p['celsius']
@@ -193,19 +197,19 @@ class PyramidalCylinder:
 				    	# print seg_dist, seg.gbar_na3
 				    	
 				    	# h current
-				    	seg.ghdbar_hd = p['ghd']*(1+p['ghd_grad']*(seg_dist/100.)/(p['L_apical_prox']/250.))
+				    	seg.ghdbar_hd = p['ghd']*(1+p['ghd_grad']*(seg_dist/100.))#/(p['L_apical_prox']/250.))
 				    	
 				    	# A-type potassium
 				        if seg_dist > 100.:	# distal
 				            seg.vhalfl_hd = p['vhalfl_hd_dist']
 				            seg.vhalfl_kad = p['vhalfl_kad']
 				            seg.vhalfn_kad = p['vhalfn_kad']
-				            seg.gkabar_kad = p['KMULT']*(1+p['ka_grad']*(seg_dist/100.)/(p['L_apical_prox']/250.))
+				            seg.gkabar_kad = p['KMULT']*(1+p['ka_grad']*(seg_dist/100.))#/(p['L_apical_prox']/250.))
 				        else:	# proximal
 				            seg.vhalfl_hd = p['vhalfl_hd_prox']
 				            seg.vhalfl_kap = p['vhalfl_kap']
 				            seg.vhalfn_kap = p['vhalfn_kap']
-				            seg.gkabar_kap = p['KMULTP']*(1+p['ka_grad']*(seg_dist/100.)/(p['L_apical_prox']/250.))
+				            seg.gkabar_kap = p['KMULTP']*(1+p['ka_grad']*(seg_dist/100.))#/(p['L_apical_prox']/250.))
 
 				        # loop over synapse types
 				        for syn_key,syn in self.syns[tree_key].iteritems():
@@ -220,8 +224,6 @@ class PyramidalCylinder:
 				        		syn[sec_i][seg_i].tau2 = p['tau2_nmda']
 				        	elif syn_key == 'clopath':
 				        		syn[sec_i].append(h.STDPSynCCNon(sec(seg.x)))
-
-
 
 # create cell
 class CellMigliore2005:

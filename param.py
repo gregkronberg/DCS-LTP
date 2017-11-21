@@ -24,15 +24,20 @@ class Default(object):
 			'L_soma' : 7.5,
 			'L_apical_prox' : 1000.,
 			'L_apical_dist' : 1000.,
-			'diam_basal' : 1.9,
-			'diam_soma' : 7.5,
-			'diam_apical_prox' : 2.75,
-			'diam_apical_dist' : 2.75,
+			'diam1_basal' : 1.9,
+			'diam1_soma' : 7.5,
+			'diam1_apical_prox' : 2.75,
+			'diam1_apical_dist' : 2.75,
+			'diam2_basal' : 1.9,
+			'diam2_soma' : 7.5,
+			'diam2_apical_prox' : 2.75,
+			'diam2_apical_dist' : 2.75,
 			'nsec_basal' : 1,
 			'nsec_soma' : 1,
 			'nsec_apical_prox' : 1,
 			'nsec_apical_dist' : 1,
 			'syn_types' : ['ampa', 'nmda', 'clopath'],
+			'fixnseg':True,
 
 			'record_variables' : 
 			{
@@ -434,6 +439,59 @@ class Experiment(Default):
 		# delete created cell
 		# self.cell=None
 
+	def exp_9(self, **kwargs):
+		""" vary gradient of Ka and Ih
+
+		measure peak membrane depolarization in response to synaptic input
+	
+		"""
+		# update parameters
+		for key, val in kwargs.iteritems():
+			self.p[key] = val
+
+		self.p['data_folder'] = 'Data/'+self.p['experiment']+'/'
+		self.p['fig_folder'] =  'png figures/'+self.p['experiment']+'/'
+
+		# load cell
+		self.p['cell'] = cell.CellMigliore2005(self.p)
+		# self.p['cell'] = cell.PyramidalCell(self.p)
+		self.seg_distance(self.p['cell'])
+		# randomly choose active segments 
+
+		self.choose_seg_manual(sec_list=self.p['sec_list'], seg_list=self.p['seg_list'])
+		
+		# set weights for active segments
+		self.set_weights(seg_idx=self.p['seg_idx'], w_mean=self.p['w_mean'], w_std=self.p['w_std'], w_rand=self.p['w_rand'])
+
+		# delete created cell
+		# self.cell=None
+
+	def exp_10(self, **kwargs):
+		""" vary gradient of Ka and Ih
+
+		measure peak membrane depolarization in response to synaptic input
+	
+		"""
+		# update parameters
+		for key, val in kwargs.iteritems():
+			self.p[key] = val
+
+		self.p['data_folder'] = 'Data/'+self.p['experiment']+'/'
+		self.p['fig_folder'] =  'png figures/'+self.p['experiment']+'/'
+
+		# load cell
+		self.p['cell'] = cell.CellMigliore2005(self.p)
+		# self.p['cell'] = cell.PyramidalCell(self.p)
+		self.seg_distance(self.p['cell'])
+		# randomly choose active segments 
+
+		self.choose_seg_manual(sec_list=self.p['sec_list'], seg_list=self.p['seg_list'])
+		
+		# set weights for active segments
+		self.set_weights(seg_idx=self.p['seg_idx'], w_mean=self.p['w_mean'], w_std=self.p['w_std'], w_rand=self.p['w_rand'])
+
+		# delete created cell
+		# self.cell=None
 
 # set procedure if called as a script
 if __name__ == "__main__":
