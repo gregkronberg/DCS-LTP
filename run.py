@@ -29,8 +29,9 @@ class Run():
 	def __init__(self, p):
 
 		# create cell
-		self.cell1 = cell.CellMigliore2005(p)
-		# self.cell1 = cell.PyramidalCell(p) #p['cell']
+		# self.cell1 = cell.CellMigliore2005(p)
+		# self.cell1 = cell.PyramidalCylinder(p) 
+		self.cell1 = p['cell']#p['cell']
 		self.update_clopath( p, syns=self.cell1.syns[p['tree']]['clopath'])
 		self.activate_synapses(p)
 		self.recording_vectors(p)
@@ -141,19 +142,9 @@ class Run():
 		# data organized as ['tree']['polarity'][section][segment]
 		# loop over dcs fields
 		for f_i,f in enumerate(p['field']):
-			# FIXME
-			# use Vector.play method to drive time-dependnent extracellular field
-			# create time vector for events
-			# create vector to control field magitude
-			# calculate max e_extracellular for each segment
-			# apply vector.play for each segment
-
 			
 			# insert extracellular field
 			dcs = stims.DCS(cell=0, field_angle=p['field_angle'], intensity=f, field_on=p['field_on'], field_off=p['field_off'])
-
-			
-			# dcs.e_vec.play_remove()
 
 			# run time
 			h.dt = p['dt']

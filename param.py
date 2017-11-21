@@ -34,15 +34,18 @@ class Default(object):
 			'nsec_apical_dist' : 1,
 			'syn_types' : ['ampa', 'nmda', 'clopath'],
 
-			'record_variables' : {'v' : {'range':'v'},
+			'record_variables' : 
+			{
+			'v' : {'range':'v'},
 			'gbar' : {'syn':'clopath'},
+			'i': {'syn':'nmda'},
 			'i_hd' : {'range' : 'hd'},
 			'ik_kad' : {'range': 'kad'},
 			'ik_kap' : {'range': 'kap'},
 			'ica_calH' : {'range':'calH'},
 			'ina_na3' : {'range':'na3'},
 			}, 
-			'plot_variables' : ['v','ik_kad','i_hd', 'ica_calH', 'ina_na3'],
+			'plot_variables' : ['v','i','ik_kad','i_hd', 'ica_calH', 'ina_na3'],
 
 
 			'syn_frac':[],
@@ -59,7 +62,7 @@ class Default(object):
 			'seg_idx':[],
 			'seg_dist' : {},
 			'field_angle': 0,#np.pi/2.0,
-			'field':[-50,0,50],
+			'field':[-30,0,30],
 			'field_color':['b','k','r'],
 			'field_on':20,
 			'field_off': 70,
@@ -100,16 +103,16 @@ class Default(object):
 			'gna' :  1.*0.025,#.025,				# peak sodium conductance (mho/cm2)
 			'dgna' : -.000025,			# change in sodium conductance with distance (ohm/cm2/um) from Kim 2015
 			'ena' : 55.,					# sodium reversal potential (mV)
-			'AXONM' : 5.,				# multiplicative factor for axonal conductance
+			'AXONM' : 100.,				# multiplicative factor for axonal conductance
 			'gkdr' : 1.*0.01,#0.01,				# delayed rectifier potassium peak conductance (mho/cm2)
 			'ek' : -90.,					# potassium reversal potential
 			'celsius' : 35.0,  				# temperature (degrees C)
 			'KMULT' :  1.*0.03,#0.03,			# multiplicative factor for distal A-type potassium conductances
 			'KMULTP' : 1.*.03,#0.03,				# multiplicative factor for proximal A-type potassium conductances
-			'ghd' : 0.*0.75*0.0001,#0.0001,			# peak h-current conductance (mho/cm2)
+			'ghd' : 1.*0.75*0.0001,#0.0001,			# peak h-current conductance (mho/cm2)
 			'gcalbar': 1.*.00125 ,			# L-type calcium conductance from Kim et al. 2015 (mho/cm2)
 			'ehd' : -30.,					# h-current reversal potential (mV)
-			'kl_hd' : -5,#-8.,
+			'kl_hd' : -5.,#-8.,
 			'vhalfl_hd_prox' : -83.,#-73,			# activation threshold for proximal h current (mV)
 			'vhalfl_hd_dist' : -83.,#-81,			# activation threshold for distal h-current (mV)
 			'vhalfl_kad' : -56.,#-56.,			# inactivation threshold for distal a-type current (mV)
@@ -392,6 +395,33 @@ class Experiment(Default):
 
 		# load cell
 		self.p['cell'] = cell.CellMigliore2005(self.p)
+		# self.p['cell'] = cell.PyramidalCell(self.p)
+		self.seg_distance(self.p['cell'])
+		# randomly choose active segments 
+
+		self.choose_seg_manual(sec_list=self.p['sec_list'], seg_list=self.p['seg_list'])
+		
+		# set weights for active segments
+		self.set_weights(seg_idx=self.p['seg_idx'], w_mean=self.p['w_mean'], w_std=self.p['w_std'], w_rand=self.p['w_rand'])
+
+		# delete created cell
+		# self.cell=None
+
+	def exp_8(self, **kwargs):
+		""" vary gradient of Ka and Ih
+
+		measure peak membrane depolarization in response to synaptic input
+	
+		"""
+		# update parameters
+		for key, val in kwargs.iteritems():
+			self.p[key] = val
+
+		self.p['data_folder'] = 'Data/'+self.p['experiment']+'/'
+		self.p['fig_folder'] =  'png figures/'+self.p['experiment']+'/'
+
+		# load cell
+		self.p['cell'] = cell.PyramidalCylinder(self.p)
 		# self.p['cell'] = cell.PyramidalCell(self.p)
 		self.seg_distance(self.p['cell'])
 		# randomly choose active segments 

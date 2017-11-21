@@ -9,7 +9,8 @@ import stims
 import param
 import run_control
 
-class PyramidalCell:
+
+class PyramidalCylinder:
 	""" 4 compartment pyramidal cell
 	"""
 	def __init__(self, p):
@@ -70,7 +71,7 @@ class PyramidalCell:
 
 				self.geo[tree][sec_i].insert('pas')
 				# passive conductance (S/cm2)
-				self.geo[tree][sec_i].g_pas = 1/p['RmAll']			
+				self.geo[tree][sec_i].g_pas = 1./p['RmAll']			
 				# leak reversal potential (mV)	
 				self.geo[tree][sec_i].e_pas = p['Vrest']				
 				# specific capacitance (uf/cm2)
@@ -84,9 +85,6 @@ class PyramidalCell:
 		self.geo['basal'][0].connect(self.geo['soma'][0](0),0)
 		self.geo['apical_prox'][0].connect(self.geo['soma'][0](1),0)
 		self.geo['apical_dist'][0].connect(self.geo['apical_prox'][0](1),0)
-
-
-
 
 		h.xopen('fixnseg.hoc')
 
@@ -123,7 +121,7 @@ class PyramidalCell:
 				if tree_key == 'soma':
 					# voltage gated sodium
 					sec.insert('na3')
-					sec.gbar_na3 = p['gna']	
+					sec.gbar_na3 = p['gna']*p['AXONM']
 					# h-current			
 					sec.insert('hd')
 					sec.ghdbar_hd = p['ghd']				
@@ -195,19 +193,19 @@ class PyramidalCell:
 				    	# print seg_dist, seg.gbar_na3
 				    	
 				    	# h current
-				    	seg.ghdbar_hd = p['ghd']*(1+p['ghd_grad']*seg_dist/100)
+				    	seg.ghdbar_hd = p['ghd']*(1+p['ghd_grad']*(seg_dist/100.)/(p['L_apical_prox']/250.))
 				    	
 				    	# A-type potassium
-				        if seg_dist > 100:	# distal
+				        if seg_dist > 100.:	# distal
 				            seg.vhalfl_hd = p['vhalfl_hd_dist']
 				            seg.vhalfl_kad = p['vhalfl_kad']
 				            seg.vhalfn_kad = p['vhalfn_kad']
-				            seg.gkabar_kad = p['KMULT']*(1+p['ka_grad']*seg_dist/100)
+				            seg.gkabar_kad = p['KMULT']*(1+p['ka_grad']*(seg_dist/100.)/(p['L_apical_prox']/250.))
 				        else:	# proximal
 				            seg.vhalfl_hd = p['vhalfl_hd_prox']
 				            seg.vhalfl_kap = p['vhalfl_kap']
 				            seg.vhalfn_kap = p['vhalfn_kap']
-				            seg.gkabar_kap = p['KMULTP']*(1+p['ka_grad']*seg_dist/100)
+				            seg.gkabar_kap = p['KMULTP']*(1+p['ka_grad']*(seg_dist/100.)/(p['L_apical_prox']/250.))
 
 				        # loop over synapse types
 				        for syn_key,syn in self.syns[tree_key].iteritems():
@@ -396,19 +394,19 @@ class CellMigliore2005:
 				    	# print seg_dist, seg.gbar_na3
 				    	
 				    	# h current
-				    	seg.ghdbar_hd = p['ghd']*(1+p['ghd_grad']*seg_dist/100)
+				    	seg.ghdbar_hd = p['ghd']*(1+p['ghd_grad']*seg_dist/100.)
 				    	
 				    	# A-type potassium
-				        if seg_dist > 100:	# distal
+				        if seg_dist > 100.:	# distal
 				            seg.vhalfl_hd = p['vhalfl_hd_dist']
 				            seg.vhalfl_kad = p['vhalfl_kad']
 				            seg.vhalfn_kad = p['vhalfn_kad']
-				            seg.gkabar_kad = p['KMULT']*(1+p['ka_grad']*seg_dist/100)
+				            seg.gkabar_kad = p['KMULT']*(1+p['ka_grad']*seg_dist/100.)
 				        else:	# proximal
 				            seg.vhalfl_hd = p['vhalfl_hd_prox']
 				            seg.vhalfl_kap = p['vhalfl_kap']
 				            seg.vhalfn_kap = p['vhalfn_kap']
-				            seg.gkabar_kap = p['KMULTP']*(1+p['ka_grad']*seg_dist/100)
+				            seg.gkabar_kap = p['KMULTP']*(1+p['ka_grad']*seg_dist/100.)
 
 				        # loop over synapse types
 				        for syn_key,syn in self.syns[tree_key].iteritems():
@@ -482,6 +480,7 @@ class Syn_act:
 
 							# loop over stimulation bursts
 							for syn_stim_i,syn_stim in enumerate(stim):
+
 								self.nc[tree_key][syntype_key][sec_i][seg_i].append( h.NetCon(syn_stim, syns[tree_key][syntype_key][sec][seg], 0, 0, p['w_list'][sec_i][seg_i]))
 
 class DendriteTransform:

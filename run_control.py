@@ -18,6 +18,8 @@ import time
 import uuid
 import analysis
 import sys
+import copy
+
 h.load_file("stdrun.hoc")
 
 # 
@@ -126,7 +128,8 @@ class Experiment:
 					tree=p['tree'], 
 					sec_idx=p['sec_idx'], 
 					seg_idx=p['seg_idx'],
-					variables=p['plot_variables'])
+					variables=p['plot_variables'],
+					x_var='t')
 
 		self.p = p
 
@@ -402,6 +405,75 @@ class Experiment:
 						variables=p['plot_variables'])
 
 		self.p = p
+	
+	def exp_8(self, **kwargs):
+		""" vary Ih parameters and measure effects on peak EPSP
+		"""
+		vhalfl_hd_prox=copy.copy(kwargs['vhalfl_hd_prox'])
+		vhalfl_hd_dist=copy.copy(kwargs['vhalfl_hd_dist'])
+		ghd = copy.copy(kwargs['ghd'])
+		kl_hd = copy.copy(kwargs['kl_hd'])
+
+		plots = analysis.PlotRangeVar()
+
+		# loop over trials
+		for tri in range(kwargs['trials']):
+			for conductance_i, conductance  in enumerate(kwargs['conductance_range']):
+				for vhalfl_h_i, vhalfl_h in enumerate(kwargs['activation_range_h']):
+					for slope_i, slope in enumerate(kwargs['slope_range']):
+						if conductance==0. and (vhalfl_h_i >0 or slope_i> 0):
+							continue
+
+						# set Ih and Ka conductance parameters
+						kwargs['vhalfl_hd_prox'] = vhalfl_h+vhalfl_hd_prox
+						kwargs['vhalfl_hd_dist'] = vhalfl_h+vhalfl_hd_dist
+						kwargs['ghd'] = conductance*ghd
+						kwargs['kl_hd'] = kl_hd-slope
+
+						# load rest of parameters from parameter module
+						p = param.Experiment(**kwargs).p
+
+						print 'vhalfl_hd_prox:', p['vhalfl_hd_prox'] 
+						print 'ghd:', p['ghd'] 
+						print 'kl_hd:', p['kl_hd']
+
+
+						# store trial number
+						p['trial']=tri
+						
+						# create unique identifier for each trial
+						p['trial_id'] = str(uuid.uuid4())
+						
+						# start timer
+						start = time.time() 
+						
+						# run simulation
+						sim = run.Run(p)	
+
+						# end timer
+						end = time.time() 
+
+						# print trial and simulation time
+						print 'trial'+ str(tri) + ' duration:' + str(end -start) 
+						
+						# save data for eahc trial
+						run.save_data(sim.data)
+
+						plots.plot_trace(data=sim.data, 
+						tree=p['tree'], 
+						sec_idx=p['sec_idx'], 
+						seg_idx=p['seg_idx'],
+						variables=p['plot_variables'],
+						x_var='t')
+
+						plots.plot_trace(data=sim.data, 
+						tree=p['tree'], 
+						sec_idx=p['sec_idx'], 
+						seg_idx=p['seg_idx'],
+						variables=p['plot_variables'],
+						x_var='v')
+
+		self.p = p
 
 class Arguments:
 	"""
@@ -418,8 +490,8 @@ class Arguments:
 		# weights = np.arange(.5, 1, .1)
 		weights = [.003]
 		self.kwargs = {
-		'exp' : 'exp_1', 
-		'tree' : 'basal',
+		'experiment' : 'exp_1', 
+		'tree' : 'apical',
 		'trials' : 1,
 		'w_mean' : weights,#[.001],
 		'w_std' : [.002],
@@ -432,7 +504,7 @@ class Arguments:
 		"""
 		weights = np.arange(.005, .03, .005)
 		# weights = np.arange(.5, 1, .1)
-		weights = [0.0015]#[.03]
+		weights = [0.0005]#[.03]
 		self.kwargs = {
 		'experiment' : 'exp_2', 
 		'tree' : 'apical_tuft' ,
@@ -557,11 +629,49 @@ class Arguments:
 		'field_off':80,
 		}
 
+	def exp_8(self):
+		""" repeat experiment 7 using simplified cylinder model
+
+		vary Ih parameters and measure effects on peak EPSP
+		"""
+		
+		weights = 0.005
+		self.kwargs = {
+		'activation_range_h': np.arange(0., 25., 4.),
+		'conductance_range' : np.arange(0., 3., .5),
+		'slope_range' : np.arange(0.,4., 1.),
+		'gna' : 0.,
+		'dgna':0,
+		'Vrest':-65.,
+		'gcalbar': 0.,
+		'kl_hd' : -4.,
+		'ghd' : 0.00005,
+		'KMULT' :  .5*0.03,
+		'KMULTP' :  .5*0.03,
+		'ghd_grad' : 5,
+		'ka_grad' : 1,
+		'vhalfl_hd_prox' : -95.,#-73.,			
+		'vhalfl_hd_dist' : -95.,
+		'experiment' : 'exp_8', 
+		'tree' : 'apical_prox',
+		'trials' : 1,
+		'w_mean' : weights,#[.001],
+		'w_std' : [.002],
+		'w_rand' : False, 
+		'syn_frac' : 0,
+		'seg_list' : [5,10,20],
+		'sec_list' : [0,0,0],
+		'pulses':4,
+		'tstop':70,
+		'field_on':15,
+		'field_off':80,
+		}
+
 
 if __name__ =="__main__":
-	kwargs = Arguments('exp_2').kwargs
+	kwargs = Arguments('exp_8').kwargs
 	x = Experiment(**kwargs)
-	analysis.Experiment(experiment='exp_2')
+	analysis.Experiment(**kwargs)
 	# plots = analysis.Voltage()
 	# plots.plot_all(x.p)
 	# analysis.Experiment(exp='exp_3')

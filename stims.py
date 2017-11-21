@@ -96,6 +96,7 @@ class DCS:
                 # calculate extracellular potential
                 e = conversion*intensity*mag*np.cos(angle_field)
 
+                # FIXME
                 # create vectors for play mechanism
                 self.e_vec[sec_i].append(h.Vector(3))
                 self.e_vec[sec_i][seg_i].x[0] = 0

@@ -366,7 +366,6 @@ class Spikes():
 		# detect indeces where vector crosses threshold in the positive direction
 		return {'times':spike_times,'train':spike_train}
 
-
 class PlotRangeVar():
 	""" plot different range variables over time 
 	"""
@@ -418,8 +417,7 @@ class PlotRangeVar():
 					seg_idx=p_data['seg_idx'],
 					variables=p['plot_variables'])
 
-
-	def plot_trace(self, data, tree, sec_idx, seg_idx, soma=True, variables=['v']):
+	def plot_trace(self, data, tree, sec_idx, seg_idx, soma=True, variables=['v'], x_var='t'):
 		""" Create a figure containing a subplot for each segment specified in seg_idx
 
 		variable is a list of range variable key words indicating which varaible to plot.  A new figure is created and saved for each variable
@@ -473,7 +471,7 @@ class PlotRangeVar():
 
 					# adjust limits
 					# plt.ylim([-70, -50])
-					plt.xlim([10, p['tstop']])
+					# plt.xlim([10, p['tstop']])
 					
 					# iterate over stimulation polarity
 					for pol in range(n_pol):
@@ -487,11 +485,19 @@ class PlotRangeVar():
 								# retrieve time series to plot
 								v = data[tree+'_'+var][pol][sec_idx[sec_i]][seg]
 
+								if x_var =='t':
+									xv=t
+								else:
+									xv = data[tree+'_'+x_var][pol][sec_idx[sec_i]][seg]
+
+
 							# set plot color based on stimulation polarity
 							color = p['field_color'][pol]
 							
 							# add trace to corresponding subplot
-							plt.plot(t, v, color=color)
+							plt.plot(xv, v, color=color)
+							plt.xlabel(x_var)
+							plt.ylabel(var)
 
 							# if plotting soma trace
 			for pol in range(n_pol):
@@ -501,16 +507,23 @@ class PlotRangeVar():
 					'soma_'+var
 					# retrieve data to plot
 					v = data['soma_'+var][pol][0][0] 
+
+					if x_var =='t':
+						xv=t
+					else:
+						xv = data['soma_'+x_var][pol][0][0]
 					
 					# set plot color
 					color = p['field_color'][pol]
 					
-					plt.plot(t, v, color=color)
+					plt.plot(xv, v, color=color)
 					plt.title('soma')
-					plt.xlim([10, p['tstop']])
+					plt.xlabel(x_var)
+					plt.ylabel(var)
+					# plt.xlim([10, p['tstop']])
 		
 			# save and close figure
-			fig[var].savefig(p['data_folder']+p['experiment']+'_'+p['tree']+'_trace_'+var+'_'+p['trial_id']+'.png', dpi=300)
+			fig[var].savefig(p['data_folder']+p['experiment']+'_'+p['tree']+'_trace_'+x_var+'_x_'+var+'_'+p['trial_id']+'.png', dpi=300)
 			plt.close(fig[var])
 
 class Shapeplot():
@@ -1084,6 +1097,9 @@ class Experiment:
 		fig['conductance'].savefig(data_folder+'_IhKa_conductance'+'.png', dpi=250)
 		plt.close(fig['conductance'])
 
+		# FIXMEEEEE
+		# plot Ih as a function of membrane potential for each compartment
+
 	def exp_7(self, **kwargs):
 		""" plot asymmetric voltage change at soma as a function of Ih and Ka conductances and gradients
 		"""
@@ -1104,8 +1120,10 @@ class Experiment:
 		files = os.listdir(data_folder)
 		# data files
 		data_files = [file for file in files if 'data' in file]
+		plot_files = [file for file in files if 'trace' in file]
 		# unique identifiers for each file type
 		data_files_id= [file[-36:-1] for file in files if 'data' in file]
+		plot_files_id = [file[-36:-1] for file in files if 'trace' in file]
 
 		# if group variable in folder, load variable
 		if 'id_list.pkl' in files:
@@ -1148,21 +1166,6 @@ class Experiment:
 					else:
 						new_mat=1
 						mat[measure][condition][location] = np.zeros([len(g_range), len(activation_range), len(slope_range)])
-
-		# if new_mat==1:
-		# 	mat = {}
-		# 	for measure_key, measure in enumerate(measures):
-		# 		mat[measure] = {}
-		# 		for condition_i, condition in enumerate(conditions):
-		# 			mat[measure][condition]= {}
-		# 			for location_i, location in enumerate(locations):
-
-		# 				mat[measure][condition][location] = np.zeros([len(g_range), len(activation_range), len(slope_range)])
-
-		# asymmetry = np.zeros([len(g_range), len(g_range), len(grad_range), len(grad_range)])
-		# cathodal = np.zeros([len(g_range), len(g_range), len(grad_range), len(grad_range)])
-		# anodal = np.zeros([len(g_range), len(g_range), len(grad_range), len(grad_range)])
-		# control = np.zeros([len(g_range), len(g_range), len(grad_range), len(grad_range)])
 
 		# vectors of parameter values
 		g_h = g_range*kwargs['ghd'] 
@@ -1223,6 +1226,9 @@ class Experiment:
 
 									if mat[measure][condition][location][gh_i, activations_i, slopes_i] > 1:
 										print measure, location, condition, ':', mat[measure][condition][location][gh_i, activations_i, slopes_i]
+
+					fig = plt.figure()
+					h_trace = data
 		# save processed list
 		with open(data_folder+'id_list'+'.pkl', 'wb') as output:pickle.dump(id_list, output,protocol=pickle.HIGHEST_PROTOCOL)
 		
@@ -1248,24 +1254,228 @@ class Experiment:
 
 		#FIX MEEEEEEEE
 		# choose parameters to plot
-		fig={}
-		fig['conductance'] = plt.figure(1)
-		plot_mat = mat['epsp']['asymmetry']['soma'][:,:,1]#best_idx[2]]
-		plt.imshow(plot_mat)
-		plt.colorbar()
-		plt.ylabel('Ih conductance')
-		plt.xlabel('Ih activation gate half max voltage')
-		plt.yticks(range(len(g_h)), g_h)
-		plt.xticks(range(len(activations)), activations)
-		print slopes[2]
-		plt.title('Asymmetry in soma EPSP peak (mV), kl='+ str(int(slopes[1])))
-		fig['conductance'].savefig(data_folder+'_Ih_conductance'+'.png', dpi=250)
-		plt.close(fig['conductance'])
+		fig=[]
+		for parameter in range(mat['epsp']['asymmetry']['soma'].shape[2]):
+			fig.append(plt.figure(parameter))
+			plot_mat = mat['epsp']['asymmetry']['soma'][:,:,parameter]#best_idx[2]]
+			plt.imshow(plot_mat)
+			plt.colorbar()
+			plt.ylabel('Ih conductance')
+			plt.xlabel('Ih activation gate half max voltage')
+			plt.yticks(range(len(g_h)), g_h)
+			plt.xticks(range(len(activations)), activations)
+			plt.title('Asymmetry in soma EPSP peak (mV), kl='+ str(int(slopes[parameter])))
+			fig[parameter].savefig(data_folder+'_Ih_conductance_kl_'+str(int(slopes[parameter]))+'.png', dpi=250)
+			plt.close(fig[parameter])
+
+		# FIXMEEEEE
+		# plot Ih as a function of membrane potential for each compartment
+		plot_files_hv = [file for file in plot_files if '_hv_' in file]
+		plot_files_hv_id = [file[-36:-1] for file in plot_files if '_v_x_i_hd_' in file]
+		for data_file_i, data_file in enumerate(data_files):
+			if data_files_id[data_file_i] not in plot_files_hv_id:
+				with open(data_folder+data_file, 'rb') as pkl_file:
+					data = pickle.load(pkl_file)
+				p = data['p']
+				PlotRangeVar().plot_trace(
+					data=data, 
+					tree=p['tree'], 
+					sec_idx=p['sec_idx'], 
+					seg_idx=p['seg_idx'],
+					variables=p['plot_variables'],
+					x_var='v')
+
+	def exp_8(self, **kwargs):
+		""" plot asymmetric voltage change at soma as a function of Ih and Ka conductances and gradients
+		"""
+		# FIXME
+		npol = 3 
+
+		# things to measure
+		measures = ['epsp', 'ss']
+
+		locations = ['soma', 'apical_prox']
+
+		conditions = ['cathodal', 'control', 'anodal', 'asymmetry']
+
+		# identify data folder
+		data_folder = 'Data/'+kwargs['experiment']+'/'
+
+		# all files in directory
+		files = os.listdir(data_folder)
+		# data files
+		data_files = [file for file in files if 'data' in file]
+		plot_files = [file for file in files if 'trace' in file]
+		# unique identifiers for each file type
+		data_files_id= [file[-36:-1] for file in files if 'data' in file]
+		plot_files_id = [file[-36:-1] for file in files if 'trace' in file]
+
+		# if group variable in folder, load variable
+		if 'id_list.pkl' in files:
+			print 'id_list found'
+			
+			with open(data_folder+'id_list'+'.pkl', 'rb') as pkl_file:
+					id_list = pickle.load(pkl_file)
+		
+		# otherwise create variable
+		else:
+			id_list = []
+
+		# print id_list
+
+		# kwargs = run_control.Arguments('exp_6').kwargs
+		# g_range = run_control.Arguments('exp_6').kwargs['conductance_range']
+		# grad_range = run_control.Arguments('exp_6').kwargs['grad_range']
+		g_range = kwargs['conductance_range']
+		activation_range = kwargs['activation_range_h']
+		slope_range = kwargs['slope_range']
+		
+		# N-dimensional array for storing data (each tested parameter is a dimension)
+		
+		# varaible to decide whether to create new matrix to store data
+		new_mat=0
+		# iterate over measures, conditions, locations
+		mat={}
+		for measure_key, measure in enumerate(measures):
+			mat[measure] = {}
+			for condition_i, condition in enumerate(conditions):
+				mat[measure][condition]= {}
+				for location_i, location in enumerate(locations):
+					# string to save data
+					save_string = '_IhMat_'+'_'+measure+'_'+location+'_'+condition+'.pkl'
+					# if data file already exists
+					if save_string in files:
+						# load data
+						with open(data_folder+save_string, 'rb') as pkl_file:
+							mat[measure][condition][location] = pickle.load(pkl_file)
+					else:
+						new_mat=1
+						mat[measure][condition][location] = np.zeros([len(g_range), len(activation_range), len(slope_range)])
+
+		# vectors of parameter values
+		g_h = g_range*kwargs['ghd'] 
+		activations = activation_range+kwargs['vhalfl_hd_prox']
+		slopes = kwargs['kl_hd'] - slope_range
+		# iterate over data files
+		for data_file_i, data_file in enumerate(data_files):
+			
+			if data_file_i >=0:
+				print 'data_file:', data_file_i
+
+				# check if data has been processed already
+				if data_file not in id_list:
+
+					# open unprocessed data
+					with open(data_folder+data_file, 'rb') as pkl_file:
+						data = pickle.load(pkl_file)
+
+						print 'file', data_file_i,  'opened'
+					
+					# add to processed list
+					id_list.append(data_file)
+
+					# parameter dictionary
+					p = data['p']
+
+					# detect parameter combination for specific file
+					gh_i = [i for i, val in enumerate(g_h) if p['ghd']==val]
+					activations_i = [i for i, val in enumerate(activations) if p['vhalfl_hd_prox']==val]
+					slopes_i = [i for i, val in enumerate(slopes) if p['kl_hd']==val]
+					
+					# epsp onset
+					onset = int(p['warmup']*1./p['dt'])
+					print onset
+
+					# iterate over things to measure
+					for measure_i, measure in enumerate(measures):
+						# iterate over locations to record from
+						for location_i, location in enumerate(locations):
+							# iterate over stimulation conditions
+							for condition_i, condition in enumerate(conditions):
+								# set window to take measurements
+								if 'epsp' in measure:
+									window1 = onset
+									window2 = len(data['t'][0])
+								elif 'ss' in measure:
+									window1 = onset-2
+									window2 = onset-1
+
+								if condition is not 'asymmetry':
+									# measure peak epsp and store in data array
+									mat[measure][condition][location][gh_i, activations_i, slopes_i] = np.amax(data[location+'_v'][condition_i][0][-1][window1:window2])
+									# print measure, location, condition, ':', mat[measure][condition][location][gh_i, ka_i, grad_h_i, grad_ka_i]
+
+								elif condition is 'asymmetry':
+									# measure asymmetry as anodal effect + cathodal effect
+									mat[measure][condition][location][gh_i, activations_i, slopes_i] = mat[measure]['anodal'][location][gh_i, activations_i, slopes_i] + mat[measure]['cathodal'][location][gh_i, activations_i, slopes_i] - 2.*mat[measure]['control'][location][gh_i, activations_i, slopes_i]
+
+									if mat[measure][condition][location][gh_i, activations_i, slopes_i] > 1:
+										print measure, location, condition, ':', mat[measure][condition][location][gh_i, activations_i, slopes_i]
+
+					fig = plt.figure()
+					h_trace = data
+		# save processed list
+		with open(data_folder+'id_list'+'.pkl', 'wb') as output:pickle.dump(id_list, output,protocol=pickle.HIGHEST_PROTOCOL)
+		
+		# save asymmetry data matrix 
+		for measure_i, measure in enumerate(measures):
+			for location_i, location in enumerate(locations):
+				for condition_i, condition in enumerate(conditions):
+					save_data = mat[measure][condition][location]
+					save_string = data_folder+'_IhMat_'+'_'+measure+'_'+location+'_'+condition+'.pkl'
+
+					# save matrix for each condition separately
+					with open(save_string, 'wb') as output:
+						pickle.dump(save_data, output,protocol=pickle.HIGHEST_PROTOCOL)
+
+		# find maximum asymmetry
+		best_val = np.amax(mat['epsp']['asymmetry']['soma'])
+		best = np.argmax(mat['epsp']['asymmetry']['soma'])
+		best_idx  = np.unravel_index(best, (len(g_range), len(activation_range), len(slope_range)))
+		best_file = id_list[best]
+		print best_idx
+		print best_val
+		print best_file
+
+		#FIX MEEEEEEEE
+		# choose parameters to plot
+		fig=[]
+		for parameter in range(mat['epsp']['asymmetry']['soma'].shape[2]):
+			fig.append(plt.figure(parameter))
+			plot_mat = mat['epsp']['asymmetry']['soma'][:,:,parameter]#best_idx[2]]
+			plt.imshow(plot_mat)
+			plt.colorbar()
+			plt.ylabel('Ih conductance')
+			plt.xlabel('Ih activation gate half max voltage')
+			plt.yticks(range(len(g_h)), g_h)
+			plt.xticks(range(len(activations)), activations)
+			plt.title('Asymmetry in soma EPSP peak (mV), kl='+ str(int(slopes[parameter])))
+			fig[parameter].savefig(data_folder+'_Ih_conductance_kl_'+str(int(slopes[parameter]))+'.png', dpi=250)
+			plt.close(fig[parameter])
+
+		# FIXMEEEEE
+		# plot Ih as a function of membrane potential for each compartment
+		# plot_files_hv = [file for file in plot_files if '_hv_' in file]
+		# plot_files_hv_id = [file[-36:-1] for file in plot_files if '_v_x_i_hd_' in file]
+		# for data_file_i, data_file in enumerate(data_files):
+		# 	if data_files_id[data_file_i] not in plot_files_hv_id:
+		# 		with open(data_folder+data_file, 'rb') as pkl_file:
+		# 			data = pickle.load(pkl_file)
+		# 		p = data['p']
+		# 		PlotRangeVar().plot_trace(
+		# 			data=data, 
+		# 			tree=p['tree'], 
+		# 			sec_idx=p['sec_idx'], 
+		# 			seg_idx=p['seg_idx'],
+		# 			variables=p['plot_variables'],
+		# 			x_var='v')
+				
+
 
 if __name__ =="__main__":
 	# Weights(param.exp_3().p)
 	# # Spikes(param.exp_3().p)
-	kwargs = run_control.Arguments('exp_7').kwargs
+	kwargs = run_control.Arguments('exp_8').kwargs
 	# plots = Voltage()
 	# plots.plot_all(param.Experiment(**kwargs).p)
 	Experiment(**kwargs)
