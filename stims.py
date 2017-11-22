@@ -8,22 +8,6 @@ Created on Wed Jun 28 03:06:39 2017
 import numpy as np
 from neuron import h
 
-
-class TestStim:
-    def __init__(self):
-        pass
-
-    def xtra(self, v):
-        print 't:', h.t
-        for sec in h.allsec():
-            sec.insert('extracellular')
-            for seg in sec:
-                seg.e_extracellular = v
-
-
-    def hi(self):
-        print 'hello from hi, h.t = %g' % h.t
-
 # extracellular field
 class DCS:
     """
@@ -117,8 +101,6 @@ class DCS:
                 # seg.e_extracellular = e
 
                 # print sec.name(), seg_y, seg.x, seg.e_extracellular
-
-
 
     def seg_location(self, sec):
         """ given a neuron section, output the 3d coordinates of each segment in the section

@@ -136,50 +136,61 @@ class Default(object):
 		""" choose random segments to activate
 
 		arguments:
-		syn_list = list of all synapses to be chosen from ogranized as [section number][segment number]
+		syn_list = list of all synapses to be chosen from ogranized as [trees][section number][segment number][synapse type]
 
 		syn_frac = fraction of synapses to be chosen, with equal probability for all synapses
 
 		updates the parameter dictionary according to the chosen synapses
 		"""
+		self.p['sec_list']={}
+		self.p['seg_list']={}
+		self.p['sec_idx']={}
+		self.p['seg_idx']={}
+		for tree_key, tree in syn_list.iteritems():
 
-		# list all segments as [[section,segment]] 
-		segs_all = [[sec_i,seg_i] for sec_i,sec in enumerate(syn_list) for seg_i,seg in enumerate(syn_list[sec_i])]
+			# list all segments as [[section,segment]] 
+			segs_all = [[sec_i,seg_i] for sec_i,sec in enumerate(tree) for seg_i,seg in enumerate(tree[sec_i])]
 
-		# choose segments to activate
-		segs_choose = np.random.choice(len(segs_all),int(syn_frac*len(segs_all)),replace=False)
+			# choose segments to activate
+			segs_choose = np.random.choice(len(segs_all), int(syn_frac*len(segs_all)), replace=False)
 
-		# list of active sections (contains duplicates)
-		sec_list = [segs_all[a][0] for a in segs_choose]
+			# list of active sections (contains duplicates)
+			sec_list = [segs_all[a][0] for a in segs_choose]
 		
-		# list of active segments
-		seg_list = [segs_all[a][1] for a in segs_choose]
+			# list of active segments
+			seg_list = [segs_all[a][1] for a in segs_choose]
 
-		# uniqure list of active sections
-		sec_idx  = list(set(sec_list))
+			# uniqure list of active sections
+			sec_idx  = list(set(sec_list))
 		
-		# list of active segments as [unique section][segments]
-		seg_idx = []
-		for sec in sec_idx:
-			seg_idx.append([seg_list[sec_i] for sec_i,sec_num in enumerate(sec_list) if sec_num==sec])
+			# list of active segments as [unique section][segments]
+			seg_idx = []
+			for sec in sec_idx:
+				seg_idx.append([seg_list[sec_i] for sec_i,sec_num in enumerate(sec_list) if sec_num==sec])
 
-		# update parameter dictionary
-		self.p['sec_list'] = sec_list
-		self.p['seg_list'] = seg_list
-		self.p['sec_idx'] = sec_idx
-		self.p['seg_idx'] = seg_idx
-		self.p['syn_frac'] = syn_frac
+			# update parameter dictionary
+			self.p['sec_list'][tree_key] = sec_list
+			self.p['seg_list'][tree_key] = seg_list
+			self.p['sec_idx'][tree_key] = sec_idx
+			self.p['seg_idx'][tree_key] = seg_idx
+			self.p['syn_frac'] = syn_frac
 
-	def choose_seg_manual(self, sec_list, seg_list):
+	def choose_seg_manual(self, trees, sec_list, seg_list):
 		""" manually choose segments to activate
+
+		sec_list and seg_list should be organized as [tree][list of sections/segments].  Length of each list should match
 		"""
-		# uniqure list of active sections
-		sec_idx  = list(set(sec_list))
-		
-		# list of active segments as [unique section][segments]
-		seg_idx = []
-		for sec in sec_idx:
-			seg_idx.append([seg_list[sec_i] for sec_i,sec_num in enumerate(sec_list) if sec_num==sec])
+		sec_idx = {}
+		seg_idx = {}
+		for tree_key, tree in sec_list.iteritems():
+
+			# uniqure list of active sections
+			sec_idx[tree_key]  = list(set(tree))
+			
+			# list of active segments as [unique section][segments]
+			seg_idx[tree_key] = []
+			for sec in sec_idx:
+				seg_idx[tree_key].append([seg_list[tree_key][sec_i] for sec_i,sec_num in enumerate(tree) if sec_num==sec])
 
 		# update parameter dictionary
 		self.p['sec_list'] = sec_list
@@ -188,20 +199,27 @@ class Default(object):
 		self.p['seg_idx'] = seg_idx
 
 	def set_weights(self, seg_idx, w_mean, w_std, w_rand):
-		w_list = []
-		# loop over sections
-		for sec_i,sec in enumerate(seg_idx):
-			w_list.append([])
-			# loop over segments
-			for seg_i,seg in enumerate(seg_idx[sec_i]):
+		"""
+		sets weights using nested list with same structure as seg_idx: [tree][section index][segment index]
+		"""
+		w_list = {}
 
-				# if weights are randomized
-				if w_rand:
-					# choose from normal distribution
-					w_list[sec_i].append(np.random.normal(w_mean,w_std))
-				# otherwise set all weights to the same
-				else:
-					w_list[sec_i].append(w_mean)
+		for tree_key, tree in seg_idx.iteritems():
+			w_list[tree_key]=[]
+			# loop over sections
+			for sec_i,sec in enumerate(tree):
+				# add sections dimension to weights list
+				w_list[tree_key].append([])
+				# loop over segments
+				for seg_i,seg in enumerate(sec):
+
+					# if weights are randomized
+					if w_rand:
+						# choose from normal distribution
+						w_list[tree_key][sec_i].append(np.random.normal(w_mean,w_std))
+					# otherwise set all weights to the same
+					else:
+						w_list[tree_key][sec_i].append(w_mean)
 
 		# update parameter dictionary
 		self.p['w_list']=w_list

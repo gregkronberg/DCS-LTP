@@ -33,35 +33,76 @@ class Experiment:
 
 	# random fraction of all synapses in a given tree
 	def exp_1(self, **kwargs):
-		exp = 'exp_1'
-		tree = kwargs['tree']
-		trials = kwargs['trials']
-		w_mean = kwargs['w_mean']
-		w_std = kwargs['w_std']
-		w_rand = kwargs['w_rand']
-		syn_frac = kwargs['syn_frac']
+
+		def exp_1(self, **kwargs):
+		""" randomly activate subset of synapses
+
+		set parameters in dictionary p
+		
+		p cannot contain any hoc objects, as this will be pickled and stored with each experiment so that the parameters can be retrieved
+	
+		"""
+		""" choose a specific set of synapses, iterate over increasing synaptic weights, measure resulting LTP and dendritic spike initiation
+		"""
+		# parameters to update from default
+		weights = np.arange(.005, .03, .005)
+		# weights = np.arange(.5, 1, .1)
+		weights = [.003]
+		self.kwargs = {
+		'experiment' : 'exp_1', 
+		'tree' : 'apical',
+		'trials' : 1,
+		'w_mean' : weights,#[.001],
+		'w_std' : [.002],
+		'w_rand' : False, 
+		'syn_frac' : .05
+		}
+
+		# instantiate default parameter class
+		self.p_class = param.Default()
+		# default parameters
+		self.p = p_class.p
+		# update parameters
+		for key, val in self.kwargs.iteritems():		# update parameters
+			self.p[key] = val
+		# data and figure folder
+		self.p['data_folder'] = 'Data/'+self.p['experiment']+'/'
+		self.p['fig_folder'] =  'png figures/'+self.p['experiment']+'/'
+
+		# load cell
+		self.p['cell'] = cell.CellMigliore2005(self.p)
+		
+		# measure distance of each segment from the soma
+		self.p_class.seg_distance(self.cell)
+		# randomly choose active segments 
+		self.p_class.choose_seg_rand(syn_list=self.cell.syns, syn_frac=self.p['syn_frac'])
+		
+		# set weights for active segments
+		self.set_weights(seg_idx=self.p['seg_idx'], w_mean=self.p['w_mean'], w_std=self.p['w_std'], w_rand=self.p['w_rand'])
 
 		# loop over trials
-		for tri in range(trials):
+		for tri in range(self.p['trials']):
 			# loop over weights
-			for w_i,w in enumerate(w_mean):
+			for w_i,w in enumerate(self.p['w_mean']):
 				# choose fraction of synapses to be activated
 				# syn_frac = np.random.normal(loc=.1, scale=.1) # chosen from gaussian
 				
 				# load rest of parameters from parameter module
-				p = param.Experiment(exp=exp, tree=tree, w_mean=w, w_std=w_std, w_rand=w_rand, syn_frac=syn_frac).p
+				# p = param.Experiment(exp=exp, tree=tree, w_mean=w, w_std=w_std, w_rand=w_rand, syn_frac=syn_frac).p
 				
+				# update weight parameter
+				self.p['w_mean'] = w
 				# store trial number
-				p['trial']=tri
+				self.p['trial']=tri
 				
 				# create unique identifier for each trial
-				p['trial_id'] = str(uuid.uuid4())
+				self.p['trial_id'] = str(uuid.uuid4())
 				
 				# start timer
 				start = time.time() 
 				
 				# run simulation
-				sim = run.Run(p)	
+				sim = run.Run(self.p)	
 
 				# end timer
 				end = time.time() 
@@ -70,9 +111,7 @@ class Experiment:
 				print 'trial'+ str(tri) + ' duration:' + str(end -start) 
 				
 				# save data for eahc trial
-				run.save_data(sim.data)
-
-		self.p = p
+				run.save_data(data=sim.data, file_name=)
 
 	# choose specific synapses
 	def exp_2(self, **kwargs):
@@ -532,6 +571,7 @@ class Experiment:
 						variables=p['plot_variables'])
 
 		self.p = p
+	
 	def exp_10(self, **kwargs):
 		""" vary Ih parameters and measure effects on peak EPSP
 		"""
@@ -936,7 +976,7 @@ class Arguments:
 if __name__ =="__main__":
 	kwargs = Arguments('exp_8').kwargs
 	x = Experiment(**kwargs)
-	analysis.Experiment(**kwargs)
+	# analysis.Experiment(**kwargs)
 	# plots = analysis.Voltage()
 	# plots.plot_all(x.p)
 	# analysis.Experiment(exp='exp_3')
