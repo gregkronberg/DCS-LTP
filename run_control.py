@@ -13,6 +13,7 @@ import numpy as np
 # import stims
 # import pickle
 import param
+import cell
 import run
 import time
 import uuid
@@ -34,13 +35,12 @@ class Experiment:
 	# random fraction of all synapses in a given tree
 	def exp_1(self, **kwargs):
 
-		def exp_1(self, **kwargs):
 		""" randomly activate subset of synapses
 
 		set parameters in dictionary p
 		
 		p cannot contain any hoc objects, as this will be pickled and stored with each experiment so that the parameters can be retrieved
-	
+
 		"""
 		""" choose a specific set of synapses, iterate over increasing synaptic weights, measure resulting LTP and dendritic spike initiation
 		"""
@@ -50,35 +50,38 @@ class Experiment:
 		weights = [.003]
 		self.kwargs = {
 		'experiment' : 'exp_1', 
-		'tree' : 'apical',
+		'trees' : ['apical_tuft', 'apical_trunk'],
 		'trials' : 1,
 		'w_mean' : weights,#[.001],
 		'w_std' : [.002],
 		'w_rand' : False, 
-		'syn_frac' : .05
+		'syn_frac' : .03
 		}
 
 		# instantiate default parameter class
 		self.p_class = param.Default()
-		# default parameters
-		self.p = p_class.p
+
+		# reference to default parameters
+		self.p = self.p_class.p
+
 		# update parameters
 		for key, val in self.kwargs.iteritems():		# update parameters
 			self.p[key] = val
+
 		# data and figure folder
 		self.p['data_folder'] = 'Data/'+self.p['experiment']+'/'
 		self.p['fig_folder'] =  'png figures/'+self.p['experiment']+'/'
 
-		# load cell
+		# load cell and store in parameter dictionary
 		self.p['cell'] = cell.CellMigliore2005(self.p)
 		
-		# measure distance of each segment from the soma
-		self.p_class.seg_distance(self.cell)
+		# measure distance of each segment from the soma and store in parameter dictionary
+		self.p_class.seg_distance(self.p['cell'])
+
 		# randomly choose active segments 
-		self.p_class.choose_seg_rand(syn_list=self.cell.syns, syn_frac=self.p['syn_frac'])
+		self.p_class.choose_seg_rand(trees=self.p['trees'], syns=self.p['cell'].syns, syn_frac=self.p['syn_frac'])
 		
-		# set weights for active segments
-		self.set_weights(seg_idx=self.p['seg_idx'], w_mean=self.p['w_mean'], w_std=self.p['w_std'], w_rand=self.p['w_rand'])
+		
 
 		# loop over trials
 		for tri in range(self.p['trials']):
@@ -92,6 +95,10 @@ class Experiment:
 				
 				# update weight parameter
 				self.p['w_mean'] = w
+
+				# set weights for active segments
+				self.p_class.set_weights(seg_idx=self.p['seg_idx'], w_mean=self.p['w_mean'], w_std=self.p['w_std'], w_rand=self.p['w_rand'])
+
 				# store trial number
 				self.p['trial']=tri
 				
@@ -110,8 +117,18 @@ class Experiment:
 				# print trial and simulation time
 				print 'trial'+ str(tri) + ' duration:' + str(end -start) 
 				
+				# set file name to save data
+				file_name = str(
+				'data_'+
+				self.p['experiment']+
+				'_weight_'+str(self.p['w_mean'])+
+				'_trial_'+str(self.p['trial'])+
+				'_synfrac_'+str(self.p['syn_frac'])+
+				'_id_'+self.p['trial_id']
+				)
+
 				# save data for eahc trial
-				run.save_data(data=sim.data, file_name=)
+				run.save_data(data=sim.data, file_name=file_name)
 
 	# choose specific synapses
 	def exp_2(self, **kwargs):
@@ -660,7 +677,7 @@ class Arguments:
 		weights = [.003]
 		self.kwargs = {
 		'experiment' : 'exp_1', 
-		'tree' : 'apical',
+		'tree' : 'apical_tuft',
 		'trials' : 1,
 		'w_mean' : weights,#[.001],
 		'w_std' : [.002],
@@ -974,9 +991,9 @@ class Arguments:
 
 
 if __name__ =="__main__":
-	kwargs = Arguments('exp_8').kwargs
+	kwargs = Arguments('exp_1').kwargs
 	x = Experiment(**kwargs)
 	# analysis.Experiment(**kwargs)
-	# plots = analysis.Voltage()
-	# plots.plot_all(x.p)
+	plots = analysis.PlotRangeVar()
+	plots.plot_all(x.p)
 	# analysis.Experiment(exp='exp_3')

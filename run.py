@@ -53,8 +53,10 @@ class Run():
 					for sec_i,sec in enumerate(tree):
 						# iterate over segments
 						for seg_i,seg in enumerate(sec):
-							# set synapse parameter value
-							setattr(seg['clopath'], p_clopath, p['clopath_'+p_clopath])
+							# if segment contains a clopath synapse
+							if 'clopath' in list(seg.keys()): 
+								# set synapse parameter value
+								setattr(seg['clopath'], p_clopath, p['clopath_'+p_clopath])
 
 	# activate synapses
 	def activate_synapses(self,p):
@@ -72,8 +74,8 @@ class Run():
 		# create section list of active sections
 		self.sl = h.SectionList()    # secetion list of included sections
 		for sec_i,sec in enumerate(p['sec_idx']):
-			self.sl.append(sec=self.cell1.geo[p['tree']][sec])
-			self.shapeplot.color(2, sec=self.cell1.geo[p['tree']][sec])
+			self.sl.append(sec=self.cell1.geo[p['trees']][sec])
+			self.shapeplot.color(2, sec=self.cell1.geo[p['trees']][sec])
 
 	def recording_vectors(self,p):
 		# set up recording vectors
@@ -85,6 +87,8 @@ class Run():
 			# iterate over variables to record
 			for var_key, var_dic in p['record_variables'].iteritems():
 
+				# FIXME 
+					# do not create recording vector if section does not have variable
 				# create entry for each variable
 				self.rec[tree_key+'_'+var_key] = []
 			
@@ -102,9 +106,11 @@ class Run():
 
 						# if variable occurs in a synapse object
 						if 'syn' in var_dic:
+							if tree_key=='soma':
 
-							# check if synapse exists
-							if self.cell1.syns[tree_key][sec_i][seg_i][var_dic['syn']]:
+								print tree_key, self.cell1.syns[tree_key][sec_i][seg_i].keys()
+							# check if synapse type exists in this segment
+							if var_dic['syn'] in self.cell1.syns[tree_key][sec_i][seg_i].keys():
 
 								# if the desired variable exists in the corresponding synapse
 								if var_key in dir(self.cell1.syns[tree_key][sec_i][seg_i][var_dic['syn']]): 
@@ -117,6 +123,14 @@ class Run():
 
 									# record variable
 									self.rec[tree_key+'_'+var_key][sec_i][seg_i].record(var_rec)
+
+								# append empty vector to hold place and check if data variable exists
+								else: 
+									self.rec[tree_key+'_'+var_key][sec_i].append([])
+							else:
+								self.rec[tree_key+'_'+var_key][sec_i].append([])
+
+
 
 
 						# if variable is a range variable
@@ -133,10 +147,10 @@ class Run():
 								
 								# record variable
 								self.rec[tree_key+'_'+var_key][sec_i][seg_i].record(var_rec)
+							else:
+								# create recording vector
+								self.rec[tree_key+'_'+var_key][sec_i].append([])
 
-
-		# object for recording time
-		self.data['t'] = []
 
 		# create time vector
 		self.rec['t'] = h.Vector()
@@ -146,8 +160,9 @@ class Run():
 
 	def run_sims(self,p):
 		# data organized as ['tree']['polarity'][section][segment]
+		
 		# loop over dcs fields
-		self.data{'p':p}
+		self.data={'p':p}
 		for f_i,f in enumerate(p['field']):
 
 			# add dimension for each DCS polarity
@@ -163,6 +178,8 @@ class Run():
 
 			# h.finitialize()
 			h.run()
+
+			print 'run complete'
 
 
 			# store recording vectors as arrays
@@ -198,13 +215,14 @@ def save_data(data, file_name):	# save data
 		os.mkdir(p['data_folder'])
 
 	with open(p['data_folder']+'data_'+
-		p['experiment']+
+		# p['experiment']+
 		# '_trial_'+str(p['trial'])+
 		# '_weight_'+str(p['w_mean'])+
 		# '_synfrac_'+str(p['syn_frac'])+
-		'IhThresh_'+str(p['vhalfl_hd_prox'])+
-		'KaThresh_'+str(p['vhalfn_kap'])+
-		'_'+p['trial_id']+
+		# 'IhThresh_'+str(p['vhalfl_hd_prox'])+
+		# 'KaThresh_'+str(p['vhalfn_kap'])+
+		# '_'+p['trial_id']+
+		file_name+
 		'.pkl', 'wb') as output:
 
 		pickle.dump(data, output,protocol=pickle.HIGHEST_PROTOCOL)

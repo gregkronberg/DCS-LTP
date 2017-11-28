@@ -203,8 +203,7 @@ class PyramidalCylinder:
 				            seg.vhalfn_kap = p['vhalfn_kap']
 				            seg.gkabar_kap = p['KMULTP']*(1+p['ka_grad']*(seg_dist/100.))#/(p['L_apical_prox']/250.))
 
-				        self.syns[tree_key][sec_i][seg_i] = 
-				        {
+				        self.syns[tree_key][sec_i][seg_i] = {
 				        'ampa':[],
 				        'nmda':[],
 				        'clopath':[],
@@ -319,9 +318,15 @@ class CellMigliore2005:
 					# potassium reversal potential 
 					sec.ek = p['ek']
 					sec.Ra = p['RaAx']
+
+					for seg_i,seg in enumerate(sec):
+						self.syns[tree_key][sec_i].append({})
 					
 				# soma active biophysics
 				elif tree_key == 'soma':
+					print sec.name()
+					print sec.nseg
+					print self.geo[tree_key][0]
 					# voltage gated sodium
 					sec.insert('na3')
 					sec.gbar_na3 = p['gna']*p['AXONM']
@@ -348,6 +353,10 @@ class CellMigliore2005:
 					sec.ena = p['ena']		
 					# potassium reversal potential 
 					sec.ek = p['ek']	
+
+					for seg_i,seg in enumerate(sec):
+						self.syns[tree_key][sec_i].append({})
+
 					
 				# dendrites active biophysics
 				elif ((tree_key == 'basal') or 
@@ -386,8 +395,35 @@ class CellMigliore2005:
 				    # loop over segments
 				    for seg_i,seg in enumerate(sec):
 				    	
-				    	# add segment dimesnion to syns structure
-				    	self.syns[tree_key][sec_i].append([])
+				    	# print seg_i
+				    	self.syns[tree_key][sec_i].append({'ampa':[],
+			            'nmda':[],
+			            'clopath':[]})
+
+				    	for syn_key,syn in self.syns[tree_key][sec_i][seg_i].iteritems():
+				    		if syn_key is 'ampa':
+				    			# print syn_key
+				    			self.syns[tree_key][sec_i][seg_i][syn_key] = h.Exp2Syn(sec(seg.x))
+				    			self.syns[tree_key][sec_i][seg_i][syn_key].tau1 = p['tau1_ampa']
+				    			self.syns[tree_key][sec_i][seg_i][syn_key].tau2 = p['tau2_ampa']
+				    			self.syns[tree_key][sec_i][seg_i][syn_key].i = p['i_ampa']
+				    			# print syn
+
+				    		elif syn_key is 'nmda':
+				    			# print syn_key
+				    			self.syns[tree_key][sec_i][seg_i][syn_key]= h.Exp2SynNMDA(sec(seg.x))
+				    			self.syns[tree_key][sec_i][seg_i][syn_key].tau1 = p['tau1_nmda']
+				    			self.syns[tree_key][sec_i][seg_i][syn_key].tau2 = p['tau2_nmda']
+				    			# print syn
+
+				    		elif syn_key is 'clopath':
+				    			# print syn_key
+				    			self.syns[tree_key][sec_i][seg_i][syn_key] = h.STDPSynCCNon(sec(seg.x))
+				    			# print syn
+		    			
+		    			# print self.syns[tree_key][sec_i][seg_i]
+
+		   
 
 				    	# distance from soma
 				    	seg_dist = h.distance(seg.x,sec=sec)
@@ -411,25 +447,20 @@ class CellMigliore2005:
 				            seg.vhalfn_kap = p['vhalfn_kap']
 				            seg.gkabar_kap = p['KMULTP']*(1+p['ka_grad']*seg_dist/100.)
 
-			            self.syns[tree_key][sec_i][seg_i] = {
-			            'ampa':[],
-			            'nmda':[],
-			            'clopath':[],
-			            }
+				        # add segment dimesnion to syns structure
+				    	
 
-				        # loop over synapse types
-				        for syn_key,syn in self.syns[tree_key][sec_i][seg_i].iteritems():
-				        	if syn_key == 'ampa':
-				        		syn = h.Exp2Syn(sec(seg.x))
-				        		syn.tau1 = p['tau1_ampa']
-				        		syn.tau2 = p['tau2_ampa']
-				        		syn.i = p['i_ampa']
-				        	elif syn_key == 'nmda':
-				        		syn= h.Exp2SynNMDA(sec(seg.x))
-				        		syn.tau1 = p['tau1_nmda']
-				        		syn.tau2 = p['tau2_nmda']
-				        	elif syn_key == 'clopath':
-				        		syn = h.STDPSynCCNon(sec(seg.x))
+				    	# add dictionary entry for each synapse
+			            # self.syns[tree_key][sec_i][seg_i] = {
+			            # 'ampa':[],
+			            # 'nmda':[],
+			            # 'clopath':[]}
+
+			            
+
+			            
+
+	            		# print self.syns[tree_key][sec_i][seg_i]
 	
 	def measure_area(self, tree):
 		"""
@@ -437,6 +468,7 @@ class CellMigliore2005:
 
 		tree is a list of sections (hoc objects)
 		"""
+		# FIXME
 		area_all = []
 		for sec_i, sec in enumerate(tree):
 			# convert to um to cm (*.0001)
@@ -475,8 +507,10 @@ class Syn_act:
 		# iterate over dendritic subtrees
 		for tree_key,tree in syns.iteritems():
 
-			if tree_key in p['tree']:
+			if tree_key in p['trees']:
+				print p['sec_idx']
 
+				self.nc[tree_key] =[]
 				# loop over active sections
 				for sec_i,sec in enumerate(p['sec_idx'][tree_key]):
 
@@ -489,18 +523,19 @@ class Syn_act:
 						# add segment dimension to NetCon structure
 						self.nc[tree_key][sec_i].append({})
 
+						print syns[tree_key][sec_i]
 						# iterate over synapse types (e.g. ampa, nmda, clopath)
 						for syntype_key,syntype in syns[tree_key][sec_i][seg_i].iteritems():
-
+							
 							# add dimension for synapse type to NetCon structure
 							self.nc[tree_key][sec_i][seg_i][syntype_key]=[]
-
-								# loop over stimulation bursts
-								for syn_stim_i,syn_stim in enumerate(stim):
+							
+							# loop over stimulation bursts
+							for syn_stim_i,syn_stim in enumerate(stim):
+								print p['w_list'][tree_key][sec_i][seg_i]
 
 								# store NetCon
-									self.nc[tree_key][sec_i][seg_i][syntype_key].append( 
-										h.NetCon(syn_stim, syns[tree_key][sec][seg][syntype_key], 0, 0, p['w_list'][tree_key][sec_i][seg_i]))
+								self.nc[tree_key][sec_i][seg_i][syntype_key].append(h.NetCon(syn_stim, syns[tree_key][sec][seg][syntype_key], 0, 0, p['w_list'][tree_key][sec_i][seg_i]))
 
 class DendriteTransform:
 	def __init__(self, p):

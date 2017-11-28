@@ -19,7 +19,8 @@ class Default(object):
 			'cell' : [], 
 			'data_folder' : 'Data/'+exp+'/',
 			'fig_folder' : 'png figures/'+exp+'/',
-			# equivalent cylinder parameters determined by cell.DendriteTransform of Migliore cell geo5038804.hoc
+			
+			# equivalent cylinder parameters determined by cell.DendriteTransform() of Migliore cell geo5038804.hoc
 			'L_basal' : 1600.,
 			'L_soma' : 7.5,
 			'L_apical_prox' : 1000.,
@@ -37,8 +38,14 @@ class Default(object):
 			'nsec_apical_prox' : 1,
 			'nsec_apical_dist' : 1,
 			'syn_types' : ['ampa', 'nmda', 'clopath'],
-			'fixnseg':True,
+			'fixnseg':True,		# determine number of segments in cylinder according to d_lambda rule
 
+			# FIXME, must be set so that variable names are unique
+			# set recording variables
+				# organized a dictionary of dictionaries [attribute name: [variable type: mechanism]
+				# note that if the attribute is part of a synapse object, it will accessed differently than a range variable
+					# range variables can be simply accessed by dot notation directly from a given neuron section
+					# synapse attributes need to be accesed from the synapse object stored in cell.syns
 			'record_variables' : 
 			{
 			'v' : {'range':'v'},
@@ -50,35 +57,44 @@ class Default(object):
 			'ica_calH' : {'range':'calH'},
 			'ina_na3' : {'range':'na3'},
 			}, 
+
+			# choose y variables to plot [varaibles]
 			'plot_variables' : ['v','i','ik_kad','i_hd', 'ica_calH', 'ina_na3'],
+			# FIXME, should be a list, where you can choose arbitrary combinations of variables 
+			# x variables to plot 
+			'x_var':'t',
 
-
-			'syn_frac':[],
-			'trial':0,
-			'trial_id':0,
-			'w_rand':[],
-			'w_std' : [],
+			# synapse activation
+			'syn_frac':[],		# fraction of synapses to activate with choose_seg_rand()
+			'trial':0,			# count the current trial number
+			'trial_id':0,		# a unique identifier for each trial using uuid64
+			'w_rand':[],		# choose synapse weights from a random distribution (Bool)
+			'w_std' : [],		# standard deviation of weights distribution, if w_rand is True
 			'w_mean': [], # mean synaptic weight (microsiemens or micro-ohms)
-			'tree': [],
-			'w_list':[],
-			'sec_list':[],
-			'seg_list':[],
-			'sec_idx': [],
-			'seg_idx':[],
-			'seg_dist' : {},
-			'field_angle': 0,#np.pi/2.0,
-			'field':[-30,0,30],
-			'field_color':['b','k','r'],
-			'field_on':20,
-			'field_off': 70,
-			'dt' : .025,
-			'warmup': 30,
-			'tstop' : 70,#5*1000/5 + 30 + 5*1000/100 +30
-			'bursts':1,
-			'pulses':4,
-			'pulse_freq':100,
-			'burst_freq':5,
-			'noise' : 0,
+			'trees': [],		# list of subtrees with active synapses [trees]
+			'w_list':[],		# nested list of weights, determined by set_weights().  Weights correspond to segments indexed in seg_idx.  Organized as [tree][section][segment]
+			'sec_list':[],		# list of active sections with repeats, each entry corresponds to the section for a given segment in seg_list.  [tree][section number]
+			'seg_list':[],		# list of active segments, corresponding to sections in sec_list {tree}[segment number]
+			'sec_idx': [],		# list of active sections, without repeats. Indeces in the list correspond to indeces in seg_idx {tree}[section number]
+			'seg_idx':[],		# nested list of active segments {tree}[section index][segment number]
+			'seg_dist' : {},	# distance of each segment from soma {tree}[section index][segment number]
+
+			# extracellular field stimualation
+			'field_angle': 0,	# angle relative to principle cell axis in radians 
+			'field':[-30,0,30],	# list of stimulation intensities in V/m, negative = cathodal, postivie = anodal
+			'field_color':['b','k','r'],	# plot colors correesponding to entries in field
+			'field_on':20,		# stimulation onset time in (ms)
+			'field_off': 70,	# stimulation offset time in (ms)
+			'dt' : .025,		# integration timestep (ms)
+			'warmup': 30,		# simulation warmup time (ms)
+			'tstop' : 70,		# simulation duration (ms)
+
+			# bipolar stimulation parameters
+			'bursts':1,			# bipolar stimulus bursts
+			'pulses':4,			# pulses per bursts 
+			'pulse_freq':100,	# pulse frequency within burst (Hz)
+			'burst_freq':5,		# burst frequency (Hz)
+			'noise' : 0,		# noise in input arrival (see NetCon documentation)
 
 			# clopath synapse parameters
 			'clopath_delay_steps': 1,
@@ -91,16 +107,16 @@ class Default(object):
 			'clopath_tetap':-38, # potentiation threshold (mV)
 
 			# ampa synapse parameters
-			'tau1_ampa' : 0.2,
-			'tau2_ampa' : 2,
-			'i_ampa' : 0.18,
+			'tau1_ampa' : 0.2,	# rise time constant (ms)
+			'tau2_ampa' : 2,	# decay time constant	(ms)
+			'i_ampa' : 0.18,	# default peak ampa current in uS
 
 			# nmda synapse parameters
-			'tau1_nmda' : 1,
-			'tau2_nmda' : 50,
+			'tau1_nmda' : 1,	# rise time constant (ms)
+			'tau2_nmda' : 50,	# decay time constant (ms)
 
-			# Parameters from Migliore 2005 (signal propogation in oblique dendrites)
 			
+			# Parameters from Migliore 2005 (signal propogation in oblique dendrites)
 			# conductances reported as (nS/um2) in paper, but need to be in (mho/cm2)
 			# conversion 10,000*(pS/um2) = 10*(nS/um2) = (mho/cm2) = .001*(mS/cm2)
 			# *** units in paper are a typo, values are already reported in (mho/cm2) ***
@@ -132,11 +148,13 @@ class Default(object):
 			'ghd_grad' : 5.,#1.,#3.,				# slope of h channel gradient with distance from soma 
 			}
 
-	def choose_seg_rand(self, syn_list, syn_frac):
+	def choose_seg_rand(self, trees, syns, syn_frac):
 		""" choose random segments to activate
-
 		arguments:
-		syn_list = list of all synapses to be chosen from ogranized as [trees][section number][segment number][synapse type]
+		
+		trees = list of subtrees with active synapses
+
+		syn_list = list of all synapses to be chosen from ogranized as {trees}[section number][segment number][synapse type]
 
 		syn_frac = fraction of synapses to be chosen, with equal probability for all synapses
 
@@ -146,39 +164,47 @@ class Default(object):
 		self.p['seg_list']={}
 		self.p['sec_idx']={}
 		self.p['seg_idx']={}
-		for tree_key, tree in syn_list.iteritems():
 
-			# list all segments as [[section,segment]] 
-			segs_all = [[sec_i,seg_i] for sec_i,sec in enumerate(tree) for seg_i,seg in enumerate(tree[sec_i])]
+		# iterate over all trees
+		for tree_key, tree in syns.iteritems():
 
-			# choose segments to activate
-			segs_choose = np.random.choice(len(segs_all), int(syn_frac*len(segs_all)), replace=False)
+			# if tree is in active list
+			if tree_key in trees:
 
-			# list of active sections (contains duplicates)
-			sec_list = [segs_all[a][0] for a in segs_choose]
-		
-			# list of active segments
-			seg_list = [segs_all[a][1] for a in segs_choose]
+				# list all segments as [[section,segment]] 
+				segs_all = [[sec_i,seg_i] for sec_i,sec in enumerate(tree) for seg_i,seg in enumerate(tree[sec_i])]
 
-			# uniqure list of active sections
-			sec_idx  = list(set(sec_list))
-		
-			# list of active segments as [unique section][segments]
-			seg_idx = []
-			for sec in sec_idx:
-				seg_idx.append([seg_list[sec_i] for sec_i,sec_num in enumerate(sec_list) if sec_num==sec])
+				# choose segments to activate
+				segs_choose = np.random.choice(len(segs_all), int(syn_frac*len(segs_all)), replace=False)
 
-			# update parameter dictionary
-			self.p['sec_list'][tree_key] = sec_list
-			self.p['seg_list'][tree_key] = seg_list
-			self.p['sec_idx'][tree_key] = sec_idx
-			self.p['seg_idx'][tree_key] = seg_idx
-			self.p['syn_frac'] = syn_frac
+				# list of active sections (contains duplicates)
+				sec_list = [segs_all[a][0] for a in segs_choose]
+			
+				# list of active segments
+				seg_list = [segs_all[a][1] for a in segs_choose]
+
+				# uniqure list of active sections
+				sec_idx  = list(set(sec_list))
+			
+				# list of active segments as [unique section][segments]
+				seg_idx = []
+				for sec in sec_idx:
+					seg_idx.append([seg_list[sec_i] for sec_i,sec_num in enumerate(sec_list) if sec_num==sec])
+
+				# update parameter dictionary
+				self.p['sec_list'][tree_key] = sec_list
+				self.p['seg_list'][tree_key] = seg_list
+				self.p['sec_idx'][tree_key] = sec_idx
+				self.p['seg_idx'][tree_key] = seg_idx
+				self.p['syn_frac'] = syn_frac
 
 	def choose_seg_manual(self, trees, sec_list, seg_list):
 		""" manually choose segments to activate
 
-		sec_list and seg_list should be organized as [tree][list of sections/segments].  Length of each list should match
+		arguments:
+		trees = list of subtrees to be activated
+
+		sec_list and seg_list should be organized as {trees}[list of sections/segments].  Indices in each list match, so that sec_list[i] and seg_list[i] output the section and segment number for an active segment
 		"""
 		sec_idx = {}
 		seg_idx = {}
@@ -201,15 +227,30 @@ class Default(object):
 	def set_weights(self, seg_idx, w_mean, w_std, w_rand):
 		"""
 		sets weights using nested list with same structure as seg_idx: [tree][section index][segment index]
+
+		arguments: 
+		seg_idx = nested list of segment numbers to be activated {trees}[section index][segment number]
+
+		w_mean = mean synaptic weight
+
+		w_std = standard deviation of weights, if w_rand is True
+
+		w_rand = choose synaptic weights from normal distibution? (bool)
 		"""
 		w_list = {}
 
+		# iterate over trees in seg_idx
 		for tree_key, tree in seg_idx.iteritems():
+
+			# add dimension for sections
 			w_list[tree_key]=[]
+			
 			# loop over sections
 			for sec_i,sec in enumerate(tree):
-				# add sections dimension to weights list
+				
+				# add sections dimension for segments
 				w_list[tree_key].append([])
+
 				# loop over segments
 				for seg_i,seg in enumerate(sec):
 
@@ -217,6 +258,7 @@ class Default(object):
 					if w_rand:
 						# choose from normal distribution
 						w_list[tree_key][sec_i].append(np.random.normal(w_mean,w_std))
+					
 					# otherwise set all weights to the same
 					else:
 						w_list[tree_key][sec_i].append(w_mean)
