@@ -373,7 +373,7 @@ class PlotRangeVar():
 		pass
 
 	def plot_all(self, p):
-		""" Plot times series data for all data files in folder
+		""" Plot times series data for all data files in folder without replotting
 
 		Arguments:
 
@@ -391,25 +391,23 @@ class PlotRangeVar():
 		"""
 		# all files in directory
 		files = os.listdir(p['data_folder'])
-		print p['data_folder']
 		
 		# files containing plot figures
 		plot_files = [file for file in files if 'trace' in file]
 		
 		# data files
 		data_files = [file for file in files if 'data' in file]
-		print data_files
 		
 		# unique identifiers for each file type
-		plot_files_id = [file[-36:-1] for file in files if 'trace' in file]
-		data_files_id= [file[-36:-1] for file in files if 'data' in file]
+		plot_files_id = [file[-39:-4] for file in files if 'trace' in file]
+		data_files_id= [file[-39:-4] for file in files if 'data' in file]
 		
 		# iterate over all data files in folder
 		for file_i, file in enumerate(data_files):
 			
 			# check if plot already exists matching uid's
 			if data_files_id[file_i] not in plot_files_id:
-				
+				print data_files_id[file_i] 
 				# open data file
 				with open(p['data_folder']+file, 'rb') as pkl_file:
 					data = pickle.load(pkl_file)
@@ -422,11 +420,12 @@ class PlotRangeVar():
 					trees=p_data['trees'], 
 					sec_idx=p_data['sec_idx'], 
 					seg_idx=p_data['seg_idx'],
-					variables=p['plot_variables'],
-					x_var=p['x_var'],
-					file_name=file)
+					variables=p_data['plot_variables'],
+					x_variables=p_data['x_variables'],
+					file_name=p_data['trial_id'],
+					group_trees=p_data['group_trees'])
 
-	def plot_trace(self, data, trees, sec_idx, seg_idx, soma=True, group_trees=True, variables=['v'], x_var='t', xlim=[], ylim=[], file_name=''):
+	def plot_trace(self, data, trees, sec_idx, seg_idx, soma=True, group_trees=True, variables=['v'], x_variables='t', xlim=[], ylim=[], file_name=''):
 		""" Create a figure containing a subplot for each segment specified in seg_idx
 
 		variable is a list of range variable key words indicating which varaible to plot.  A new figure is created and saved for each variable
@@ -440,44 +439,24 @@ class PlotRangeVar():
 		# dictionary to hold figures
 		fig={}	
 
-		# iterate over list of variables to plot
+		# iterate over list of y variables to plot
 		for var in variables:
 
-			# if data from all subtrees in one plot
-			if group_trees:
+			fig[var] = {}
 
-				# create figure
-				fig[var] = plt.figure()
+			# iterate over list of x variables to plot
+			for x_var in x_variables:
 
-				# number of segments to plot
-				nseg =  sum([sum(seg_i+1 for seg_i,seg in enumerate(sec)) for tree_key, tree in seg_idx.iteritems() for sec in tree if tree_key in p['trees'] ])+1
 
-				# plot soma trace?
-				if soma:
-					nseg+=1
+				# if data from all subtrees in one plot
+				if group_trees:
 
-				# columns and rows for subplot array	
-				cols = int(math.ceil(math.sqrt(nseg)))
-				rows = int(math.ceil(math.sqrt(nseg)))
-
-			
-			# if each subtree to get its own figure
-			elif not group_trees:
-				# create another dimension to store each subtree figure separately
-				fig[var]={}
-		
-			# count segments
-			cnt=0
-
-			# iterate over trees
-			for tree_key, tree in seg_idx.iteritems():
-
-				# if each subtree gets its own figure
-				if not group_trees:
-					fig[var][tree_key] = plt.figure()
+					# create figure
+					fig[var][x_var] = plt.figure()
 
 					# number of segments to plot
-					nseg =  sum([sum(seg_i+1 for seg_i,seg in enumerate(sec)) for sec in tree])+1
+					nseg =  sum([sum(seg_i+1 for seg_i,seg in enumerate(sec)) for tree_key, tree in seg_idx.iteritems() for sec in tree if tree_key in p['trees'] ])+1
+
 					# plot soma trace?
 					if soma:
 						nseg+=1
@@ -486,126 +465,146 @@ class PlotRangeVar():
 					cols = int(math.ceil(math.sqrt(nseg)))
 					rows = int(math.ceil(math.sqrt(nseg)))
 
-				# iterate over sections
-				for sec_i,sec in enumerate(tree):
+				
+				# if each subtree to get its own figure
+				elif not group_trees:
 					
-					sec_num = sec_idx[tree_key][sec_i]
-					# iterate over segments
-					for seg_i, seg in enumerate(sec):
+					# create another dimension to store each subtree figure separately
+					fig[var][x_var]={}
+			
+				# count segments
+				cnt=0
+
+				# iterate over trees
+				for tree_key, tree in seg_idx.iteritems():
+
+					# if each subtree gets its own figure
+					if not group_trees:
+						fig[var][x_var][tree_key] = plt.figure()
+
+						# number of segments to plot
+						nseg =  sum([sum(seg_i+1 for seg_i,seg in enumerate(sec)) for sec in tree])+1
 						
-						# count subplots (segments)
-						cnt+=1
+						# plot soma trace?
+						if soma:
+							nseg+=1
+
+						# columns and rows for subplot array	
+						cols = int(math.ceil(math.sqrt(nseg)))
+						rows = int(math.ceil(math.sqrt(nseg)))
+
+					# iterate over sections
+					for sec_i,sec in enumerate(tree):
+
+						# derive section number from index
+						sec_num = sec_idx[tree_key][sec_i]
 						
-						# create subplot
-						plt.subplot(rows, cols, cnt)
+						# iterate over segments
+						for seg_i, seg in enumerate(sec):
+							
+							# count subplots (segments)
+							cnt+=1
+							
+							# create subplot
+							plt.subplot(rows, cols, cnt)
 
-						# FIXME: 
-							# truncate decimal places for showing segment distance in title
-						# get segment distance from soma
+							# get segment distance from soma
+							seg_dist = p['seg_dist'][tree_key][sec_num][seg]
+							
+							# plot title
+							plt.title(tree_key + ('%.2f'%seg_dist) )
 
-						# print sec_idx[sec_i]
-						# print p['seg_dist'][tree_key]
-						seg_dist = p['seg_dist'][tree_key][sec_num][seg]
-						
-						# plot title
-						plt.title(tree_key + str(seg_dist) + 'from soma')
+							# adjust limits
+							if xlim:
+								plt.xlim(xlim)
+							if ylim:
+								plt.ylim(ylim)
+							
+							# iterate over stimulation polarity
+							for f_i, f in enumerate(p['field']):
+							
+								# check if variable exists in the current section
+								if data[str(f)][tree_key+'_'+var][sec_num]:
 
-						# adjust limits
-						if xlim:
-							plt.xlim(xlim)
-						if ylim:
-							plt.ylim(ylim)
-						
-						# iterate over stimulation polarity
-						for f_i, f in enumerate(p['field']):
-						
-							# check if variable exists in the current section
-							if data[str(f)][tree_key+'_'+var][sec_num]:
+									# if not plotting the soma trace
+									if soma and cnt<nseg:
 
-								# if not plotting the soma trace
-								if soma and cnt<nseg:
+										# retrieve time series to plot
+										v = data[str(f)][tree_key+'_'+var][sec_num][seg]
 
-									# retrieve time series to plot
-									v = data[str(f)][tree_key+'_'+var][sec_num][seg]
+										# retrieve x variable
+										if x_var =='t':
+											# time vector
+											xv = data[str(f)]['t']
 
-									# retrieve x variable
-									# time
+										# other variable from arguments
+										else:
+											xv = data[str(f)][tree_key+'_'+x_var][sec_num][seg]
+
+
+									# set plot color based on stimulation polarity
+									color = p['field_color'][f_i]
 									
-									if x_var =='t':
-										# time vector
-										xv = data[str(f)]['t']
+									# add trace to corresponding subplot
+									plt.plot(xv, v, color=color)
+									plt.xlabel(x_var)
+									plt.ylabel(var)
 
-									# other variable from arguments
-									else:
-										xv = data[str(f)][tree_key+'_'+x_var][sec_num][seg]
+					# if plotting soma trace
+					for f_i, f in enumerate(p['field']):
+						
+						# if variable exists in soma data
+						if 'soma_'+var in data[str(f)].keys():
+							if len(data[str(f)]['soma_'+var][0][0])>0:
+							
+								# subplot for soma trace
+								plt.subplot(rows, cols, nseg)
 
+								# retrieve data to plot
+								v = data[str(f)]['soma_'+var][0][0] 
 
-								# set plot color based on stimulation polarity
+								# determine x variable to plot
+								if x_var =='t':
+									# time vector
+									xv = data[str(f)]['t']
+								else:
+									xv = data[str(f)]['soma_'+x_var][0][0]
+								
+								# set plot color
 								color = p['field_color'][f_i]
 								
-								# add trace to corresponding subplot
 								plt.plot(xv, v, color=color)
+								plt.title('soma')
 								plt.xlabel(x_var)
 								plt.ylabel(var)
-
-				# if plotting soma trace
-				for f_i, f in enumerate(p['field']):
+								# plt.xlim([10, p['tstop']])
 					
-					# if variable exists in soma
-					if 'soma_'+var in data[str(f)].keys():
-						print data[str(f)]['soma_'+var][0][0]
-						if len(data[str(f)]['soma_'+var][0][0])>0:
-						
-							# subplot for soma trace
-							plt.subplot(rows, cols, nseg)
-
-							# print var
-							# print data[str(f)]['soma_'+var][0]
-							# retrieve data to plot
-							v = data[str(f)]['soma_'+var][0][0] 
-
-							# determine x variable to plot
-							if x_var =='t':
-								# time vector
-								xv = data[str(f)]['t']
-							else:
-								xv = data[str(f)]['soma_'+x_var][0][0]
-							
-							# set plot color
-							color = p['field_color'][f_i]
-							
-							plt.plot(xv, v, color=color)
-							plt.title('soma')
-							plt.xlabel(x_var)
-							plt.ylabel(var)
-							# plt.xlim([10, p['tstop']])
-				
-				# save figure
-				# if each tree has separate figure
-				if not group_trees:
-					
-					# info to add to file name
-					file_name_add = tree_key+'_trace_'+x_var+'x'+var
-
 					# save figure
-					fig[var][tree_key].savefig(p['data_folder']+file_name+file_name_add+'.png', dpi=300)
+					# if each tree has separate figure
+					if not group_trees:
+						
+						# info to add to file name
+						file_name_add = tree_key+'_trace_'+x_var+'_x_'+var
 
-					# close figure
-					plt.close(fig[var][tree_key])
+						# save figure
+						fig[var][x_var][tree_key].savefig(p['data_folder']+file_name_add+file_name+'.png', dpi=300)
 
-			# if all trees are in the same figure
-			if group_trees:
-				all_trees =''
-				for tree_key, tree in seg_idx.iteritems():
-					all_trees = all_trees+tree_key
+						# close figure
+						plt.close(fig[var][x_var][tree_key])
 
-				# info to add to file name
-				file_name_add = all_trees+'_trace_'+x_var+'x'+var
+				# if all trees are in the same figure
+				if group_trees:
+					all_trees =''
+					for tree_key, tree in seg_idx.iteritems():
+						all_trees = all_trees+tree_key+'_'
 
-				# save and close figure
-				fig[var].savefig(p['data_folder']+file_name+file_name_add+'.png', dpi=300)
+					# info to add to file name
+					file_name_add = all_trees+'trace_'+x_var+'_x_'+var
 
-				plt.close(fig[var])
+					# save and close figure
+					fig[var][x_var].savefig(p['data_folder']+file_name_add+file_name+'.png', dpi=300)
+
+					plt.close(fig[var][x_var])
 
 class Shapeplot():
 	""" create shape plot 
@@ -621,7 +620,8 @@ class Experiment:
 		experiment(**kwargs) 
 
 	def exp_1(self, **kwargs):
-		pass
+		plots = PlotRangeVar()
+		plots.plot_all(kwargs['p'])
 
 	# def exp_1(self, **kwargs):
 	# 	""" 

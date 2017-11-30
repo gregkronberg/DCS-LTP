@@ -28,34 +28,34 @@ class Experiment:
 	""" Impliment experimental procedures.  Paramters/arguments can be set using the Arguments class
 	"""
 	def __init__(self, **kwargs):
+		""" choose experiment to run
+
+		kwargs must be a dictionary with 'experiment' as a key, the corresponding value points to a given experiment, which is then fed the same kwarg dictionary and run
+		"""
+		# retrieve which experiment to run
 		experiment = getattr(self, kwargs['experiment'])
 
+		# run experiment
 		experiment(**kwargs) 
 
 	# random fraction of all synapses in a given tree
 	def exp_1(self, **kwargs):
-
 		""" randomly activate subset of synapses
 
-		set parameters in dictionary p
-		
-		p cannot contain any hoc objects, as this will be pickled and stored with each experiment so that the parameters can be retrieved
-
+		vary synaptic weights, fraction of activated synapses
 		"""
-		""" choose a specific set of synapses, iterate over increasing synaptic weights, measure resulting LTP and dendritic spike initiation
-		"""
-		# parameters to update from default
-		weights = np.arange(.005, .03, .005)
-		# weights = np.arange(.5, 1, .1)
-		weights = [.003]
+		weights = [.001]
 		self.kwargs = {
 		'experiment' : 'exp_1', 
-		'trees' : ['apical_tuft', 'apical_trunk'],
+		'trees' : ['apical_tuft'],
 		'trials' : 1,
 		'w_mean' : weights,#[.001],
 		'w_std' : [.002],
 		'w_rand' : False, 
-		'syn_frac' : .03
+		'syn_frac' : .1,
+		'field':[-10.,0.,10.],
+		'KMULT':.2*.03,
+		'KMULTP':.2*.03,
 		}
 
 		# instantiate default parameter class
@@ -74,7 +74,10 @@ class Experiment:
 
 		# load cell and store in parameter dictionary
 		self.p['cell'] = cell.CellMigliore2005(self.p)
-		
+		self.p['cell'].geometry(self.p)
+		self.p['cell'].mechanisms(self.p)
+		# self.p['cell'] = cell.PyramidalCylinder(self.p)
+
 		# measure distance of each segment from the soma and store in parameter dictionary
 		self.p_class.seg_distance(self.p['cell'])
 
@@ -130,46 +133,104 @@ class Experiment:
 				# save data for eahc trial
 				run.save_data(data=sim.data, file_name=file_name)
 
+				# plot traces
+				analysis.PlotRangeVar().plot_trace(data=sim.data, 
+					trees=self.p['trees'], 
+					sec_idx=self.p['sec_idx'], 
+					seg_idx=self.p['seg_idx'],
+					variables=self.p['plot_variables'],
+					x_variables=self.p['x_variables'],
+					file_name=self.p['trial_id'],
+					group_trees=self.p['group_trees'])
+
 	# choose specific synapses
 	def exp_2(self, **kwargs):
 		""" choose a specific set of synapses, iterate over increasing synaptic weights, measure resulting LTP and dendritic spike initiation
 		"""
-		plots = analysis.PlotRangeVar()
-		exp = 'exp_2'
-		tree = kwargs['tree']
-		trials = kwargs['trials']
-		w_mean = kwargs['w_mean']
-		w_std = kwargs['w_std']
-		w_rand = kwargs['w_rand']
-		sec_idx = kwargs['sec_idx']
-		seg_idx = kwargs['seg_idx']
+		sequence_delay_list=[5.]
+		self.kwargs = {
+		'experiment' : 'exp_2', 
+		'trees' : ['apical_tuft'],
+		'num_sec':1,
+		'seg_L' : 4.,
+		'seg_spacing':2,
+		'max_seg':4,
+		'branch_distance':150,
+		'branch_seg_distance':[150],
+		'sequence_delay': 5,
+		'sequence_direction':'in',
+		'trials' : 1,
+		'w_mean' : .0015,
+		'w_std' : [.002],
+		'w_rand' : False, 
+		'syn_frac' : .1,
+		'field':[-10.,0.,10.],
+		'KMULT':.2*.03,
+		'KMULTP':.2*.03,
+		'pulses':1,
+		}
 
+		# instantiate default parameter class
+		self.p_class = param.Default()
+
+		# reference to default parameters
+		self.p = self.p_class.p
+
+		# update parameters
+		for key, val in self.kwargs.iteritems():		# update parameters
+			self.p[key] = val
+
+		# data and figure folder
+		self.p['data_folder'] = 'Data/'+self.p['experiment']+'/'
+		self.p['fig_folder'] =  'png figures/'+self.p['experiment']+'/'
+
+		# load cell and store in parameter dictionary
+		self.p['cell'] = cell.CellMigliore2005(self.p)
+		self.p['cell'].geometry(self.p)
+
+		# choose random branch to activate
+		self.p_class.choose_branch_rand(trees=self.p['trees'], geo=self.p['cell'].geo, num_sec=self.p['num_sec'], distance=self.p['branch_distance'])
+
+		# update branch discretization
+		self.p['cell'].set_branch_nseg(geo=self.p['cell'].geo, sec_idx=self.p['sec_idx'], seg_L=self.p['seg_L'])
+
+		# measure distance of each segment from the soma and store in parameter dictionary
+		self.p_class.seg_distance(self.p['cell'])
+
+		# choose segments on branch to activate
+		self.p_class.choose_seg_branch(geo=self.p['cell'].geo, sec_idx=self.p['sec_idx'], seg_dist=self.p['seg_dist'], spacing=self.p['seg_spacing'], distance=self.p['branch_seg_distance'], max_seg=self.p['max_seg'])
+
+		# insert mechanisms
+		self.p['cell'].mechanisms(self.p)
+
+		# set weights for active segments
+		self.p_class.set_weights(seg_idx=self.p['seg_idx'], w_mean=self.p['w_mean'], w_std=self.p['w_std'], w_rand=self.p['w_rand'])
 
 		# loop over trials
-		for tri in range(trials):
-			# loop over weights
-			for w in w_mean:
-				# choose fraction of synapses to be activated
-				# syn_frac = np.random.normal(loc=.1, scale=.1) # chosen from gaussian
+		for tri in range(self.p['trials']):
+			# loop over delays
+			for seq_del_i, seq_del in enumerate(sequence_delay_list):
 
-				kwargs['w_mean'] = w
-				# load rest of parameters from parameter module
-				p = param.Experiment(**kwargs).p
-				
+				self.p['sequence_delay']=seq_del
+
+				# set branch input sequence
+				self.p_class.set_branch_sequence_ordered(seg_idx=self.p['seg_idx'], delay=self.p['sequence_delay'], direction=self.p['sequence_direction'])
+
+				print self.p['sec_idx']
+				print self.p['seg_idx']
+				print self.p['sequence_delays']
+
 				# store trial number
-				p['trial']=tri
+				self.p['trial']=tri
 				
 				# create unique identifier for each trial
-				p['trial_id'] = str(uuid.uuid4())
+				self.p['trial_id'] = str(uuid.uuid4())
 				
 				# start timer
 				start = time.time() 
 				
 				# run simulation
-				sim = run.Run(p)	
-
-				# create shape plot
-				# sim.shape_plot(p)
+				sim = run.Run(self.p)	
 
 				# end timer
 				end = time.time() 
@@ -177,17 +238,29 @@ class Experiment:
 				# print trial and simulation time
 				print 'trial'+ str(tri) + ' duration:' + str(end -start) 
 				
+				# set file name to save data
+				file_name = str(
+				'data_'+
+				self.p['experiment']+
+				'_weight_'+str(self.p['w_mean'])+
+				'_trial_'+str(self.p['trial'])+
+				'_synfrac_'+str(self.p['syn_frac'])+
+				'_id_'+self.p['trial_id']
+				)
+
 				# save data for eahc trial
-				run.save_data(sim.data)
+				run.save_data(data=sim.data, file_name=file_name)
 
-				plots.plot_trace(data=sim.data, 
-					tree=p['tree'], 
-					sec_idx=p['sec_idx'], 
-					seg_idx=p['seg_idx'],
-					variables=p['plot_variables'],
-					x_var='t')
-
-		self.p = p
+				# plot traces
+				analysis.PlotRangeVar().plot_trace(data=sim.data, 
+					trees=self.p['trees'], 
+					sec_idx=self.p['sec_idx'], 
+					seg_idx=self.p['seg_idx'],
+					variables=self.p['plot_variables'],
+					x_variables=self.p['x_variables'],
+					file_name=self.p['trial_id'],
+					group_trees=self.p['group_trees'])
+		
 
 	# random fraction of all synapses in a given tree
 	def exp_3(self, **kwargs):
@@ -674,15 +747,15 @@ class Arguments:
 		"""
 		weights = np.arange(.005, .03, .005)
 		# weights = np.arange(.5, 1, .1)
-		weights = [.003]
+		weights = [.0015]
 		self.kwargs = {
 		'experiment' : 'exp_1', 
-		'tree' : 'apical_tuft',
+		'tree' : ['apical_tuft','apical_trunk'],
 		'trials' : 1,
 		'w_mean' : weights,#[.001],
 		'w_std' : [.002],
 		'w_rand' : False, 
-		'syn_frac' : .05
+		'syn_frac' : .2
 		}
 
 	def exp_2(self):
@@ -991,7 +1064,8 @@ class Arguments:
 
 
 if __name__ =="__main__":
-	kwargs = Arguments('exp_1').kwargs
+	kwargs = {'experiment':'exp_2'}
+	# kwargs = Arguments('exp_1').kwargs
 	x = Experiment(**kwargs)
 	# analysis.Experiment(**kwargs)
 	plots = analysis.PlotRangeVar()

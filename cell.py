@@ -139,7 +139,9 @@ class PyramidalCylinder:
 					sec.ena = p['ena']		
 					# potassium reversal potential 
 					sec.ek = p['ek']
-					# dendrites active biophysics
+
+					for seg_i,seg in enumerate(sec):
+						self.syns[tree_key][sec_i].append({})
 				
 				elif ((tree_key == 'basal') or 
 				(tree_key == 'apical_prox') or 
@@ -189,19 +191,19 @@ class PyramidalCylinder:
 				    	# print seg_dist, seg.gbar_na3
 				    	
 				    	# h current
-				    	seg.ghdbar_hd = p['ghd']*(1+p['ghd_grad']*(seg_dist/100.))#/(p['L_apical_prox']/250.))
+				    	seg.ghdbar_hd = p['ghd']*(1+p['ghd_grad']*(seg_dist/100.)/(p['L_apical_prox']/200.))
 				    	
 				    	# A-type potassium
 				        if seg_dist > 100.:	# distal
 				            seg.vhalfl_hd = p['vhalfl_hd_dist']
 				            seg.vhalfl_kad = p['vhalfl_kad']
 				            seg.vhalfn_kad = p['vhalfn_kad']
-				            seg.gkabar_kad = p['KMULT']*(1+p['ka_grad']*(seg_dist/100.))#/(p['L_apical_prox']/250.))
+				            seg.gkabar_kad = p['KMULT']*(1+p['ka_grad']*(seg_dist/100.)/(p['L_apical_prox']/200.))
 				        else:	# proximal
 				            seg.vhalfl_hd = p['vhalfl_hd_prox']
 				            seg.vhalfl_kap = p['vhalfl_kap']
 				            seg.vhalfn_kap = p['vhalfn_kap']
-				            seg.gkabar_kap = p['KMULTP']*(1+p['ka_grad']*(seg_dist/100.))#/(p['L_apical_prox']/250.))
+				            seg.gkabar_kap = p['KMULTP']*(1+p['ka_grad']*(seg_dist/100.)/(p['L_apical_prox']/200.))
 
 				        self.syns[tree_key][sec_i][seg_i] = {
 				        'ampa':[],
@@ -209,19 +211,25 @@ class PyramidalCylinder:
 				        'clopath':[],
 				        }
 
-				        # loop over synapse types
-				        for syn_key,syn in self.syns[tree_key][sec_i][seg_i].iteritems():
-				        	if syn_key == 'ampa':
-				        		syn = h.Exp2Syn(sec(seg.x))
-				        		syn.tau1 = p['tau1_ampa']
-				        		syn.tau2 = p['tau2_ampa']
-				        		syn.i = p['i_ampa']
-				        	elif syn_key == 'nmda':
-				        		syn = h.Exp2SynNMDA(sec(seg.x))
-				        		syn.tau1 = p['tau1_nmda']
-				        		syn.tau2 = p['tau2_nmda']
-				        	elif syn_key == 'clopath':
-				        		syn = h.STDPSynCCNon(sec(seg.x))
+				       	for syn_key,syn in self.syns[tree_key][sec_i][seg_i].iteritems():
+				       		if syn_key is 'ampa':
+				    			# print syn_key
+				    			self.syns[tree_key][sec_i][seg_i][syn_key] = h.Exp2Syn(sec(seg.x))
+				    			self.syns[tree_key][sec_i][seg_i][syn_key].tau1 = p['tau1_ampa']
+				    			self.syns[tree_key][sec_i][seg_i][syn_key].tau2 = p['tau2_ampa']
+				    			self.syns[tree_key][sec_i][seg_i][syn_key].i = p['i_ampa']
+				    			# print syn
+
+				    		elif syn_key is 'nmda':
+				    			# print syn_key
+				    			self.syns[tree_key][sec_i][seg_i][syn_key]= h.Exp2SynNMDA(sec(seg.x))
+				    			self.syns[tree_key][sec_i][seg_i][syn_key].tau1 = p['tau1_nmda']
+				    			self.syns[tree_key][sec_i][seg_i][syn_key].tau2 = p['tau2_nmda']
+				    			# print syn
+
+				    		elif syn_key is 'clopath':
+				    			# print syn_key
+				    			self.syns[tree_key][sec_i][seg_i][syn_key] = h.STDPSynCCNon(sec(seg.x))
 
 class CellMigliore2005:
 	""" pyramidal neuron based on Migliore et al. 2005
@@ -233,9 +241,10 @@ class CellMigliore2005:
 	"""
 	def __init__(self,p):
 		# initialize geometry
-		self.geometry(p)
+		# self.geometry(p)
 		# insert membrane mechanisms
-		self.mechanisms(p)
+		# self.mechanisms(p)
+		pass
 
 	def geometry(self,p):
 		""" create cell geometry at hoc top level
@@ -324,9 +333,7 @@ class CellMigliore2005:
 					
 				# soma active biophysics
 				elif tree_key == 'soma':
-					print sec.name()
-					print sec.nseg
-					print self.geo[tree_key][0]
+
 					# voltage gated sodium
 					sec.insert('na3')
 					sec.gbar_na3 = p['gna']*p['AXONM']
@@ -461,6 +468,33 @@ class CellMigliore2005:
 			            
 
 	            		# print self.syns[tree_key][sec_i][seg_i]
+
+	def set_branch_nseg(self, geo, sec_idx, seg_L):
+		""" set number of segments for branch that was selected to activate synapses
+		
+		arguments:
+
+		"""
+
+		# iterate over trees in section list
+		for tree_key, tree in sec_idx.iteritems():
+
+			for sec_i, sec in enumerate(tree):
+
+				section = geo[tree_key][sec]
+
+				# get section length
+				sec_L = section.L
+
+				# determine number of segments
+				n_seg = int(np.ceil(sec_L/seg_L))
+
+				# # check that number of segments is odd
+				if n_seg % 2 != 0:
+					n_seg+=1
+
+				# # set number of segments
+				section.nseg = n_seg
 	
 	def measure_area(self, tree):
 		"""
@@ -508,7 +542,6 @@ class Syn_act:
 		for tree_key,tree in syns.iteritems():
 
 			if tree_key in p['trees']:
-				print p['sec_idx']
 
 				self.nc[tree_key] =[]
 				# loop over active sections
@@ -523,16 +556,14 @@ class Syn_act:
 						# add segment dimension to NetCon structure
 						self.nc[tree_key][sec_i].append({})
 
-						print syns[tree_key][sec_i]
 						# iterate over synapse types (e.g. ampa, nmda, clopath)
-						for syntype_key,syntype in syns[tree_key][sec_i][seg_i].iteritems():
+						for syntype_key,syntype in syns[tree_key][sec][seg].iteritems():
 							
 							# add dimension for synapse type to NetCon structure
 							self.nc[tree_key][sec_i][seg_i][syntype_key]=[]
 							
 							# loop over stimulation bursts
-							for syn_stim_i,syn_stim in enumerate(stim):
-								print p['w_list'][tree_key][sec_i][seg_i]
+							for syn_stim_i,syn_stim in enumerate(stim[tree_key][sec_i][seg_i]):
 
 								# store NetCon
 								self.nc[tree_key][sec_i][seg_i][syntype_key].append(h.NetCon(syn_stim, syns[tree_key][sec][seg][syntype_key], 0, 0, p['w_list'][tree_key][sec_i][seg_i]))

@@ -171,6 +171,8 @@ class Bipolar:
     def __init__(self):
         pass
 
+    # FIXME
+    # set up bipolar to independently control individual synapses
     def tbs(self, bursts=1, pulses=4, pulse_freq=100, burst_freq=5, warmup=30, noise=0):
         fs = 1000. # convert time to ms
         self.warmup = warmup   # warm up time (ms)
@@ -181,3 +183,57 @@ class Bipolar:
             self.stim[a].interval = fs/pulse_freq
             self.stim[a].noise  = noise 
             self.stim[a].number = pulses
+
+
+class Uncage:
+    """ simulate glutamate uncaging experiments
+    """
+    def __init__(self):
+        pass
+
+    def branch_sequence(self, seg_idx, delays, bursts=1, pulses=1, pulse_freq=100, burst_freq=5, warmup=30, noise=0):
+        """ activate sequence of synapses along a dendritic branch
+        
+        Arguments:
+
+
+        """
+        fs = 1000. # convert time to ms
+        self.warmup = warmup   # warm up time (ms)
+        self.stim  = [] # list of stim objects
+        # order is same dimensions as seg_idx, but values are time delays relative to the onset
+
+        # stim structure with dimensions {tree}[section index][segment index][burst number]
+        self.stim = {}
+        # iterate over trees
+        for tree_key, tree in seg_idx.iteritems():
+            # add dimension for section
+            self.stim[tree_key] = []
+
+            # itrerate over sections
+            for sec_i, sec in enumerate(tree):
+
+                # add dimension for segments
+                self.stim[tree_key].append([])
+
+                # iterate over segments
+                for seg_i, seg in enumerate(sec):
+
+                    self.stim[tree_key][sec_i].append([])
+
+                    for burst in range(bursts):
+
+                        # create stim object with corresponding delay
+                        self.stim[tree_key][sec_i][seg_i].append(h.NetStim())
+
+                        # update onset time
+                        self.stim[tree_key][sec_i][seg_i][burst].start = self.warmup + delays[tree_key][sec_i][seg_i] + burst*fs/burst_freq
+
+                        # update interpulse interval
+                        self.stim[tree_key][sec_i][seg_i][burst].interval = fs/pulse_freq
+                        self.stim[tree_key][sec_i][seg_i][burst].noise  = noise 
+                        self.stim[tree_key][sec_i][seg_i][burst].number = pulses
+
+
+
+        # iterate overbranches

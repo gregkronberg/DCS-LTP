@@ -38,7 +38,7 @@ class Default(object):
 			'nsec_apical_prox' : 1,
 			'nsec_apical_dist' : 1,
 			'syn_types' : ['ampa', 'nmda', 'clopath'],
-			'fixnseg':True,		# determine number of segments in cylinder according to d_lambda rule
+			'fixnseg':False,		# determine number of segments in cylinder according to d_lambda rule
 
 			# FIXME, must be set so that variable names are unique
 			# set recording variables
@@ -59,10 +59,11 @@ class Default(object):
 			}, 
 
 			# choose y variables to plot [varaibles]
-			'plot_variables' : ['v','i','ik_kad','i_hd', 'ica_calH', 'ina_na3'],
+			'plot_variables' : ['v','i','ik_kad','i_hd', 'ica_calH', 'ina_na3', 'gbar'],
 			# FIXME, should be a list, where you can choose arbitrary combinations of variables 
 			# x variables to plot 
-			'x_var':'t',
+			'x_variables':['t'],
+			'group_trees':False,
 
 			# synapse activation
 			'syn_frac':[],		# fraction of synapses to activate with choose_seg_rand()
@@ -81,7 +82,7 @@ class Default(object):
 
 			# extracellular field stimualation
 			'field_angle': 0,	# angle relative to principle cell axis in radians 
-			'field':[-30,0,30],	# list of stimulation intensities in V/m, negative = cathodal, postivie = anodal
+			'field':[-20,0,20],	# list of stimulation intensities in V/m, negative = cathodal, postivie = anodal
 			'field_color':['b','k','r'],	# plot colors correesponding to entries in field
 			'field_on':20,		# stimulation onset time in (ms)
 			'field_off': 70,	# stimulation offset time in (ms)
@@ -103,8 +104,8 @@ class Default(object):
 			'clopath_tau_y': 5, # time constant (ms) for low pass filter post membrane potential for potentiation
 			'clopath_A_m':.0001, # depression magnitude parameter (mV^-1)
 			'clopath_A_p': .0005, # amplitude for potentiation (mV^-2)
-			'clopath_tetam':-41, # depression threshold (mV)
-			'clopath_tetap':-38, # potentiation threshold (mV)
+			'clopath_tetam':-60,#-41, # depression threshold (mV)
+			'clopath_tetap':-60,#-38, # potentiation threshold (mV)
 
 			# ampa synapse parameters
 			'tau1_ampa' : 0.2,	# rise time constant (ms)
@@ -124,13 +125,13 @@ class Default(object):
 			'gna' :  1.*0.025,#.025,				# peak sodium conductance (mho/cm2)
 			'dgna' : -.000025,			# change in sodium conductance with distance (ohm/cm2/um) from Kim 2015
 			'ena' : 55.,					# sodium reversal potential (mV)
-			'AXONM' : 100.,				# multiplicative factor for axonal conductance
+			'AXONM' : 5.,				# multiplicative factor for axonal conductance
 			'gkdr' : 1.*0.01,#0.01,				# delayed rectifier potassium peak conductance (mho/cm2)
 			'ek' : -90.,					# potassium reversal potential
 			'celsius' : 35.0,  				# temperature (degrees C)
 			'KMULT' :  1.*0.03,#0.03,			# multiplicative factor for distal A-type potassium conductances
 			'KMULTP' : 1.*.03,#0.03,				# multiplicative factor for proximal A-type potassium conductances
-			'ghd' : 1.*0.75*0.0001,#0.0001,			# peak h-current conductance (mho/cm2)
+			'ghd' : 0.75*0.0001,#0.0001,			# peak h-current conductance (mho/cm2)
 			'gcalbar': 1.*.00125 ,			# L-type calcium conductance from Kim et al. 2015 (mho/cm2)
 			'ehd' : -30.,					# h-current reversal potential (mV)
 			'kl_hd' : -5.,#-8.,
@@ -147,6 +148,178 @@ class Default(object):
 			'ka_grad' : 1.,#1.,#1.,				# slope of a-type potassium channel gradient with distance from soma 
 			'ghd_grad' : 5.,#1.,#3.,				# slope of h channel gradient with distance from soma 
 			}
+
+	def set_branch_sequence_ordered(self, seg_idx, delay, direction):
+		"""
+		"""
+		delays = {}
+		# iterate over trees
+		for tree_key, tree in seg_idx.iteritems():
+			delays[tree_key] = []
+			# iterate over sections
+			for sec_i, sec in enumerate(tree):
+				
+				delays[tree_key].append([])
+				
+				n_seg = len(sec)
+
+				# reverse the order of segments and iterate
+				for seg_i, seg in enumerate(sec):
+
+					# if sequence is towards soma
+					if direction is 'in':
+
+						# calculate delay
+						add_delay = float(n_seg-1-seg_i)*delay
+
+					# otherwise if sequence is away from soma
+					elif direction is 'out':
+
+						# calculate delay
+						add_delay = float(seg_i)*delay
+					
+					# store delay
+					delays[tree_key][sec_i].append(add_delay)
+
+		# store in parameter dictionary
+		self.p['sequence_delays'] = delays
+
+	# choose dendritic branch to activate synapses
+	def choose_branch_rand(self, trees, geo, num_sec=1, distance=0, branch=True):
+		""" choose random dendritic branch to activate synapses on and store in sec_idx
+
+		arguments:
+		"""
+		# structure to store section list
+		sec_idx = {}
+
+		# iterate over all trees
+		for tree_key, tree in geo.iteritems():
+
+			# add list for chosen sections
+			sec_idx[tree_key] =[]
+
+			# if tree is in active list
+			if tree_key in trees:
+
+				# list all sections
+				secs_all = [sec_i for sec_i, sec in enumerate(tree)] 
+				
+				# choose random index
+				secs_choose = np.random.choice(len(secs_all), num_sec, replace=False)
+
+				# list of randomly chosen sections
+				sec_list = [secs_all[choose] for choose in secs_choose]
+
+				# iterate over chosen sections
+				for sec_i, sec in enumerate(sec_list):
+
+					if branch:
+						# get distance from soma of section start
+						dist1 = h.distance(0, sec=tree[sec])
+
+						# distance from soma of section end
+						dist2 = h.distance(1, sec=tree[sec])
+
+						# until chosen section is a branch terminal (no children sections) that hasn't already been chosen
+						sref = h.SectionRef(sec=tree[sec])
+						while (sref.nchild() is not 0) and (sec in sec_idx[tree_key]) and (dist2 > distance) :
+
+							# replace with a new random branch
+							sec = secs_all[np.random.choice(len(secs_all), 1, replace=False)]
+
+							# get distance from soma of section start
+							dist1 = h.distance(0, sec=tree[sec])
+
+							# distance from soma of section end
+							dist2 = h.distance(1, sec=tree[sec])
+
+					# once current section is a branch terminal, store the section number in sec_idx
+					sec_idx[tree_key].append(sec)
+
+		# store section list in parameter dictionary
+		self.p['sec_idx'] = sec_idx
+
+	def choose_seg_branch(self, geo, sec_idx, seg_dist, max_seg=[], spacing=0, distance=[]):
+		""" choose active segments on branch based on spacing between segments
+
+		Arguments:
+
+		distance is a list with 1 or 2 entries.  If 1 entry is given, this is considered a minimum distance requirement.  If two entries are given, they are treated as min and max requirements respectively
+		"""
+		# store segment list
+		seg_idx = {}
+		
+		# iterate over trees
+		for tree_key, tree in sec_idx.iteritems():
+			
+			# add dimension for sections
+			seg_idx[tree_key]=[]
+			
+			# iterate over sections
+			for sec_i, sec in enumerate(tree):
+				
+				# add dimension for segments
+				seg_idx[tree_key].append([])
+				
+				# iterate over segments
+				for seg_i, seg in enumerate(geo[tree_key][sec]):
+					
+					# check distance requirement
+					dist_check=False
+
+					# if there is a distance requirement
+					if distance:
+						
+						# if there is a max distance requirement
+						if len(distance)>1:
+							
+							# if segment meets maxdistance requirement
+							if seg_dist[tree_key][sec][seg_i]>distance[0] and seg_dist[tree_key][sec][seg_i]<distance[1]:
+
+								#update distance requireemnt
+								dist_check=True
+
+						# if there is only a minimum requirement
+						elif len(distance)==1:
+
+							# if segment meet min distance requirement
+							if seg_dist[tree_key][sec][seg_i]>distance[0]:
+
+								# update distance requirement
+								dist_check=True
+
+					else:
+						dist_check=True
+
+					# if segment has not been stored yet and min distance is met
+					if not seg_idx[tree_key][sec_i] and dist_check:
+
+						# add segment to list
+						seg_idx[tree_key][sec_i].append(seg_i)
+
+					# otherwise check spacing requirement between current segment and previously added segment
+					elif seg_idx[tree_key][sec_i] and max_seg and len(seg_idx[tree_key][sec_i])< max_seg :
+						
+						# retrieve segment object of previously stored segment
+						previous_seg= [segment for segment_i, segment in enumerate(geo[tree_key][sec]) if segment_i == seg_idx[tree_key][sec_i][-1]][0]
+
+						# previous segment location in um
+						previous_seg_loc = previous_seg.x*geo[tree_key][sec].L
+						# current segment location in um
+						current_seg_loc = seg.x*geo[tree_key][sec].L
+						
+						# distance between current and previous segment
+						seg_space = current_seg_loc - previous_seg_loc
+
+						# if spacing requirement is met
+						if abs(seg_space) > spacing:
+
+							# add segment to list
+							seg_idx[tree_key][sec_i].append(seg_i)
+
+		# update parameter dictionary
+		self.p['seg_idx'] = seg_idx
 
 	def choose_seg_rand(self, trees, syns, syn_frac):
 		""" choose random segments to activate
@@ -267,17 +440,29 @@ class Default(object):
 		self.p['w_list']=w_list
 
 	def seg_distance(self, cell):
-		""" calculate distance from soma of each segment and store in parameters
+		""" calculate distance from soma of each segment and store in parameter dictionary
+
+		p['seg_dist'] organized as {trees}[section idx][segment number]
 		"""
+
+		self.p['seg_dist']={}
+		
 		# iterate over trees
 		for tree_key,tree in cell.geo.iteritems():
+
+			# add dimension for sections
 			self.p['seg_dist'][tree_key]=[]
+			
 			# iterate over sections
 			for sec_i,sec in enumerate(tree):
+				
+				# add dimension for segments
 				self.p['seg_dist'][tree_key].append([])
+				
 				# iterate over segments
 				for seg_i,seg in enumerate(sec):
-					# calculate and store distance from soma
+					
+					# calculate and store distance from soma and store 
 					distance =  h.distance(seg.x, sec=sec)
 					self.p['seg_dist'][tree_key][sec_i].append(distance)
 

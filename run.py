@@ -59,15 +59,24 @@ class Run():
 								setattr(seg['clopath'], p_clopath, p['clopath_'+p_clopath])
 
 	# activate synapses
-	def activate_synapses(self,p):
+	def activate_synapses(self, p):
 		"""
 		"""
-		bipolar = stims.Bipolar()
-		bipolar.tbs(bursts=p['bursts'], warmup=p['warmup'], pulses=p['pulses'], pulse_freq=p['pulse_freq'])
-		self.stim = bipolar.stim
+		# bipolar = stims.Bipolar()
+		# bipolar.tbs(bursts=p['bursts'], warmup=p['warmup'], pulses=p['pulses'], pulse_freq=p['pulse_freq'])
+		# self.stim = bipolar.stim
+		uncage = stims.Uncage()
+		uncage.branch_sequence(seg_idx=p['seg_idx'], 
+			delays=p['sequence_delays'], 
+			bursts=p['bursts'], pulses=p['pulses'], 
+			pulse_freq=p['pulse_freq'],
+			burst_freq=p['burst_freq'],
+			warmup=p['warmup'],
+			noise=p['noise'] )
+		self.stim = uncage.stim
 		self.nc = cell.Syn_act(p=p, syns=self.cell1.syns, stim=self.stim)
 
-	def shape_plot(self,p):
+	def shape_plot(self, p):
 		# highlight active sections
 		self.shapeplot = h.PlotShape()
 		
@@ -77,7 +86,7 @@ class Run():
 			self.sl.append(sec=self.cell1.geo[p['trees']][sec])
 			self.shapeplot.color(2, sec=self.cell1.geo[p['trees']][sec])
 
-	def recording_vectors(self,p):
+	def recording_vectors(self, p):
 		# set up recording vectors
 		self.rec =  {}
 		
@@ -106,9 +115,7 @@ class Run():
 
 						# if variable occurs in a synapse object
 						if 'syn' in var_dic:
-							if tree_key=='soma':
 
-								print tree_key, self.cell1.syns[tree_key][sec_i][seg_i].keys()
 							# check if synapse type exists in this segment
 							if var_dic['syn'] in self.cell1.syns[tree_key][sec_i][seg_i].keys():
 
@@ -186,7 +193,6 @@ class Run():
 			# loop over trees
 			for tree_key,tree in self.rec.iteritems():
 				
-				# print tree_key
 				# add list for each field polarity
 				self.data[str(f)][tree_key]=[]
 
@@ -199,8 +205,7 @@ class Run():
 						
 						# loop over segments
 						for seg_i,seg in enumerate(sec):
-							
-							# print len(self.rec[tree_key][sec_i][seg_i])
+
 							self.data[str(f)][tree_key][sec_i].append(np.array(self.rec[tree_key][sec_i][seg_i]))
 
 			self.data[str(f)]['t'] = np.array(self.rec['t'])
