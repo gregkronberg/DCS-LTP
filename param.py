@@ -122,19 +122,20 @@ class Default(object):
 			# conversion 10,000*(pS/um2) = 10*(nS/um2) = (mho/cm2) = .001*(mS/cm2)
 			# *** units in paper are a typo, values are already reported in (mho/cm2) ***
 			'Vrest' : -65.,				# resting potential (mV)
-			'gna' :  1.*0.025,#.025,				# peak sodium conductance (mho/cm2)
+			'gna' :  1.*0.04,#.025,				# peak sodium conductance (mho/cm2)
 			'dgna' : -.000025,			# change in sodium conductance with distance (ohm/cm2/um) from Kim 2015
 			'ena' : 55.,					# sodium reversal potential (mV)
-			'AXONM' : 5.,				# multiplicative factor for axonal conductance
+			'AXONM' : 40.,				# multiplicative factor for axonal conductance to generate axon potentials in AIS
+			'SOMAM':1.,
 			'gkdr' : 1.*0.01,#0.01,				# delayed rectifier potassium peak conductance (mho/cm2)
 			'ek' : -90.,					# potassium reversal potential
 			'celsius' : 35.0,  				# temperature (degrees C)
 			'KMULT' :  1.*0.03,#0.03,			# multiplicative factor for distal A-type potassium conductances
 			'KMULTP' : 1.*.03,#0.03,				# multiplicative factor for proximal A-type potassium conductances
-			'ghd' : 0.75*0.0001,#0.0001,			# peak h-current conductance (mho/cm2)
+			'ghd' : 0.5*0.0001,#0.0001,			# peak h-current conductance (mho/cm2)
 			'gcalbar': 1.*.00125 ,			# L-type calcium conductance from Kim et al. 2015 (mho/cm2)
 			'ehd' : -30.,					# h-current reversal potential (mV)
-			'kl_hd' : -5.,#-8.,
+			'kl_hd' : -6.,#-8.,
 			'vhalfl_hd_prox' : -83.,#-73,			# activation threshold for proximal h current (mV)
 			'vhalfl_hd_dist' : -83.,#-81,			# activation threshold for distal h-current (mV)
 			'vhalfl_kad' : -56.,#-56.,			# inactivation threshold for distal a-type current (mV)
@@ -146,7 +147,7 @@ class Default(object):
 			'RmAll' : 28000.,			# specific membrane resistance (ohm/cm2)
 			'Cm' : 1.,					# specific membrane capacitance (uf/cm2)
 			'ka_grad' : 1.,#1.,#1.,				# slope of a-type potassium channel gradient with distance from soma 
-			'ghd_grad' : 5.,#1.,#3.,				# slope of h channel gradient with distance from soma 
+			'ghd_grad' : 3.,#1.,#3.,				# slope of h channel gradient with distance from soma 
 			}
 
 	def set_branch_sequence_ordered(self, seg_idx, delay, direction):
@@ -184,20 +185,59 @@ class Default(object):
 		# store in parameter dictionary
 		self.p['sequence_delays'] = delays
 
+	def choose_branch_manual(self, geo, trees, sec_list, full_path):
+		"""
+		"""
+
+		sec_idx = {}
+		parent_idx={}
+		for tree_key, tree in geo.iteritems():
+			sec_idx[tree_key]=[]
+			parent_idx[tree_key]=[]
+			if tree_key in trees:
+				for sec_i, sec in enumerate(sec_list):
+
+					sec_idx[tree_key].append(sec)
+					parent_idx[tree_key][sec_i].append([])
+
+					# if full path from branch terminal to soma is to be tracked
+					if full_path:
+
+						# current section ref starting branch terminal
+						sref_current = h.SectionRef(sec=tree[sec])
+
+						# while the current section has a parent
+						while sref_current.has_parent:
+							# retrieve parent section object
+							parent=sref_current.parent
+							# get index in geo structure
+							parent_sec_i = [section_i for section_i, section in enumerate(tree) if section is parent][0]
+							# add to parent list
+							parent_idx[tree_key][sec_i].append(parent_sec_i)
+							# update current section ref
+							sref_current = h.SectionRef(sec=parent)
+
+		self.p['sec_idx'] = sec_idx
+
 	# choose dendritic branch to activate synapses
-	def choose_branch_rand(self, trees, geo, num_sec=1, distance=0, branch=True):
-		""" choose random dendritic branch to activate synapses on and store in sec_idx
+	
+	def choose_branch_rand(self, trees, geo, num_sec=1, distance=[], branch=True, full_path=True):
+		""" choose random dendritic branch to activate synapses on and store in sec_idx.  option to store list of sections that lead from branch terminal to soma.
 
 		arguments:
 		"""
 		# structure to store section list
 		sec_idx = {}
+		# store list of parent sections for chosen section
+		# parent idx will be in reverse order(i.e. from branch terminal towards soma)
+		parent_idx ={}
 
 		# iterate over all trees
 		for tree_key, tree in geo.iteritems():
 
 			# add list for chosen sections
 			sec_idx[tree_key] =[]
+			parent_idx[tree_key] = []
 
 			# if tree is in active list
 			if tree_key in trees:
@@ -214,31 +254,97 @@ class Default(object):
 				# iterate over chosen sections
 				for sec_i, sec in enumerate(sec_list):
 
-					if branch:
+					# add dimension for each section
+					parent_idx[tree_key].append([])
+					
+					# check distance and branch requirements
+					dist_check=False
+					branch_check=False
+					iter_cnt = 0
+					while (dist_check==False or branch_check==False) and iter_cnt<len(secs_all):
+						
 						# get distance from soma of section start
 						dist1 = h.distance(0, sec=tree[sec])
-
 						# distance from soma of section end
 						dist2 = h.distance(1, sec=tree[sec])
+						
+						# if there is a distance requirement
+						if distance:
+							# get minimum distance requirement
+							min_distance=distance[0]
+							
+							# if there is no maximum distance requirement
+							if len(distance)==1:
+								# if min distance reuirement is met
+								if dist2>min_distance:
+									# update distance check
+									dist_check=True
+							
+							# if there is also a max distance requirement
+							if len(distance)>1:
+								# get max distance
+								max_distance=distance[0]
+								
+								# if there is a part of the section that satisfies both distance reuirements
+								if dist1<max_distance and dist2>min_distance:
+									# update distance check
+									dist_check=True
+						
+						# if there is no distance reuirement
+						else:
+							# update distance check
+							dist_check=True
+						
+						# if there is branch requirement
+						if branch:
 
-						# until chosen section is a branch terminal (no children sections) that hasn't already been chosen
-						sref = h.SectionRef(sec=tree[sec])
-						while (sref.nchild() is not 0) and (sec in sec_idx[tree_key]) and (dist2 > distance) :
+							# get section ref for the selected branch
+							sref = h.SectionRef(sec=tree[sec])
 
-							# replace with a new random branch
+							# if the section has no children, it is a branch terminal 
+							if sref.nchild() is 0:
+
+								# update branch check
+								branch_check=True
+
+						# if no branch reuirement 
+						else:
+							# update branch check
+							branch_check=True
+
+						# if either reuirement not met, choose a new branch
+						if (not dist_check) or (not branch_check):
+							iter_cnt+=1
 							sec = secs_all[np.random.choice(len(secs_all), 1, replace=False)]
+					
+					# if all sections are iterated through without satisfying requirements
+					if iter_cnt>=len(secs_all) and (not dist_check or not branch_check):
+						sec=[]
+						print 'no sections meet specified distance and branch requirements'
 
-							# get distance from soma of section start
-							dist1 = h.distance(0, sec=tree[sec])
+					# if full path from branch terminal to soma is to be tracked
+					if full_path:
 
-							# distance from soma of section end
-							dist2 = h.distance(1, sec=tree[sec])
+						# current section ref starting branch terminal
+						sref_current = h.SectionRef(sec=tree[sec])
+
+						# while the current section has a parent
+						while sref_current.has_parent:
+							# retrieve parent section object
+							parent=sref_current.parent
+							# get index in geo structure
+							parent_sec_i = [section_i for section_i, section in enumerate(tree) if section is parent][0]
+							# add to parent list
+							parent_idx[tree_key][sec_i].append(parent_sec_i)
+							# update current section ref
+							sref_current = h.SectionRef(sec=parent)
 
 					# once current section is a branch terminal, store the section number in sec_idx
 					sec_idx[tree_key].append(sec)
 
 		# store section list in parameter dictionary
 		self.p['sec_idx'] = sec_idx
+		self.p['parent_idx'] = parent_idx
 
 	def choose_seg_branch(self, geo, sec_idx, seg_dist, max_seg=[], spacing=0, distance=[]):
 		""" choose active segments on branch based on spacing between segments
@@ -247,6 +353,8 @@ class Default(object):
 
 		distance is a list with 1 or 2 entries.  If 1 entry is given, this is considered a minimum distance requirement.  If two entries are given, they are treated as min and max requirements respectively
 		"""
+
+		#FIXME: add segments to active list start at section terminal
 		# store segment list
 		seg_idx = {}
 		
@@ -262,18 +370,34 @@ class Default(object):
 				# add dimension for segments
 				seg_idx[tree_key].append([])
 				
+				# number of segments
+				num_seg = geo[tree_key][sec].nseg
+
+				# list of segment indeces in reverse order
+				seg_i_list_reverse = range(num_seg)[::-1]
+
+				# iterate backwards through segment indeces
+				for seg_i in seg_i_list_reverse:
+
+					# relative segment location
+					seg_loc = float(seg_i+1)/float(num_seg) - 1./(2.*num_seg)
+
+					# get segment object
+					seg = geo[tree_key][sec](seg_loc)
+
 				# iterate over segments
-				for seg_i, seg in enumerate(geo[tree_key][sec]):
+				# for seg_i, seg in enumerate(seg_list_temp.reverse()):
 					
 					# check distance requirement
 					dist_check=False
 
 					# if there is a distance requirement
 					if distance:
-						
+						# print dist_check
 						# if there is a max distance requirement
 						if len(distance)>1:
 							
+							print distance[0], seg_dist[tree_key][sec][seg_i], distance[1]
 							# if segment meets maxdistance requirement
 							if seg_dist[tree_key][sec][seg_i]>distance[0] and seg_dist[tree_key][sec][seg_i]<distance[1]:
 
@@ -290,16 +414,20 @@ class Default(object):
 								dist_check=True
 
 					else:
+						# print dist_check
 						dist_check=True
 
+					if not dist_check:
+						print 'distance requirement not met for active segments'
+
 					# if segment has not been stored yet and min distance is met
-					if not seg_idx[tree_key][sec_i] and dist_check:
+					if (not seg_idx[tree_key][sec_i]) and (dist_check):
 
 						# add segment to list
 						seg_idx[tree_key][sec_i].append(seg_i)
 
 					# otherwise check spacing requirement between current segment and previously added segment
-					elif seg_idx[tree_key][sec_i] and max_seg and len(seg_idx[tree_key][sec_i])< max_seg :
+					elif seg_idx[tree_key][sec_i] and ((max_seg and len(seg_idx[tree_key][sec_i])< max_seg) or not max_seg) :
 						
 						# retrieve segment object of previously stored segment
 						previous_seg= [segment for segment_i, segment in enumerate(geo[tree_key][sec]) if segment_i == seg_idx[tree_key][sec_i][-1]][0]
@@ -318,10 +446,12 @@ class Default(object):
 							# add segment to list
 							seg_idx[tree_key][sec_i].append(seg_i)
 
+				seg_idx[tree_key][sec_i].sort()
+
 		# update parameter dictionary
 		self.p['seg_idx'] = seg_idx
 
-	def choose_seg_rand(self, trees, syns, syn_frac):
+	def choose_seg_rand(self, trees, syns, syn_frac, seg_dist, syn_num=[],distance=[]):
 		""" choose random segments to activate
 		arguments:
 		
@@ -347,8 +477,22 @@ class Default(object):
 				# list all segments as [[section,segment]] 
 				segs_all = [[sec_i,seg_i] for sec_i,sec in enumerate(tree) for seg_i,seg in enumerate(tree[sec_i])]
 
-				# choose segments to activate
-				segs_choose = np.random.choice(len(segs_all), int(syn_frac*len(segs_all)), replace=False)
+				# apply distance criteria
+				if distance:
+
+					print 'distance requirement'
+					segs_all_dist = [seg for seg_i, seg in enumerate(segs_all) if seg_dist[tree_key][seg[0]][seg[1]]>distance[0] and seg_dist[tree_key][seg[0]][seg[1]]<distance[1]] 
+
+					print len(segs_all_dist)
+					segs_all = segs_all_dist
+
+				if syn_num:
+					# choose segments to activate
+					segs_choose = np.random.choice(len(segs_all), syn_num, replace=False)
+
+				else:
+					# choose segments to activate
+					segs_choose = np.random.choice(len(segs_all), int(syn_frac*len(segs_all)), replace=False)
 
 				# list of active sections (contains duplicates)
 				sec_list = [segs_all[a][0] for a in segs_choose]
@@ -388,8 +532,9 @@ class Default(object):
 			
 			# list of active segments as [unique section][segments]
 			seg_idx[tree_key] = []
-			for sec in sec_idx:
+			for sec in sec_idx[tree_key]:
 				seg_idx[tree_key].append([seg_list[tree_key][sec_i] for sec_i,sec_num in enumerate(tree) if sec_num==sec])
+
 
 		# update parameter dictionary
 		self.p['sec_list'] = sec_list

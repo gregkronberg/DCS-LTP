@@ -26,12 +26,13 @@ class Run():
 	data is organized as data['type of data'][experiments][sections][time series data vector]
 	details of each experiment are tracked via the data['detail'][experiment number], e.g. data['field'][2]
 	"""
-	def __init__(self, p):
+	def __init__(self, p, cell):
 
 		# create cell
 		# self.cell1 = cell.CellMigliore2005(p)
 		# self.cell1 = cell.PyramidalCylinder(p) 
-		self.cell1 = p['cell'] # cell must be deleted from p before saving
+		# self.cell1 = p['cell'] # cell must be deleted from p before saving
+		self.cell1 = cell
 		self.update_clopath( p, syns=self.cell1.syns)
 		self.activate_synapses(p)
 		self.recording_vectors(p)
@@ -210,23 +211,20 @@ class Run():
 
 			self.data[str(f)]['t'] = np.array(self.rec['t'])
 
+		# clear synapses for repeated simulations
+		self.nc=[]
+
 def save_data(data, file_name):	# save data
 	p = data['p']
 	# delete cell hoc object (can't be pickled)
-	p['cell']=[]
+	if p['cell']:
+		p['cell']=[]
 	# check if folder exists with experiment name
 	
 	if os.path.isdir(p['data_folder']) is False:
 		os.mkdir(p['data_folder'])
 
 	with open(p['data_folder']+'data_'+
-		# p['experiment']+
-		# '_trial_'+str(p['trial'])+
-		# '_weight_'+str(p['w_mean'])+
-		# '_synfrac_'+str(p['syn_frac'])+
-		# 'IhThresh_'+str(p['vhalfl_hd_prox'])+
-		# 'KaThresh_'+str(p['vhalfn_kap'])+
-		# '_'+p['trial_id']+
 		file_name+
 		'.pkl', 'wb') as output:
 

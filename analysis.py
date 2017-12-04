@@ -425,7 +425,7 @@ class PlotRangeVar():
 					file_name=p_data['trial_id'],
 					group_trees=p_data['group_trees'])
 
-	def plot_trace(self, data, trees, sec_idx, seg_idx, soma=True, group_trees=True, variables=['v'], x_variables='t', xlim=[], ylim=[], file_name=''):
+	def plot_trace(self, data, trees, sec_idx, seg_idx, soma=True, axon=True, group_trees=True, variables=['v'], x_variables='t', xlim=[], ylim=[], file_name=''):
 		""" Create a figure containing a subplot for each segment specified in seg_idx
 
 		variable is a list of range variable key words indicating which varaible to plot.  A new figure is created and saved for each variable
@@ -457,8 +457,11 @@ class PlotRangeVar():
 					# number of segments to plot
 					nseg =  sum([sum(seg_i+1 for seg_i,seg in enumerate(sec)) for tree_key, tree in seg_idx.iteritems() for sec in tree if tree_key in p['trees'] ])+1
 
+					print nseg
 					# plot soma trace?
 					if soma:
+						nseg+=1
+					if axon:
 						nseg+=1
 
 					# columns and rows for subplot array	
@@ -478,133 +481,193 @@ class PlotRangeVar():
 				# iterate over trees
 				for tree_key, tree in seg_idx.iteritems():
 
-					# if each subtree gets its own figure
 					if not group_trees:
-						fig[var][x_var][tree_key] = plt.figure()
+						cnt=0
 
-						# number of segments to plot
-						nseg =  sum([sum(seg_i+1 for seg_i,seg in enumerate(sec)) for sec in tree])+1
-						
-						# plot soma trace?
+					# check that there are active sections in the tree
+					if tree:
+
+						# if each subtree gets its own figure
+						if not group_trees:
+							fig[var][x_var][tree_key] = plt.figure()
+
+							# number of segments to plot
+							nseg =  sum([sum(seg_i+1 for seg_i,seg in enumerate(sec)) for sec in tree])+1
+							
+							print'nseg:',nseg
+							# plot soma trace?
+							if soma:
+								nseg+=1
+							if axon:
+								nseg+=1
+
+							# columns and rows for subplot array	
+							cols = int(math.ceil(math.sqrt(nseg)))
+							rows = int(math.ceil(math.sqrt(nseg)))
+
+							print 'rows,cols:',rows,cols
+
+						# iterate over sections
+						for sec_i,sec in enumerate(tree):
+
+							# derive section number from index
+							sec_num = sec_idx[tree_key][sec_i]
+							
+							# iterate over segments
+							for seg_i, seg in enumerate(sec):
+								
+								# count subplots (segments)
+								cnt+=1
+								
+								# create subplot
+								plt.subplot(rows, cols, cnt)
+
+								# get segment distance from soma
+								seg_dist = p['seg_dist'][tree_key][sec_num][seg]
+								
+								# plot title
+								plt.title(tree_key + ('%.2f'%seg_dist) )
+
+								# adjust limits
+								if var is 'v':
+									if xlim:
+										plt.xlim(xlim)
+									if ylim:
+										plt.ylim(ylim)
+								
+								# iterate over stimulation polarity
+								for f_i, f in enumerate(p['field']):
+								
+									# check if variable exists in the current section
+									if data[str(f)][tree_key+'_'+var][sec_num]:
+
+										# if not plotting the soma trace
+										if soma and cnt<nseg:
+
+											# retrieve time series to plot
+											v = data[str(f)][tree_key+'_'+var][sec_num][seg]
+
+											# retrieve x variable
+											if x_var =='t':
+												# time vector
+												xv = data[str(f)]['t']
+
+											# other variable from arguments
+											else:
+												xv = data[str(f)][tree_key+'_'+x_var][sec_num][seg]
+
+
+										# set plot color based on stimulation polarity
+										color = p['field_color'][f_i]
+										
+										# add trace to corresponding subplot
+										plt.plot(xv, v, color=color)
+										plt.xlabel(x_var)
+										plt.ylabel(var)
+
 						if soma:
-							nseg+=1
-
-						# columns and rows for subplot array	
-						cols = int(math.ceil(math.sqrt(nseg)))
-						rows = int(math.ceil(math.sqrt(nseg)))
-
-					# iterate over sections
-					for sec_i,sec in enumerate(tree):
-
-						# derive section number from index
-						sec_num = sec_idx[tree_key][sec_i]
-						
-						# iterate over segments
-						for seg_i, seg in enumerate(sec):
-							
-							# count subplots (segments)
 							cnt+=1
-							
-							# create subplot
-							plt.subplot(rows, cols, cnt)
 
-							# get segment distance from soma
-							seg_dist = p['seg_dist'][tree_key][sec_num][seg]
-							
-							# plot title
-							plt.title(tree_key + ('%.2f'%seg_dist) )
-
-							# adjust limits
-							if xlim:
-								plt.xlim(xlim)
-							if ylim:
-								plt.ylim(ylim)
-							
-							# iterate over stimulation polarity
+							# if plotting soma trace
 							for f_i, f in enumerate(p['field']):
-							
-								# check if variable exists in the current section
-								if data[str(f)][tree_key+'_'+var][sec_num]:
 
-									# if not plotting the soma trace
-									if soma and cnt<nseg:
+	
+								# if variable exists in soma data
+								if 'soma_'+var in data[str(f)].keys():
+									if len(data[str(f)]['soma_'+var][0][0])>0:
+									
+										# subplot for soma trace
+										plt.subplot(rows, cols, cnt)
 
-										# retrieve time series to plot
-										v = data[str(f)][tree_key+'_'+var][sec_num][seg]
+										# adjust limits
+										if var is 'v':
+											if xlim:
+												plt.xlim(xlim)
+											if ylim:
+												plt.ylim(ylim)
 
-										# retrieve x variable
+										# retrieve data to plot
+										v = data[str(f)]['soma_'+var][0][0] 
+
+										# determine x variable to plot
 										if x_var =='t':
 											# time vector
 											xv = data[str(f)]['t']
-
-										# other variable from arguments
 										else:
-											xv = data[str(f)][tree_key+'_'+x_var][sec_num][seg]
+											xv = data[str(f)]['soma_'+x_var][0][0]
+										
+										# set plot color
+										color = p['field_color'][f_i]
+										
+										plt.plot(xv, v, color=color)
+										plt.title('soma')
+										plt.xlabel(x_var)
+										plt.ylabel(var)
 
+						if axon:
+							cnt+=1
 
-									# set plot color based on stimulation polarity
-									color = p['field_color'][f_i]
+							# if plotting soma trace
+							for f_i, f in enumerate(p['field']):
+
+								# if variable exists in soma data
+								if 'axon_'+var in data[str(f)].keys():
+									if len(data[str(f)]['axon_'+var][0][0])>0:
 									
-									# add trace to corresponding subplot
-									plt.plot(xv, v, color=color)
-									plt.xlabel(x_var)
-									plt.ylabel(var)
+										# subplot for soma trace
+										plt.subplot(rows, cols, cnt)
 
-					# if plotting soma trace
-					for f_i, f in enumerate(p['field']):
+										# adjust limits
+										if var is 'v':
+											if xlim:
+												plt.xlim(xlim)
+											if ylim:
+												plt.ylim(ylim)
+
+										# retrieve data to plot
+										v = data[str(f)]['axon_'+var][0][0] 
+
+										# determine x variable to plot
+										if x_var =='t':
+											# time vector
+											xv = data[str(f)]['t']
+										else:
+											xv = data[str(f)]['axon_'+x_var][0][0]
+										
+										# set plot color
+										color = p['field_color'][f_i]
+										
+										plt.plot(xv, v, color=color)
+										plt.title('axon')
+										plt.xlabel(x_var)
+										plt.ylabel(var)
 						
-						# if variable exists in soma data
-						if 'soma_'+var in data[str(f)].keys():
-							if len(data[str(f)]['soma_'+var][0][0])>0:
-							
-								# subplot for soma trace
-								plt.subplot(rows, cols, nseg)
-
-								# retrieve data to plot
-								v = data[str(f)]['soma_'+var][0][0] 
-
-								# determine x variable to plot
-								if x_var =='t':
-									# time vector
-									xv = data[str(f)]['t']
-								else:
-									xv = data[str(f)]['soma_'+x_var][0][0]
-								
-								# set plot color
-								color = p['field_color'][f_i]
-								
-								plt.plot(xv, v, color=color)
-								plt.title('soma')
-								plt.xlabel(x_var)
-								plt.ylabel(var)
-								# plt.xlim([10, p['tstop']])
-					
-					# save figure
-					# if each tree has separate figure
-					if not group_trees:
-						
-						# info to add to file name
-						file_name_add = tree_key+'_trace_'+x_var+'_x_'+var
-
 						# save figure
-						fig[var][x_var][tree_key].savefig(p['data_folder']+file_name_add+file_name+'.png', dpi=300)
+						# if each tree has separate figure
+						if not group_trees:
+							
+							# info to add to file name
+							file_name_add = tree_key+'_trace_'+x_var+'_x_'+var
 
-						# close figure
-						plt.close(fig[var][x_var][tree_key])
+							# save figure
+							fig[var][x_var][tree_key].savefig(p['data_folder']+file_name_add+file_name+'.png', dpi=300)
 
-				# if all trees are in the same figure
-				if group_trees:
-					all_trees =''
-					for tree_key, tree in seg_idx.iteritems():
-						all_trees = all_trees+tree_key+'_'
+							# close figure
+							plt.close(fig[var][x_var][tree_key])
 
-					# info to add to file name
-					file_name_add = all_trees+'trace_'+x_var+'_x_'+var
+					# if all trees are in the same figure
+					if group_trees:
+						all_trees =''
+						for tree_key, tree in seg_idx.iteritems():
+							all_trees = all_trees+tree_key+'_'
 
-					# save and close figure
-					fig[var][x_var].savefig(p['data_folder']+file_name_add+file_name+'.png', dpi=300)
+						# info to add to file name
+						file_name_add = all_trees+'trace_'+x_var+'_x_'+var
 
-					plt.close(fig[var][x_var])
+						# save and close figure
+						fig[var][x_var].savefig(p['data_folder']+file_name_add+file_name+'.png', dpi=300)
+
+						plt.close(fig[var][x_var])
 
 class Shapeplot():
 	""" create shape plot 
@@ -623,153 +686,6 @@ class Experiment:
 		plots = PlotRangeVar()
 		plots.plot_all(kwargs['p'])
 
-	# def exp_1(self, **kwargs):
-	# 	""" 
-	# 	plot average weight change as a function of distance from soma 
-	# 	"""
-	# 	npol = 3 
-	# 	control_idx = 1
-	# 	data_folder = 'Data/'+kwargs['exp']+'/'
-	# 	files = os.listdir(data_folder)
-	# 	dw = np.zeros([npol, len(files)])
-	# 	syn_weight = np.zeros([1,len(files)])
-	# 	w = {'cell_list' : [],
-	# 	'weight_list' : [],
-	# 	'syn_frac_list' : [] }
-	# 	spikes = Spikes()
-	# 	fig3 = plt.figure(3)
-	# 	fig4 = plt.figure(4)
-	# 	for data_file_i, data_file in enumerate(files):
-	# 		if 'data' in data_file:
-
-	# 			with open(data_folder+data_file, 'rb') as pkl_file:
-	# 				data = pickle.load(pkl_file)
-	# 			p = data['p']
-	# 			cell_id = p['trial_id']
-	# 			w['cell_list'].append(cell_id)
-	# 			w['weight_list'].append(p['w_mean'])
-	# 			w['syn_frac_list'].append(p['syn_frac'])
-
-
-	# 			fig1 = plt.figure(1)
-	# 			fig2 = plt.figure(2)
-				
-	# 			w[cell_id]=[]
-	# 			corr_win = int(p['warmup']/p['dt'])
-				
-	# 			for field_i, field in enumerate(p['field']):
-	# 				w[cell_id].append([])
-	# 				spike_t_soma = spikes.detect_spikes(data['soma'+'_v'][field_i][0][0])['times']
-	# 				spike_train_soma = spikes.detect_spikes(data['soma'+'_v'][field_i][0][0])['train']
-	# 				for sec_i, sec in enumerate(p['sec_idx']):
-	# 					w[cell_id][field_i].append([])
-	# 					for seg_i,seg in enumerate(p['seg_idx'][sec_i]):
-	# 						w_end = data[p['tree']+'_w'][field_i][sec][seg][-1]
-	# 						w_start = data[p['tree']+'_w'][field_i][sec][seg][0]
-	# 						dw = w_end/w_start
-	# 						seg_dist = p['seg_dist'][p['tree']][sec][seg]
-	# 						spike_t = spikes.detect_spikes(data[p['tree']+'_v'][field_i][sec][seg])['times']
-	# 						spike_train = spikes.detect_spikes(data[p['tree']+'_v'][field_i][sec][seg])['train']
-	# 						w[cell_id][field_i][sec_i].append({})
-	# 						w[cell_id][field_i][sec_i][seg_i]['dw'] = dw
-	# 						w[cell_id][field_i][sec_i][seg_i]['seg_dist'] = seg_dist
-	# 						# measure spike times
-	# 						w[cell_id][field_i][sec_i][seg_i]['spike_t'] = spike_t
-	# 						w[cell_id][field_i][sec_i][seg_i]['spike_train'] = spike_train
-	# 						# spike cross correlation with soma
-	# 						# print spike_train_soma.shape
-	# 						# print spike_train.shape
-	# 						spike_xcorr = np.correlate(spike_train_soma[0,:], spike_train[0,:], mode='full')
-	# 						w[cell_id][field_i][sec_i][seg_i]['spike_xcorr'] = spike_xcorr
-	# 						plt.figure(1)
-	# 						plt.plot(seg_dist, dw, '.', color=p['field_color'][field_i])
-	# 						plt.figure(2)
-	# 						plt.plot(p['dt']*(np.arange(spike_xcorr.size)-spike_xcorr.size/2), spike_xcorr, color=p['field_color'][field_i])
-	# 						plt.figure(3)
-	# 						plt.plot(seg_dist, dw, '.', color=p['field_color'][field_i])
-
-	# 			for field_i, field in enumerate(p['field']):
-	# 				for sec_i, sec in enumerate(p['sec_idx']):
-	# 					for seg_i,seg in enumerate(p['seg_idx'][sec_i]):
-	# 						w[cell_id][field_i][sec_i][seg_i]['dw_effect'] = w[cell_id][field_i][sec_i][seg_i]['dw']/w[cell_id][control_idx][sec_i][seg_i]['dw']
-	# 						plt.figure(4)
-	# 						plt.plot(w[cell_id][field_i][sec_i][seg_i]['seg_dist'], w[cell_id][field_i][sec_i][seg_i]['dw_effect'], '.', color=p['field_color'][field_i])
-
-	# 			plt.figure(1)			
-	# 			plt.xlabel('distance from soma um')
-	# 			plt.ylabel('weight change')
-	# 			fig1.savefig(data_folder+'fig_dw_dist_'+cell_id+'.png', dpi=300)
-	# 			plt.close(fig1)
-	# 			plt.figure(2)			
-	# 			plt.xlabel('delay (ms)')
-	# 			plt.ylabel('correlation')
-	# 			fig2.savefig(data_folder+'fig_xcorr_'+cell_id+'.png', dpi=300)
-	# 			plt.close(fig2)
-
-	# 	# mean for across cells and synapses
-	# 	w_all = {}
-	# 	w_all_mean ={}
-	# 	w_all_sem = {}
-	# 	w_all_std = {}
-	# 	for weight_i, weight in enumerate(set(w['weight_list'])):
-	# 		weight_key = str(weight)
-	# 		w_all[weight_key]={}
-	# 		w_all_mean[weight_key]={}
-	# 		w_all_sem[weight_key]={}
-	# 		w_all_std[weight_key]={}
-	# 		for syn_frac_i, syn_frac in enumerate(set(w['syn_frac_list'])):
-	# 			syn_frac_key = str(syn_frac)
-	# 			w_all[weight_key][syn_frac_key]=[]
-	# 			w_all_mean[weight_key][syn_frac_key] = np.zeros([3,1])
-	# 			w_all_std[weight_key][syn_frac_key] = np.zeros([3,1])
-	# 			w_all_sem[weight_key][syn_frac_key] = np.zeros([3,1])
-	# 			for field_i in range(npol):
-	# 				w_all[weight_key][syn_frac_key].append([])
-	# 				for cell_key, cell in w.iteritems():
-	# 					if cell_key not in ['cell_list', 'weight_list', 'syn_frac_list']: 
-	# 						for sec_i, sec in enumerate(cell[field_i]):
-	# 							for seg_i,seg in enumerate(sec):
-	# 								cell_num = [cell_id_i for cell_id_i, cell_id in enumerate(w['cell_list']) if cell_id is cell_key][0]
-	# 								print cell_num
-	# 								if (w['weight_list'][cell_num] == weight) and (w['syn_frac_list'][cell_num]) == syn_frac:
-	# 									w_all[weight_key][syn_frac_key][field_i].append( seg['dw'])
-	# 				w_all[weight_key][syn_frac_key][field_i] = np.array(w_all[weight_key][syn_frac_key][field_i])
-	# 				print w_all[weight_key][syn_frac_key][field_i].shape
-	# 				w_all_mean[weight_key][syn_frac_key][field_i] = np.mean(w_all[weight_key][syn_frac_key][field_i])
-	# 				w_all_sem[weight_key][syn_frac_key][field_i] = stats.sem(w_all[weight_key][syn_frac_key][field_i])
-	# 				w_all_std[weight_key][syn_frac_key][field_i] = np.std(w_all[weight_key][syn_frac_key][field_i])
-	# 			fig5 = plt.figure(5)
-	# 			for field_i in range(npol):
-	# 				plt.plot(w_all_mean[weight_key][syn_frac_key][field_i], '.', color=p['field_color'][field_i])
-			
-	# 			plt.ylabel('weight change')
-	# 			fig5.savefig(data_folder+'fig_dw_mean'+'_weight_'+weight_key+'syn_frac_'+syn_frac_key+'.png', dpi=300)
-	# 			plt.close(fig5)
-
-
-	# 	plt.figure(3)			
-	# 	plt.xlabel('distance from soma um')
-	# 	plt.ylabel('weight change')
-	# 	fig3.savefig(data_folder+'fig_dw_dist_all'+'.png', dpi=300)
-	# 	plt.close(fig3)
-
-	# 	plt.figure(4)			
-	# 	plt.xlabel('distance from soma um')
-	# 	plt.ylabel('dcs effect (dw field/control)')
-	# 	fig4.savefig(data_folder+'fig_dw_effect_dist_all'+'.png', dpi=300)
-	# 	plt.close(fig4)
-
-	# 			# plot weight cchange as a function of distance for all cells
-
-
-
-	# 	# iterate over data files
-	# 	# iterate over synapses
-	# 			# if active
-	# 					# store weight change
-	# 					# store spike time
-	# 					# store distance from soma
-	# 					# store in ['cell identifier'][tree][section][segment]['varaiable']
 	
 	def exp_2(self, **kwargs):
 		pass
@@ -802,6 +718,71 @@ class Experiment:
 		# plt.ylabel('weight change')
 		# fig.savefig(data_folder+'fig_dw'+'.png', dpi=250)
 		# plt.close(fig)
+
+	def exp_2b(self, **kwargs):
+		""" activate groups of synapses at varying distance from soma until dendritic or somatic spikes are observed
+		"""
+		pass
+
+	def exp_2c(self, **kwargs):
+		""" activate synapse in each segment until a spike either occurs in the soma or dendrite.  Plot the number of synapses(weight) required at each segment as a function of distance from soma
+		"""
+
+		# identify data folder
+		data_folder = 'Data/'+kwargs['experiment']+'/'
+
+		# all files in directory
+		files = os.listdir(data_folder)
+		# data files
+		data_files = [file for file in files if 'data' in file]
+		plot_files = [file for file in files if 'trace' in file]
+		# unique identifiers for each file type
+		data_files_id= [file[-36:-1] for file in files if 'data' in file]
+		plot_files_id = [file[-36:-1] for file in files if 'trace' in file]
+
+		# if group variable in folder, load variable
+		if 'id_list.pkl' in files:
+			print 'id_list found'
+			
+			with open(data_folder+'id_list'+'.pkl', 'rb') as pkl_file:
+					id_list = pickle.load(pkl_file)
+		
+		# otherwise create variable
+		else:
+			id_list = []
+
+		spike_anal = Spikes()
+		# iterate over data files
+		for data_file_i, data_file in enumerate(data_files):
+			
+			if data_file_i >=0:
+				print 'data_file:', data_file_i
+
+				# check if data has been processed already
+				if data_file not in id_list:
+
+					# open unprocessed data
+					with open(data_folder+data_file, 'rb') as pkl_file:
+						data = pickle.load(pkl_file)
+
+						print 'file', data_file_i,  'opened'
+					
+					# add to processed list
+					id_list.append(data_file)
+
+					# parameter dictionary
+					p = data['p']
+
+					tree = p['trees'][0]
+					sec = p['sec_idx'][tree][0]
+					seg = p['seg_idx'][tree][sec][0]
+
+					for f_i, f in enumerate(p['field']):
+
+						# detect spikes
+						spikes_dend[f_i] = spike_anal.detect_spikes(data[str(f)][tree+'_v'][sec][seg], theshold=-25)
+
+						spikes_soma[f_i] = spike_anal.detect_spikes(data[str(f)]['soma_v'][sec][seg], theshold=-25)
 
 	def exp_4(self, **kwargs):
 		""" plot asymmetric voltage change at soma as a function of Ih and Ka conductances
