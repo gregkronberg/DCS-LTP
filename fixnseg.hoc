@@ -14,7 +14,7 @@
 
 // these are reasonable values for most models
 freq = 100      // Hz, frequency at which AC length constant will be computed
-d_lambda = 0.1
+d_lambda = 0.05
 
 func lambda_f() { local i, x1, x2, d1, d2, lam
         if (n3d() < 2) {

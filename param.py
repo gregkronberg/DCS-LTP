@@ -122,7 +122,7 @@ class Default(object):
 			# conversion 10,000*(pS/um2) = 10*(nS/um2) = (mho/cm2) = .001*(mS/cm2)
 			# *** units in paper are a typo, values are already reported in (mho/cm2) ***
 			'Vrest' : -65.,				# resting potential (mV)
-			'gna' :  1.*0.04,#.025,				# peak sodium conductance (mho/cm2)
+			'gna' :  1.*0.025,#.025,				# peak sodium conductance (mho/cm2)
 			'dgna' : -.000025,			# change in sodium conductance with distance (ohm/cm2/um) from Kim 2015
 			'ena' : 55.,					# sodium reversal potential (mV)
 			'AXONM' : 40.,				# multiplicative factor for axonal conductance to generate axon potentials in AIS

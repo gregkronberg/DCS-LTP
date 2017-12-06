@@ -536,11 +536,11 @@ class Experiment:
 
 		"""
 		w_mean = .001 # weight of single synapse uS
-		trees = ['apical_tuft', 'apical_trunk']
+		trees = ['apical_trunk', 'apical_tuft']
 		self.kwargs = {
 		'experiment' : 'exp_2c', 
 		'trees' : ['apical_tuft', 'apical_trunk'],
-		'nsyns':range(2,20,2),
+		'nsyns':range(4,26,2),
 		'num_sec':1,
 		'seg_L' : 4.,
 		'seg_spacing':20,
@@ -560,8 +560,9 @@ class Experiment:
 		'KMULT':1.*.03,
 		'KMULTP':1.*.03,
 		'ka_grad':1.,
-		'SOMAM': 1.,
-		'AXONM': 40.,
+		'SOMAM': 1.5,
+		'AXONM': 50.,
+		'gna':.04,
 		'dgna':1.*-.000025,
 		'pulses':1,
 		'pulse_freq':100,
@@ -592,6 +593,9 @@ class Experiment:
 		cell1.mechanisms(self.p)
 		# measure distance of each segment from the soma and store in parameter dictionary
 		self.p_class.seg_distance(cell1)
+
+		spike_analysis = analysis.Spikes()
+		threshold=-30
 
 		# iterate over all segments in tree
 		for trial_i, trial in enumerate(range(self.p['trials'])):
@@ -662,6 +666,21 @@ class Experiment:
 									group_trees=self.p['group_trees'],
 									xlim=[self.p['warmup']-5,self.p['tstop']],
 									ylim=[])
+								
+								spike_count=0
+								for f_i, f in enumerate(self.p['field']):
+									# if threshold crossed, continue
+									dend_spike = spike_analysis.detect_spikes(sim.data[str(f)][tree_key+'_v'][0][0], threshold=threshold)['times'][0]
+
+									soma_spike = spike_analysis.detect_spikes(sim.data[str(f)]['soma'+'_v'][0][0], threshold=threshold)['times'][0]
+
+									if len(dend_spike)>0 or len(soma_spike)>0:
+										spike_count+=1
+
+								print 'spike count:', spike_count
+								if spike_count ==len(self.p['field']):
+									print 'spike detected for all polarities'
+									break
 				
 
 

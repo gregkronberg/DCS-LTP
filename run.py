@@ -12,6 +12,7 @@ import stims
 import pickle
 import param
 import os
+import copy
 
 # load standard runtime settings.  this is critical.
 h.load_file("stdrun.hoc")
@@ -91,8 +92,14 @@ class Run():
 		# set up recording vectors
 		self.rec =  {}
 		
+		seg_idx = copy.copy(p['seg_idx'])
+		sec_idx = copy.copy(p['sec_idx'])
+		sec_idx['soma']=[0]
+		sec_idx['axon']=[0]
+		seg_idx['soma']= [[0]]
+		seg_idx['axon']=[[0]]
 		# loop over trees
-		for tree_key, tree in self.cell1.geo.iteritems():
+		for tree_key, tree in seg_idx.iteritems():
 			
 			# iterate over variables to record
 			for var_key, var_dic in p['record_variables'].iteritems():
@@ -105,6 +112,9 @@ class Run():
 				# loop over sections
 				for sec_i,sec in enumerate(tree):
 					
+					# section number
+					sec_num = sec_idx[tree_key][sec_i]
+					
 					# add list for each section
 					self.rec[tree_key+'_'+var_key].append([])
 					
@@ -112,19 +122,19 @@ class Run():
 					for seg_i,seg in enumerate(sec):
 						
 						# determine relative segment location in (0-1) 
-						seg_loc = float(seg_i+1)/(self.cell1.geo[tree_key][sec_i].nseg+1)
+						seg_loc = float(seg+1)/(self.cell1.geo[tree_key][sec_num].nseg+1)
 
 						# if variable occurs in a synapse object
 						if 'syn' in var_dic:
 
 							# check if synapse type exists in this segment
-							if var_dic['syn'] in self.cell1.syns[tree_key][sec_i][seg_i].keys():
+							if var_dic['syn'] in self.cell1.syns[tree_key][sec_num][seg].keys():
 
 								# if the desired variable exists in the corresponding synapse
-								if var_key in dir(self.cell1.syns[tree_key][sec_i][seg_i][var_dic['syn']]): 
+								if var_key in dir(self.cell1.syns[tree_key][sec_num][seg][var_dic['syn']]): 
 									
 									# point to variable to record
-									var_rec = getattr(self.cell1.syns[tree_key][sec_i][seg_i][var_dic['syn']], '_ref_'+var_key)
+									var_rec = getattr(self.cell1.syns[tree_key][sec_num][seg][var_dic['syn']], '_ref_'+var_key)
 
 									# create recording vector
 									self.rec[tree_key+'_'+var_key][sec_i].append(h.Vector())
@@ -145,10 +155,10 @@ class Run():
 						if 'range' in var_dic:
 							
 							# if variable belongs to a range mechanism that exists in this section
-							if var_dic['range'] in dir(tree[sec_i](seg_loc)):
+							if var_dic['range'] in dir(self.cell1.geo[tree_key][sec_num](seg_loc)):
 								
 								# point to variable for recording
-								var_rec = getattr(tree[sec_i](seg_loc), '_ref_'+var_key)
+								var_rec = getattr(self.cell1.geo[tree_key][sec_num](seg_loc), '_ref_'+var_key)
 								
 								# create recording vector
 								self.rec[tree_key+'_'+var_key][sec_i].append(h.Vector())

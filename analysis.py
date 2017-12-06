@@ -539,13 +539,13 @@ class PlotRangeVar():
 								for f_i, f in enumerate(p['field']):
 								
 									# check if variable exists in the current section
-									if data[str(f)][tree_key+'_'+var][sec_num]:
+									if data[str(f)][tree_key+'_'+var][sec_i]:
 
 										# if not plotting the soma trace
 										if soma and cnt<nseg:
 
 											# retrieve time series to plot
-											v = data[str(f)][tree_key+'_'+var][sec_num][seg]
+											v = data[str(f)][tree_key+'_'+var][sec_i][seg_i]
 
 											# retrieve x variable
 											if x_var =='t':
@@ -554,7 +554,7 @@ class PlotRangeVar():
 
 											# other variable from arguments
 											else:
-												xv = data[str(f)][tree_key+'_'+x_var][sec_num][seg]
+												xv = data[str(f)][tree_key+'_'+x_var][sec_i][seg_i]
 
 
 										# set plot color based on stimulation polarity
@@ -727,10 +727,12 @@ class Experiment:
 	def exp_2c(self, **kwargs):
 		""" activate synapse in each segment until a spike either occurs in the soma or dendrite.  Plot the number of synapses(weight) required at each segment as a function of distance from soma
 		"""
-
+		# number of stimulation polarities tested
+		n_pol =3
+		# spike threshold
+		threshold = -30
 		# identify data folder
 		data_folder = 'Data/'+kwargs['experiment']+'/'
-
 		# all files in directory
 		files = os.listdir(data_folder)
 		# data files
@@ -740,49 +742,313 @@ class Experiment:
 		data_files_id= [file[-36:-1] for file in files if 'data' in file]
 		plot_files_id = [file[-36:-1] for file in files if 'trace' in file]
 
-		# if group variable in folder, load variable
-		if 'id_list.pkl' in files:
+		id_list_string_spike_times = 'id_list_spike_times'
+		# if list of processed files in folder, load list
+		if id_list_string_spike_times in files:
 			print 'id_list found'
 			
 			with open(data_folder+'id_list'+'.pkl', 'rb') as pkl_file:
-					id_list = pickle.load(pkl_file)
+					id_list_spike_times = pickle.load(pkl_file)
 		
-		# otherwise create variable
+		# otherwise create empty list
 		else:
-			id_list = []
+			id_list_spike_times = []
 
-		spike_anal = Spikes()
+		# string to save group data
+		save_string_group_data = 'spike_data'+'.pkl'
+		# if data file already exists
+		if save_string_group_data in files:
+			# load data
+			with open(data_folder+save_string_group_data, 'rb') as pkl_file:
+				spike_data= pickle.load(pkl_file)
+		# otherwise create data structure
+		else:
+			# data organized as {location}{data_type}[trials][polarity]
+			spike_data= {}
+
+		variables = ['spikes', 'peak', 'distance', 'weight', 'seg_idx']
+		# load spike analysis functions
+		spike_analysis = Spikes()
+
 		# iterate over data files
 		for data_file_i, data_file in enumerate(data_files):
-			
+
 			if data_file_i >=0:
-				print 'data_file:', data_file_i
+				# print 'data_file:', data_file_i, 'out of', len(data_files)
 
 				# check if data has been processed already
-				if data_file not in id_list:
+				if data_file not in id_list_spike_times:
 
 					# open unprocessed data
 					with open(data_folder+data_file, 'rb') as pkl_file:
 						data = pickle.load(pkl_file)
 
-						print 'file', data_file_i,  'opened'
-					
-					# add to processed list
-					id_list.append(data_file)
+						# print 'data_file: ', data_file_i, ' out of ', len(data_files), ' opened'
 
 					# parameter dictionary
 					p = data['p']
 
+					if len(spike_data)==0:
+						for tree_key, tree in p['seg_dist'].iteritems():
+							spike_data[tree_key]=[]
+							for sec_i, sec in enumerate(tree):
+								spike_data[tree_key].append([])
+								for seg_i, seg in enumerate(sec):
+									spike_data[tree_key][sec_i].append([])
+									for pol_i, pol in enumerate(p['field']):
+										spike_data[tree_key][sec_i][seg_i].append({'soma':{}, 'dend':{}})
+										for loc_i, loc in spike_data[tree_key][sec_i][seg_i][pol_i].iteritems():
+											for variable_i, variable in enumerate(variables):
+												loc[variable]=[]
+
+					
+					# add to processed list
+					id_list_spike_times.append(data_file)
+
+					
+
+					# get tree, section, segment info (only one segment is active)
 					tree = p['trees'][0]
 					sec = p['sec_idx'][tree][0]
-					seg = p['seg_idx'][tree][sec][0]
+					sec_i=0
+					seg = p['seg_idx'][tree][0][0]
+					seg_i=0
 
+					# iterate over field polarities
 					for f_i, f in enumerate(p['field']):
 
-						# detect spikes
-						spikes_dend[f_i] = spike_anal.detect_spikes(data[str(f)][tree+'_v'][sec][seg], theshold=-25)
+						# detect spikes in dendrite
+						spike_data[tree][sec][seg][f_i]['dend']['spikes'].append(spike_analysis.detect_spikes(data[str(f)][tree+'_v'][sec_i][seg_i], threshold=threshold)['times'][0])
 
-						spikes_soma[f_i] = spike_anal.detect_spikes(data[str(f)]['soma_v'][sec][seg], theshold=-25)
+						# detect spikes in soma
+						spike_data[tree][sec][seg][f_i]['soma']['spikes'].append(spike_analysis.detect_spikes(data[str(f)]['soma_v'][0][0], threshold=threshold)['times'][0])
+
+						# peak dendrite voltage
+						peak_dend = np.amax(data[str(f)][tree+'_v'][sec_i][seg_i][int(p['warmup']/p['dt']):])
+						# peak soma voltage
+						peak_soma = np.amax(data[str(f)]['soma_v'][0][0][int(p['warmup']/p['dt']):])
+
+						# store peak voltages
+						spike_data[tree][sec][seg][f_i]['dend']['peak'].append(peak_dend)
+						spike_data[tree][sec][seg][f_i]['soma']['peak'].append(peak_soma)
+
+						# store distance from soma for each spike
+						spike_data[tree][sec][seg][f_i]['dend']['distance'].append(p['seg_dist'][tree][sec][seg])
+
+						# store synaptic weight
+						spike_data[tree][sec][seg][f_i]['dend']['weight'].append(p['w_mean'])
+
+						# store segment info
+						spike_data[tree][sec][seg][f_i]['dend']['seg_idx'].append(p['seg_idx'])
+
+		# save processed file list
+		with open(data_folder+id_list_string_spike_times+'.pkl', 'wb') as output:pickle.dump(id_list_spike_times, output,protocol=pickle.HIGHEST_PROTOCOL)
+		
+		# save structure of all spike data
+		save_group_data = spike_data
+		with open(data_folder+save_string_group_data, 'wb') as output:
+			pickle.dump(save_group_data, output,protocol=pickle.HIGHEST_PROTOCOL)
+
+		# plot number of synapses required for spike as a function of distance from the soma, with separate markers when spike initiated in soma or dendrite
+		plot_file_name = 'distance_x_weight_spike_init'
+		distance_plot = plt.figure()
+		plot_handles=[]
+
+		for tree_key, tree in spike_data.iteritems():
+			for sec_i, sec in enumerate(tree):
+				for seg_i, seg in enumerate(sec):
+					for f_i, f in enumerate(seg):
+
+						if len(f['dend']['weight'])>0 and tree_key is not 'soma' :
+
+							soma = f['soma']['spikes']
+							
+							# distance from soma
+							dist = [dist
+							for dist_i, dist 
+							in enumerate(f['dend']['distance']) 
+							if len(f['dend']['spikes'][dist_i]) > 0 
+							or len(soma[dist_i]) > 0]
+
+							if len(dist)>0:
+								dist=dist[0]
+
+							print dist
+							
+							# weight
+							weight = [weight
+							for weight_i, weight 
+							in enumerate(f['dend']['weight']) 
+							if len(f['dend']['spikes'][weight_i]) > 0 
+							or len(soma[weight_i]) > 0]
+
+							if len(weight)>0:
+								weight=weight[0]
+							
+							# plot color
+							color = p['field_color'][f_i]
+							
+							# list of dendritic spike time (if no spike it is empty list)
+							dend = [spike[0] 
+							for spike_i, spike 
+							in enumerate(f['dend']['spikes'])
+							if len(spike) > 0]
+
+							soma = [spike[0] 
+							for spike_i, spike 
+							in enumerate(soma) 
+							if len(spike) > 0]
+
+								# for storing whether dendritic or soamtic spike occured first
+
+							if len(dend)>0:
+								dend = [dend[0]]
+
+							if len(soma)>0:
+								soma=soma[0]
+							
+
+							dend_first=False
+							soma_first=False
+							# if there are both dendritic and somatic spikes
+							if dend and soma:
+								# if dendrite first
+								if (dend < soma):
+									dend_first=True
+									marker = 'o'
+									label='dendrite first'
+								# if soma first, if tie soma wins
+								else:
+									soma_first=True
+									marker = 'x'
+									label = 'soma_first'
+							# if only dendritic spike
+							elif dend and not soma:
+								dend_first=True
+								marker = 'o'
+								label='dendrite first'
+
+							# if only somatic spike
+							elif soma and not dend:
+								soma_first=True
+								marker = 'x'
+								label = 'soma_first'
+
+							if dend_first or soma_first:
+
+								# plot trial and add to list for legend
+								plot_handles.append(plt.plot(dist, weight, color+marker, label=label))
+								# labels
+								plt.xlabel('distance from soma (um)')
+								plt.ylabel('number of synapses/weight (uS)')
+					# legend
+					# plt.legend(handles=plot_handles)
+
+		# save and close figure
+		distance_plot.savefig(data_folder+plot_file_name+'.png', dpi=250)
+		plt.close(distance_plot)
+
+		# plot peak soma vs peak dendrite voltage for each segment
+		distances = [[0,100],[100,200],[200,300],[300,600]]
+		reset = -65
+		peak_plot = []
+		plot_handles=[]
+		for distance_i, distance in enumerate(distances):
+			plot_file_name = 'peak_voltage_distance_'+str(distance[0])+'_'+str(distance[1])
+			peak_plot.append(plt.figure())
+			plot_handles.append([])
+			for tree_key, tree in spike_data.iteritems():
+				for sec_i, sec in enumerate(tree):
+					for seg_i, seg in enumerate(sec):
+						for f_i, f in enumerate(seg):
+							if len(f['dend']['weight'])>0 and tree_key is not 'soma' :
+
+								# plot color
+								color = p['field_color'][f_i]
+								# peak dendrite voltage
+								dend_peak = f['dend']['peak']
+								# peak soma voltage
+								soma_peak = f['soma']['peak']
+
+								weight = f['dend']['weight']
+
+								dist = f['dend']['distance']
+
+								soma = f['soma']['spikes']
+
+								# list of dendritic spike time (if no spike it is empty list)
+								dend = [spike[0] 
+								for spike_i, spike 
+								in enumerate(f['dend']['spikes'])
+								if len(spike) > 0]
+
+								soma = [spike[0] 
+								for spike_i, spike 
+								in enumerate(soma) 
+								if len(spike) > 0]
+
+									# for storing whether dendritic or soamtic spike occured first
+
+								if len(dend)>0:
+									dend = dend[0]
+
+								if len(soma)>0:
+									soma=soma[0]
+								
+
+								dend_first=False
+								soma_first=False
+								# if there are both dendritic and somatic spikes
+								if dend and soma:
+									# if dendrite first
+									if (dend < soma):
+										dend_first=True
+										marker = 'o'
+										label='dendrite first'
+									# if soma first, if tie soma wins
+									else:
+										soma_first=True
+										marker = 'x'
+										label = 'soma_first'
+								# if only dendritic spike
+								elif dend and not soma:
+									dend_first=True
+									marker = 'o'
+									label='dendrite first'
+
+								# if only somatic spike
+								elif soma and not dend:
+									soma_first=True
+									marker = 'x'
+									label = 'soma_first'
+
+								for trial_i, trial in enumerate(dend_peak):
+									if soma_peak[trial_i]>threshold:
+										soma_peak[trial_i]=reset
+									if  dend_peak[trial_i] >threshold:
+										dend_peak[trial_i]=reset
+
+									if dist[trial_i]>=distance[0] and dist[trial_i] < distance[1]: 
+										# plot trial and add to list for legend
+										plot_handles[distance_i].append(plt.plot(dend_peak[trial_i], soma_peak[trial_i], color+marker, label=label))
+										# labels
+										plt.xlabel('peak dendrite voltage (mV)')
+										plt.ylabel('peak soma voltage (mV)')
+										plt.title('distnace from soma:' + str(distance[0]) + ' to ' + str(distance[1]) + ' um')
+						# legend
+						# plt.legend(handles=plot_handles[distance_i])
+
+				# save and close figure
+			peak_plot[distance_i].savefig(data_folder+plot_file_name+'.png', dpi=250)
+			plt.close(peak_plot[distance_i])
+
+
+
+
+
+
+
+
 
 	def exp_4(self, **kwargs):
 		""" plot asymmetric voltage change at soma as a function of Ih and Ka conductances
@@ -1859,9 +2125,10 @@ class Experiment:
 if __name__ =="__main__":
 	# Weights(param.exp_3().p)
 	# # Spikes(param.exp_3().p)
-	kwargs = run_control.Arguments('exp_8').kwargs
+	# kwargs = run_control.Arguments('exp_8').kwargs
 	# plots = Voltage()
 	# plots.plot_all(param.Experiment(**kwargs).p)
+	kwargs = {'experiment':'exp_2c'}
 	Experiment(**kwargs)
 
 
