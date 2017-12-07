@@ -611,6 +611,165 @@ class Default(object):
 					distance =  h.distance(seg.x, sec=sec)
 					self.p['seg_dist'][tree_key][sec_i].append(distance)
 
+	def seg_location(self, sec):
+        """ given a neuron section, output the 3d coordinates of each segment in the section
+
+        ouput is a nested list as [xyz dimension][segment number], with x,y, z dimensions listed in that order
+
+        """
+        # number of 3d points in section
+        tol =.001
+        n3d = int( h.n3d( sec=sec))
+        
+        # preallocate 3d coordinates
+        x = [None]*n3d
+        y = [None]*n3d
+        z = [None]*n3d
+        position_3d =  [None]*n3d
+                       
+        # loop over 3d coordinates in each section
+        for i in range(n3d):
+            # retrieve x,y,z
+            x[i] = h.x3d(i, sec=sec)
+            y[i] = h.y3d(i, sec=sec)
+            z[i] = h.z3d(i, sec=sec)
+
+            # calculate total distance of each 3d point from start of section
+            if i is 0:
+                position_3d[i] = 0
+            else:
+                position_3d[i] = position_3d[i-1] + np.sqrt((x[i]-x[i-1])**2 + (y[i]-y[i-1])**2 + (z[i]-z[i-1])**2)
+        
+        seg_x = []
+        seg_y = []
+        seg_z = []
+        for seg_i,seg in enumerate(sec):
+                # relative position within section (0-1)
+                seg_pos = seg.x            
+                
+                # segment distance along section in 3D
+                seg_dist = seg_pos*position_3d[-1]
+
+                # find first 3D coordinate that contains the segment
+                node_i = [dist_i for dist_i,dist in enumerate(position_3d) if dist >= seg_dist]
+                
+                # if segement occurs exactly at a node set its location to the node location
+                if abs(position_3d[node_i[0]] - seg_dist) < tol:
+                    seg_x.append( x[ node_i[ 0]])
+                    seg_y.append( z[ node_i[ 0]])
+                    seg_z.append( z[ node_i[ 0]])
+
+                # otherwise if segment falls between two coordinates, interpolate to get location
+                # FIXME clean up
+                else:
+                    pt1 = position_3d[ node_i[0]-1]
+                    pt2 = position_3d[ node_i[0]]
+                    scale = (seg_dist-pt1) / (pt2-pt1)
+                    interpx = x[ node_i[0]-1] + scale*( x[ node_i[0]] - x[ node_i[0]-1])
+                    interpy = y[ node_i[0]-1] + scale*( y[ node_i[0]] - y[ node_i[0]-1])
+                    interpz = z[ node_i[0]-1] + scale*( z[ node_i[0]] - z[ node_i[0]-1])
+                    seg_x.append( interpx)
+                    seg_y.append( interpy)
+                    seg_z.append( interpz)
+        return [seg_x, seg_y, seg_z]
+
+    def create_morpho(self, geo):
+    	""" create structure that stores morphology information for plotting with brian2 morphology
+    	"""
+    	# assign index to each segment
+    	seg_idx = {}
+    	# count segments
+    	counter = -1
+    	# iterate over trees
+    	for tree_key, tree in geo.iteritems():
+    		# add tree dimension
+    		seg_idx[tree_key]=[]
+    		# iterate over sections
+    		for sec_i, sec in enumerate(tree):
+    			# add section dimension
+    			seg_idx[tree_key].append([])
+    			# iterate over segments
+    			for seg_i, seg in enumerate(sec):
+    				# update counter for each segment
+    				counter+=1
+    				# copy counter to store as unique index for each segment
+    				idx = copy.copy(counter)
+    				# store unique index
+    				seg_idx[tree_key][sec_i].append(idx)
+
+    	# create morpho structure that stores info needed for brian2.morphology methods
+    	morpho = {}
+    	# iterate over trees
+    	for tree_key, tree in geo.iteritems():
+    		morhpo[tree_key]=[]
+    		# iterate over sections
+    		for sec_i, sec in enumerate(tree):
+    			morpho[tree_key].append([])
+    			# get 3d location data [xyz][segment_num]
+    			xyz = self.seg_location(sec)
+    			# get section ref
+    			secref = h.SectionRef(sec)
+    			# if section has a parent
+    			if secref.has_parent():
+    				# get parent section object
+	    			parent = secref.parent
+	    			# find unique index of parent seciton (list of all segments in the parent section)
+	    			for tree_key, tree in seg_idx.iteritems():
+	    				for sec_i, sec in enumerate(tree):
+	    					if parent is geo[tree_key][sec_i]:
+	    						# list of section indeces in parent section
+	    						parent_sec_idx = sec
+				# if no parent section, the unique index is -1
+				else:
+					parent_sec_idx = [-1]
+
+				# iterate over segments
+    			for seg_i, seg in enumerate(sec):
+    				# if first segment in section
+    				if seg_i == 0:
+    					# FIXME (what if child is attached to the 0 end of the parent section?)
+    					# parent segment is the last segment in the parent section
+    					parent_idx = parent_sec_idx[-1]
+    				else:
+    					# otherwise parent segment is the previous segment in the current section
+    					parent_idx = seg_idx[tree_key][sec_i][seg_i-1]
+    				# get unique index of current segment
+    				index = seg_idx[tree_key][sec_i][seg_i]
+    				# xyz coordinates
+    				x = xyz[0][seg_i]
+    				y = xyz[1][seg_i]
+    				z = xyz[2][seg_i]
+    				# diameter
+    				diam = sec.diam(seg.x)
+    				# name
+    				name = tree_key + '_'+ str(sec_i) + '_'  +str(seg_i)
+
+    				morph_tuple = (index, name, x, y, z, diam, parent_idx)
+    				morpho[tree_key][sec_i].append(morph_tuple)
+
+    	# iterate over trees
+    	# iterate over sections 
+    	# iterate over segments
+    	# increase counter (idx)
+    	# retrieve x,y,z location
+    	# retrieve diameter
+    	# assign name
+
+    	# iterate through again (now that each segment has been given an index)
+    		# create sectionref
+    		# if segment is first in section (its parent is in the previous section)
+    			# if the segment has no parent section
+	    			# parent_idx = -1
+
+    			# otherwise
+	    			# create pointer to parent section
+	    			# find index of last segment in parent section
+	    			# parent_idx = index last segment in parent section
+
+			# else
+				# parent_idx is the index of the previous segment within the section
+
+
 class Experiment(Default):
 	"""
 	"""

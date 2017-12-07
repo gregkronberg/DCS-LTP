@@ -109,7 +109,7 @@ class PyramidalCylinder:
 	def mechanisms(self, p):
 		for tree_key, tree in self.geo.iteritems():
 			for sec_i, sec in enumerate(tree): 
-
+				
 				if tree_key == 'soma':
 					# voltage gated sodium
 					sec.insert('na3')
@@ -292,7 +292,7 @@ class CellMigliore2005:
 
 			# loop over sections
 			for sec_i,sec in enumerate(tree):
-				
+				print sec.connectivity
 				# add list to store synapses for each section
 				self.syns[tree_key].append([])
 
