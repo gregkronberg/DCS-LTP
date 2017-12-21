@@ -15,8 +15,10 @@ import param
 import cell
 import math
 import run_control
-from brian2.spatialneuron import morphology as brimorph
-from brian2tools.plotting import morphology as briplotmorph
+import copy
+from matplotlib.patches import Polygon
+from matplotlib.collections import PatchCollection
+from matplotlib import cm as colormap
 
 class ShapePlot():
     """
@@ -24,8 +26,17 @@ class ShapePlot():
     def __init__(self):
         """
         """
-    def basic(self, morpho, data, axes):
-        """
+    def basic(self, morpho, data, axes, colormap=colormap.jet):
+        """ creates a shapeplot of a given neuron morphology with the given data
+
+        Arguments:
+        morpho: morphology structure with dimensions {tree}[section][segment](index, name, x, y, z, diam, parent_index)
+
+        data: single floating point values store in a structure with dimensions {tree}[section][segment]
+
+        axes: pyplot axes object
+
+        colormap: matplotlib.cm colormap
         """
         # create list of points
         morph_points=[]
@@ -35,7 +46,7 @@ class ShapePlot():
             for sec_i, sec in enumerate(tree):
                 for seg_i, seg in enumerate(sec):
                     morph_points.append(seg)
-                    indexes.append(seg[0])
+                    indexes.append(copy.copy(seg[0]))
                     data_values.append(data[tree_key][sec_i][seg_i])
         
         # resort lists
@@ -43,23 +54,114 @@ class ShapePlot():
         morph_points_sorted = [morph_points[i] for i in sort_list]
         data_values_sorted = [data_values[i] for i in sort_list]
 
+        # lists to store segment shapes and their data values (colors)
+        patches=[]
+        colors=[]
 
-        value_max = np.amax(data_values)
-        value_min = np.amin(data_values)
-        value_range = value_max - value_min
-        color_min = [0, 0, 0]
-        color_max = [.9, .9, .9]
-        color_range = [color_max[i] - val for i, val in enumerate(color_min)]
-        colors_sorted =[]
-        for data_value_i, data_value in enumerate(data_values_sorted):
-            fraction = (data_value-value_min)/value_range
-            color_scaled = [ val + color_range[i]*fraction for i, val in enumerate(color_min) ]
-            colors_sorted.append(tuple(color_scaled))
+        # iterate through child sections
+        for child_i, child in enumerate(morph_points_sorted):
+            # if segment is the root segment (parent index is -1)
+            if child[-1]==-1:
+                # skip, the root will be added as a parent to its children 
+                continue
+            # if not a root segment
+            else:
+                # find parent segment
+                parent_idx = child[-1]
+                parent = [val for i,val in enumerate(morph_points_sorted) if val[0]==parent_idx][0]
+            
+            # interpolate xyz values between parent and child
+            parent_point = (parent[2], parent[3], parent[4])
+            child_point = (child[2],child[3],child[4])
+            mid_point = self.interpolate_3d(point1=parent_point, point2=child_point, t=0.5)
 
-        # FIXME 
-        # list of points need to be in order, starting with root, with root labeled with index -1
-        brian_morphology = brimorph.Morphology.from_points(morph_points_sorted)
-        plot = briplotmorph.plot_morphology2D(brian_morphology, axes, show_diameter=True, colors=colors)
+            # get diameter of parent and child 
+            parent_diam = parent[5]
+            child_diam = child[5]
+            mid_diam = (parent_diam+child_diam)/2.
+
+            # get data values for parent and child
+            parent_color = data_values_sorted[parent[0]]
+            child_color = data_values_sorted[child_i]
+
+            # create polygon patch to plot segment
+            parent_polygon = self.make_polygon(point1=parent_point, point2=mid_point, d1=parent_diam/2., d2=mid_diam/2.)
+            child_polygon =self.make_polygon(point1=child_point, point2=mid_point, d1=child_diam/2., d2=mid_diam/2.)
+
+            # add to list of patches
+            patches.append(parent_polygon)
+            colors.append(parent_color)
+            patches.append(child_polygon)
+            colors.append(child_color)
+
+        # create patch collection
+        p = PatchCollection(patches, cmap=colormap, alpha=1.)
+        # set colors
+        p.set_array(np.array(colors))
+        # plot collection
+        axes.add_collection(p)
+        # show colorbar
+        plt.colorbar(p)
+        # autoscale axes
+        axes.autoscale()
+        return axes
+
+    # create 3d interpolation function
+    def interpolate_3d(self, point1, point2, t):
+        """
+        Arguments:
+        point1 and point2 are lists/tuples of 3d points as [x,y,z]
+
+        t is the parameter specifying relative distance between the two points from 0 to 1
+
+        returns a tuple with the 3d coordinates of the requested point along the line (x,y,z)
+        """
+        x = point1[0] + point2[0]*t  - point1[0]*t
+        y = point1[1] + point2[1]*t  - point1[1]*t
+        z = point1[2] + point2[2]*t  - point1[2]*t
+
+        return (x,y,z)
+
+    def make_polygon(self, point1, point2, d1, d2):
+        """ make a matplotlib.patches.Polygon object for plotting
+
+        Arguments:
+        point1, point2: list/tuple containing 3d coordinates of points to be connected
+
+        d1,d2: diameter of each point 
+
+        the function determines the line between the two points, then adds the corresponding diameters to each point along the orthogonal direction to the line, this produces the four points that the polygon
+        """
+        # find slope of connecting line
+        dy = point2[1]-point1[1]
+        dx = point2[0] - point1[0]
+        m = dy/dx
+
+        # find slope of orthogonal line
+        m_inv = -1./m
+
+        # find x and y changes to add diameter
+        delta_y1 = m_inv*np.sqrt(d1**2/(m_inv**2+1))
+        delta_x1  = np.sqrt(d1**2/(m_inv**2+1))
+        delta_y2 = m_inv*np.sqrt(d2**2/(m_inv**2+1))
+        delta_x2  = np.sqrt(d2**2/(m_inv**2+1))
+
+        # add diameter to first point
+        y1_pos = point1[1] + delta_y1
+        y1_neg = point1[1] - delta_y1
+        x1_pos = point1[0] + delta_x1
+        x1_neg = point1[0] - delta_x1
+
+        # add diameter to second point
+        y2_pos = point2[1] + delta_y2
+        y2_neg = point2[1] - delta_y2
+        x2_pos = point2[0] + delta_x2
+        x2_neg = point2[0] - delta_x2
+
+        # store points as a 4 x 2 array
+        points = np.array([[x1_pos, y1_pos],[x1_neg, y1_neg],[x2_neg, y2_neg],[x2_pos, y2_pos]])
+
+        return Polygon(points)
 
 
 
@@ -805,12 +907,12 @@ class Experiment:
         data_files_id= [file[-36:-1] for file in files if 'data' in file]
         plot_files_id = [file[-36:-1] for file in files if 'trace' in file]
 
-        id_list_string_spike_times = 'id_list_spike_times'
+        id_list_string_spike_times = 'id_list_spike_times.pkl'
         # if list of processed files in folder, load list
         if id_list_string_spike_times in files:
             print 'id_list found'
             
-            with open(data_folder+'id_list'+'.pkl', 'rb') as pkl_file:
+            with open(data_folder+id_list_string_spike_times, 'rb') as pkl_file:
                     id_list_spike_times = pickle.load(pkl_file)
         
         # otherwise create empty list
@@ -846,7 +948,7 @@ class Experiment:
                     with open(data_folder+data_file, 'rb') as pkl_file:
                         data = pickle.load(pkl_file)
 
-                        print 'data_file: ', data_file_i, ' out of ', len(data_files), ' opened'
+                    print 'data_file: ', data_file_i, ' out of ', len(data_files), ' opened'
 
                     # parameter dictionary
                     p = data['p']
@@ -910,7 +1012,7 @@ class Experiment:
                         spike_data[tree][sec][seg][f_i]['dend']['seg_idx'].append(p['seg_idx'])
 
         # save processed file list
-        with open(data_folder+id_list_string_spike_times+'.pkl', 'wb') as output:pickle.dump(id_list_spike_times, output,protocol=pickle.HIGHEST_PROTOCOL)
+        with open(data_folder+id_list_string_spike_times, 'wb') as output:pickle.dump(id_list_spike_times, output,protocol=pickle.HIGHEST_PROTOCOL)
         
         # save structure of all spike data
         save_group_data = spike_data
@@ -919,144 +1021,42 @@ class Experiment:
 
         # plot number of synapses required for spike as a function of distance from the soma, with separate markers when spike initiated in soma or dendrite
         plot_file_name = 'distance_x_weight_spike_init'
-        distance_plot = plt.figure()
-        plot_handles=[]
+        if plot_file_name + '.png' not in files: 
+            distance_plot = plt.figure()
+            plot_handles=[]
 
-        for tree_key, tree in spike_data.iteritems():
-            for sec_i, sec in enumerate(tree):
-                for seg_i, seg in enumerate(sec):
-                    for f_i, f in enumerate(seg):
-
-                        if len(f['dend']['weight'])>0 and tree_key is not 'soma' :
-
-                            soma = f['soma']['spikes']
-                            
-                            # distance from soma
-                            dist = [dist
-                            for dist_i, dist 
-                            in enumerate(f['dend']['distance']) 
-                            if len(f['dend']['spikes'][dist_i]) > 0 
-                            or len(soma[dist_i]) > 0]
-
-                            if len(dist)>0:
-                                dist=dist[0]
-                            
-                            # weight
-                            weight = [weight
-                            for weight_i, weight 
-                            in enumerate(f['dend']['weight']) 
-                            if len(f['dend']['spikes'][weight_i]) > 0 
-                            or len(soma[weight_i]) > 0]
-
-                            if len(weight)>0:
-                                weight=weight[0]
-                            
-                            # plot color
-                            color = p['field_color'][f_i]
-                            
-                            # list of dendritic spike time (if no spike it is empty list)
-                            dend = [spike[0] 
-                            for spike_i, spike 
-                            in enumerate(f['dend']['spikes'])
-                            if len(spike) > 0]
-
-                            soma = [spike[0] 
-                            for spike_i, spike 
-                            in enumerate(soma) 
-                            if len(spike) > 0]
-
-                                # for storing whether dendritic or soamtic spike occured first
-
-                            if len(dend)>0:
-                                dend = [dend[0]]
-
-                            if len(soma)>0:
-                                soma=soma[0]
-                            
-
-                            dend_first=False
-                            soma_first=False
-                            # if there are both dendritic and somatic spikes
-                            if dend and soma:
-                                # if dendrite first
-                                if (dend < soma):
-                                    dend_first=True
-                                    marker = 'o'
-                                    label='dendrite first'
-                                # if soma first, if tie soma wins
-                                else:
-                                    soma_first=True
-                                    marker = 'x'
-                                    label = 'soma_first'
-                            # if only dendritic spike
-                            elif dend and not soma:
-                                dend_first=True
-                                marker = 'o'
-                                label='dendrite first'
-
-                            # if only somatic spike
-                            elif soma and not dend:
-                                soma_first=True
-                                marker = 'x'
-                                label = 'soma_first'
-
-                            if dend_first:
-                                f['dend']['first_spike'] = 'dend'
-                            elif soma_first:
-                                f['dend']['first_spike'] = 'soma'
-                            elif dend_first and soma_first:
-                                f['dend']['first_spike'] = 'none'
-                            else:
-                                f['dend']['first_spike'] = 'none'
-
-
-                            if dend_first or soma_first:
-
-                                f['dend']['first_spike_weight'] = weight
-
-                                # plot trial and add to list for legend
-                                plot_handles.append(plt.plot(dist, weight, color+marker, label=label))
-                                # labels
-                                plt.xlabel('distance from soma (um)')
-                                plt.ylabel('number of synapses/weight (uS)')
-
-                            else:
-                                f['dend']['first_spike_weight'] = f['dend']['weight'][-1]
-                    # legend
-                    # plt.legend(handles=plot_handles)
-
-        # save and close figure
-        distance_plot.savefig(data_folder+plot_file_name+'.png', dpi=250)
-        plt.close(distance_plot)
-
-        # plot peak soma vs peak dendrite voltage for each segment
-        distances = [[0,100],[100,200],[200,300],[300,600]]
-        reset = -65
-        peak_plot = []
-        plot_handles=[]
-        for distance_i, distance in enumerate(distances):
-            plot_file_name = 'peak_voltage_distance_'+str(distance[0])+'_'+str(distance[1])
-            peak_plot.append(plt.figure())
-            plot_handles.append([])
             for tree_key, tree in spike_data.iteritems():
                 for sec_i, sec in enumerate(tree):
                     for seg_i, seg in enumerate(sec):
                         for f_i, f in enumerate(seg):
+
                             if len(f['dend']['weight'])>0 and tree_key is not 'soma' :
 
-                                # plot color
-                                color = p['field_color'][f_i]
-                                # peak dendrite voltage
-                                dend_peak = f['dend']['peak']
-                                # peak soma voltage
-                                soma_peak = f['soma']['peak']
-
-                                weight = f['dend']['weight']
-
-                                dist = f['dend']['distance']
-
                                 soma = f['soma']['spikes']
+                                
+                                # distance from soma
+                                dist = [dist
+                                for dist_i, dist 
+                                in enumerate(f['dend']['distance']) 
+                                if len(f['dend']['spikes'][dist_i]) > 0 
+                                or len(soma[dist_i]) > 0]
 
+                                if len(dist)>0:
+                                    dist=dist[0]
+                                
+                                # weight
+                                weight = [weight
+                                for weight_i, weight 
+                                in enumerate(f['dend']['weight']) 
+                                if len(f['dend']['spikes'][weight_i]) > 0 
+                                or len(soma[weight_i]) > 0]
+
+                                if len(weight)>0:
+                                    weight=weight[0]
+                                
+                                # plot color
+                                color = p_temp['field_color'][f_i]
+                                
                                 # list of dendritic spike time (if no spike it is empty list)
                                 dend = [spike[0] 
                                 for spike_i, spike 
@@ -1071,7 +1071,7 @@ class Experiment:
                                     # for storing whether dendritic or soamtic spike occured first
 
                                 if len(dend)>0:
-                                    dend = dend[0]
+                                    dend = [dend[0]]
 
                                 if len(soma)>0:
                                     soma=soma[0]
@@ -1103,25 +1103,140 @@ class Experiment:
                                     marker = 'x'
                                     label = 'soma_first'
 
-                                for trial_i, trial in enumerate(dend_peak):
-                                    if soma_peak[trial_i]>threshold:
-                                        soma_peak[trial_i]=reset
-                                    if  dend_peak[trial_i] >threshold:
-                                        dend_peak[trial_i]=reset
+                                if dend_first:
+                                    f['dend']['first_spike'] = 'dend'
+                                elif soma_first:
+                                    f['dend']['first_spike'] = 'soma'
+                                elif dend_first and soma_first:
+                                    f['dend']['first_spike'] = 'none'
+                                else:
+                                    f['dend']['first_spike'] = 'none'
 
-                                    if dist[trial_i]>=distance[0] and dist[trial_i] < distance[1]: 
-                                        # plot trial and add to list for legend
-                                        plot_handles[distance_i].append(plt.plot(dend_peak[trial_i], soma_peak[trial_i], color+marker, label=label))
-                                        # labels
-                                        plt.xlabel('peak dendrite voltage (mV)')
-                                        plt.ylabel('peak soma voltage (mV)')
-                                        plt.title('distnace from soma:' + str(distance[0]) + ' to ' + str(distance[1]) + ' um')
+
+                                if dend_first or soma_first:
+
+                                    f['dend']['first_spike_weight'] = weight
+
+                                    # plot trial and add to list for legend
+                                    plot_handles.append(plt.plot(dist, weight, color+marker, label=label))
+                                    # labels
+                                    plt.xlabel('distance from soma (um)')
+                                    plt.ylabel('number of synapses/weight (uS)')
+
+                                else:
+                                    f['dend']['first_spike_weight'] = f['dend']['weight'][-1]
                         # legend
-                        # plt.legend(handles=plot_handles[distance_i])
+                        # plt.legend(handles=plot_handles)
 
-                # save and close figure
-            peak_plot[distance_i].savefig(data_folder+plot_file_name+'.png', dpi=250)
-            plt.close(peak_plot[distance_i])
+            # save and close figure
+            distance_plot.savefig(data_folder+plot_file_name+'.png', dpi=250)
+            plt.close(distance_plot)
+
+        # save structure of all spike data
+        save_group_data = spike_data
+        with open(data_folder+save_string_group_data, 'wb') as output:
+            pickle.dump(save_group_data, output,protocol=pickle.HIGHEST_PROTOCOL)
+
+        # plot peak soma vs peak dendrite voltage for each segment
+        distances = [[0,100],[100,200],[200,300],[300,600]]
+        reset = -65
+        peak_plot = []
+        plot_handles=[]
+        for distance_i, distance in enumerate(distances):
+            plot_file_name = 'peak_voltage_distance_'+str(distance[0])+'_'+str(distance[1])
+            if plot_file_name+'.png' not in files:
+
+                peak_plot.append(plt.figure())
+                plot_handles.append([])
+                for tree_key, tree in spike_data.iteritems():
+                    for sec_i, sec in enumerate(tree):
+                        for seg_i, seg in enumerate(sec):
+                            for f_i, f in enumerate(seg):
+                                if len(f['dend']['weight'])>0 and tree_key is not 'soma' :
+
+                                    # plot color
+                                    color = p_temp['field_color'][f_i]
+                                    # peak dendrite voltage
+                                    dend_peak = f['dend']['peak']
+                                    # peak soma voltage
+                                    soma_peak = f['soma']['peak']
+
+                                    weight = f['dend']['weight']
+
+                                    dist = f['dend']['distance']
+
+                                    soma = f['soma']['spikes']
+
+                                    # list of dendritic spike time (if no spike it is empty list)
+                                    dend = [spike[0] 
+                                    for spike_i, spike 
+                                    in enumerate(f['dend']['spikes'])
+                                    if len(spike) > 0]
+
+                                    soma = [spike[0] 
+                                    for spike_i, spike 
+                                    in enumerate(soma) 
+                                    if len(spike) > 0]
+
+                                        # for storing whether dendritic or soamtic spike occured first
+
+                                    if len(dend)>0:
+                                        dend = dend[0]
+
+                                    if len(soma)>0:
+                                        soma=soma[0]
+                                    
+
+                                    dend_first=False
+                                    soma_first=False
+                                    # if there are both dendritic and somatic spikes
+                                    if dend and soma:
+                                        # if dendrite first
+                                        if (dend < soma):
+                                            dend_first=True
+                                            marker = 'o'
+                                            label='dendrite first'
+                                        # if soma first, if tie soma wins
+                                        else:
+                                            soma_first=True
+                                            marker = 'x'
+                                            label = 'soma_first'
+                                    # if only dendritic spike
+                                    elif dend and not soma:
+                                        dend_first=True
+                                        marker = 'o'
+                                        label='dendrite first'
+
+                                    # if only somatic spike
+                                    elif soma and not dend:
+                                        soma_first=True
+                                        marker = 'x'
+                                        label = 'soma_first'
+
+                                    for trial_i, trial in enumerate(dend_peak):
+                                        if soma_peak[trial_i]>threshold:
+                                            soma_peak[trial_i]=reset
+                                        if  dend_peak[trial_i] >threshold:
+                                            dend_peak[trial_i]=reset
+
+                                        if dist[trial_i]>=distance[0] and dist[trial_i] < distance[1]: 
+                                            # plot trial and add to list for legend
+                                            plot_handles[distance_i].append(plt.plot(dend_peak[trial_i], soma_peak[trial_i], color+marker, label=label))
+                                            # labels
+                                            plt.xlabel('peak dendrite voltage (mV)')
+                                            plt.ylabel('peak soma voltage (mV)')
+                                            plt.title('distnace from soma:' + str(distance[0]) + ' to ' + str(distance[1]) + ' um')
+                            # legend
+                            # plt.legend(handles=plot_handles[distance_i])
+
+                    # save and close figure
+                peak_plot[distance_i].savefig(data_folder+plot_file_name+'.png', dpi=250)
+                plt.close(peak_plot[distance_i])
+
+        # save structure of all spike data
+        save_group_data = spike_data
+        with open(data_folder+save_string_group_data, 'wb') as output:
+            pickle.dump(save_group_data, output,protocol=pickle.HIGHEST_PROTOCOL)
 
 
         # create shapeplot of spike threshold for each polarity
@@ -1129,7 +1244,7 @@ class Experiment:
         # create data structure to pass to morph plot for each field
         # iterate through spike data structure, just storing spike threshold weight for each segment, if soma first weights are negative, if dendrite first weights are positive
         morphplot_data = []
-        for f_i, f in enumerate(p['field']):
+        for f_i, f in enumerate(p_temp['field']):
             morphplot_data.append({})
             for tree_key, tree in spike_data.iteritems():
                 morphplot_data[f_i][tree_key]=[]
@@ -1137,24 +1252,95 @@ class Experiment:
                     morphplot_data[f_i][tree_key].append([])
                     for seg_i, seg in enumerate(sec):
                         if 'first_spike' not in seg[f_i]['dend'].keys():
+                            # print 'first spike not found'
                             seg[f_i]['dend']['first_spike'] = 'none'
 
                         first = seg[f_i]['dend']['first_spike']
+                        # print 'first spike:', first
                         if first=='soma':
                             weight = -1*seg[f_i]['dend']['first_spike_weight']
                         elif first=='dend':
                             weight = seg[f_i]['dend']['first_spike_weight']
                         elif first=='none':
                             weight= 0.
+
+                        # print 'weight threshold:', weight
                         morphplot_data[f_i][tree_key][sec_i].append(weight)
 
-        fig, ax = plt.subplots(nrows=1, ncols=len(p['field']))
+        fig, ax = plt.subplots(nrows=1, ncols=len(p_temp['field']))
         plot_file_name = 'spike_threshold_shapeplots' 
         file_name = data_folder + plot_file_name + '.png'
-        for f_i, f in enumerate(p['field']):
-            ShapePlot().basic(morpho=p['morpho'], data=morphplot_data[f_i], axes=ax[f_i])
+        for f_i, f in enumerate(p_temp['field']):
+            ShapePlot().basic(morpho=p_temp['morpho'], data=morphplot_data[f_i], axes=ax[f_i])
 
-        fig.savefig(filename, dpi=250)
+        fig.savefig(file_name, dpi=250)
+
+
+    def test_morph_plot(self, **kwargs):
+        """
+        """
+        # create a cell
+        # instantiate default parameter class
+        p_class = param.Default()
+        p_temp = p_class.p
+        # load cell and store in parameter dictionary
+        cell1 = cell.CellMigliore2005(p_temp)
+        cell1.geometry(p_temp)
+        # insert mechanisms
+        cell1.mechanisms(p_temp)
+        # measure distance of each segment from the soma and store in parameter dictionary
+        p_class.seg_distance(cell1)
+
+        p_temp['morpho'] = p_class.create_morpho(cell1.geo)
+        # print p_temp['morpho']['soma'][0][0]
+        # print p_temp['morpho']['apical_tuft']
+
+        # identify data folder
+        data_folder = 'Data/'+'exp_2c'+'/'
+        # all files in directory
+        files = os.listdir(data_folder)
+        # data files
+        data_files = [file for file in files if 'data' in file]
+        plot_files = [file for file in files if 'trace' in file]
+        # unique identifiers for each file type
+        data_files_id= [file[-36:-1] for file in files if 'data' in file]
+        plot_files_id = [file[-36:-1] for file in files if 'trace' in file]
+
+        # iterate over data files
+        for data_file_i, data_file in enumerate(data_files):
+
+            if data_file_i >=0 and data_file_i<1:
+
+                # open unprocessed data
+                with open(data_folder+data_file, 'rb') as pkl_file:
+                    data = pickle.load(pkl_file)
+
+                print 'data_file: ', data_file_i, ' out of ', len(data_files), ' opened'
+
+                p = data['p']
+
+                morphplot_data = []
+                for f_i, f in enumerate(p['field']):
+                    morphplot_data.append({})
+                    for tree_key, tree in p_temp['morpho'].iteritems():
+                            morphplot_data[f_i][tree_key]=[]
+                            for sec_i, sec in enumerate(tree):
+                                morphplot_data[f_i][tree_key].append([])
+                                for seg_i, seg in enumerate(sec):
+                                    # print seg
+                                    morphplot_data[f_i][tree_key][sec_i].append(0.)
+
+                fig, ax = plt.subplots(nrows=1, ncols=len(p['field']))
+                plot_file_name = 'spike_threshold_shapeplots' 
+                file_name = data_folder + plot_file_name + '.png'
+                for f_i, f in enumerate(p['field']):
+                    ShapePlot().basic(morpho=p_temp['morpho'], data=morphplot_data[f_i], axes=ax[f_i])
+
+        fig.savefig(file_name, dpi=250)
+        # feed geometry to param.Default.create_morpho
+        # feed morphology to ShapePlot.basic
+
+
 
 
 

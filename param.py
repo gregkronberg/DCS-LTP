@@ -495,7 +495,7 @@ class Default(object):
                     # choose segments to activate
                     segs_choose = np.random.choice(len(segs_all), int(syn_frac*len(segs_all)), replace=False)
 
-                # list of active sections (contains duplicates)
+                # list of active sections (contains duplicates)3
                 sec_list = [segs_all[a][0] for a in segs_choose]
             
                 # list of active segments
@@ -676,9 +676,14 @@ class Default(object):
 
     def create_morpho(self, geo):
         """ create structure that stores morphology information for plotting with brian2 morphology
+
+        each segment in morpho contains a tuple with seven entries
+        (unique_segment_index, name, x, y, z, diam, unique_parent segment_index)
+
+        root segment has index 0, with parent segment index -1
         """
 
-        # initialize morpho structure
+        # initialize morpho structure with same dimensions as geo structure
         morpho = {}
         # iterate over trees
         for tree_key, tree in geo.iteritems():
@@ -686,111 +691,272 @@ class Default(object):
             # iterate over sections
             for sec_i, sec in enumerate(tree):
                 morpho[tree_key].append([])
+                # iterate over segments
                 for seg_i in enumerate(sec):
                     morpho[tree_key][sec_i].append([])
 
         # find root of cell 
-        # start with soma
         for tree_key, tree in geo.iteritems():
             for sec_i, sec in enumerate(tree):
-                sref = h.SectionRef(sec)
+                sref = h.SectionRef(sec=sec)
                 root = sref.root
+                break
 
-        idx_count=-2
-        children_start = h.SectionRef(root).child
-        children=[[]]
-        for child_sec_i, child_sec in enumerate(children_start):
-            children[0].append({'sec':child_sec,'seg':[], 'idx':[]})
-            for seg_i, seg in enumerate(child_sec):
-                idx_count += 1
-                children[0][child_sec_i]['seg'].append(seg)
-                children[0][child_sec_i]['idx'].append(idx_count)
+        # create new secton list
+        nrn_sec_list = h.SectionList()
+        # add all seection to list, starting from root
+        nrn_sec_list.wholetree()
 
-        has_children=True
-        while has_children:
+        # copy nrn section list as a python list
+        sec_list = []
+        for sec_i_temp, sec_temp in enumerate(nrn_sec_list):
+            sec_list.append(sec_temp)
 
-            # reset check for children sections on each iteration
-            has_children=False
+        # nested list for storing segment objects [section_number][segment_number]
+        seg_list= []
+        # nested list for storing segment indices [section number][segment number]
+        seg_list_idx = []
+        # nested list for storing index of parent segment, matches seg_list_idx dimesions, [section_number][segment_number]
+        parent_list_idx = []
+        # keep track of total segment number
+        idx = -1
+        # iterate through sections in list
+        for sec_i, sec in enumerate(sec_list):
+            # keep track of the root section
+            is_root=False
 
-            # children from previous iteration become parents
-            parents=[]
-            children_copy = copy.copy(children)
-            # flatten children
-            for parent_sec_i, parent_sec in enumerate(children_copy):
-                for child_sec_i, child_sec in enumerate(parent_sec):
-                    # [sections], each list entry is a dictionary with the section object, list of segment objects, list of indeces for each segment 
-                    parents.append(child_sec)
+            # add section dimension to each list
+            seg_list.append([])
+            seg_list_idx.append([])
+            parent_list_idx.append([])
 
+            # reference for current section
+            sec_ref =  h.SectionRef(sec=sec)
+            
+            # find parent section index
+            if sec_ref.has_parent():
+                parent_sec = sec_ref.parent
+                parent_sec_i = [i for i, val in enumerate(sec_list) if parent_sec == val][0]
+            else:
+                parent_sec_i=-1
+                is_root = True
 
-            # collect new group of children
-            children = []
-            # iterate through parent sections
-            for parent_sec_i, parent_sec in enumerate(parents):
-                # add a list to store children for each parent section
-                children.append([])
+            # iterate through segments in the current section
+            for seg_i, seg in enumerate(sec):
+                # add to total segments counter and store in lists
+                idx+=1
+                # copy index count to prevent overwrite during loop
+                idx_count = copy.copy(idx)
+                # add segment object and index to corresponding list
+                seg_list[sec_i].append(seg)
+                seg_list_idx[sec_i].append(idx_count)
 
-                # if there are no children, store empty list
-                if h.SectionRef(parent['sec']).nchild is 0:
-                    children[parent_sec_i].append({'sec':[], 'seg':[], 'idx':[]})
-                # else if there are children    
-                else:
-                    # iterate over child sections
-                    for child_sec_i, child_sec in enumerate(h.SectionRef(parent['sec']).child):
-                        # add child section to list, add list for storing segments and indeces
-                        children[parent_sec_i].append({'sec':child_sec, 'seg':[], 'idx':[]})
-                        # iterate over segments in child section
-                        for seg_i, seg in enumerate(child_sec):
-                            # each segment increases index by 1
-                            idx_count += 1
+                # if current segment is not the first in its section 
+                if seg_i>0:
+                    # set parent to previous segemnt in the section
+                    parent_seg_idx = seg_list_idx[sec_i][seg_i-1]
+                # else if it is the first segment 
+                elif seg_i==0:
+                    # if it is the root segment
+                    if is_root:
+                        parent_seg_idx=-1
+                    else:
+                        # set parent to the last segment in the parent section
+                        parent_seg_idx = seg_list_idx[parent_sec_i][-1]
 
-                            # add segment to list
-                            children[parent_sec_i][child_sec_i]['seg'].append(seg)
-                            # add index to list
-                            children[parent_sec_i][child_sec_i]['idx'].append(idx_count)
+                # add to list of all parent segments
+                parent_list_idx.append(parent_seg_idx)
 
-                            # get index of parent segment
-                            # if this is the first segment in the child section
-                            if seg_i is 0:
-                                # its parent is the last segment from the parent section
-                                current_parent_idx = parent_sec['idx'][-1]
-                            # else its parent is the previous segment
-                            else:
-                                current_parent_idx = idx_count-1
+                # find the current segment in geo structure
+                # iterate through geo structure until you find matching segment
+                for tree_key_local, tree_local in geo.iteritems():
+                    for sec_i_local, sec_local in enumerate(tree_local):
+                        for seg_i_local, seg_local in enumerate(sec_local):
 
-                            # find corresponding tree, section, segment index
-                            # iterate 
-                            for tree_key_local, tree_local in geo.iteritems():
-                                for sec_i_local, sec_local in enumerate(tree_local):
-                                    for seg_i_local, seg_local in enumerate(sec_local):
-                                        if seg is seg_local:
-                                            current_tree=tree_key_local
-                                            current_sec=sec_i_local
-                                            current_seg=seg_i_local
-                                            diam = seg_local.diam
-                                            xyz = self.seg_location(sec_local)
-                                            x = xyz[0][seg_i_local]
-                                            y = xyz[1][seg_i_local]
-                                            z = xyz[2][seg_i_local]
-                                            name = tree_key_local + '_'+ str(sec_i_local) + '_'  +str(seg_i_local)
-                                            morph_tuple = (idx_count, name, x, y, z, diam, current_parent_idx)
-                                            morpho[tree_key][sec_i][seg_i] = morph_tuple
-                                            break
-                                    else:
-                                        continue
-                                    break
-                                else:
-                                    continue
-                                break
-                            else:
-                                continue
-                            break
+                            # if section name and segment index match
+                            if (sec.name() == sec_local.name()) and (seg_i == seg_i_local):
+                                # segment diameter
+                                diam = seg_local.diam
+                                # segment xyz coordinates
+                                xyz = self.seg_location(sec_local)
+                                x = xyz[0][seg_i_local]
+                                y = xyz[1][seg_i_local]
+                                z = xyz[2][seg_i_local]
 
-            # check if there are children
-                for child_sec_i, child_sec in enumerate(children[parent_sec_i]):
-                    if len(child_sec['sec'])>0:
-                        has_children=True
+                                # segment name
+                                name = tree_key_local + '_'+ str(sec_i_local) + '_'  +str(seg_i_local)
+                                # create 7-tuple
+                                morph_tuple = (idx_count, name, x, y, z, diam, parent_seg_idx)
+                                # store in morphology structure
+                                morpho[tree_key_local][sec_i_local][seg_i_local] = morph_tuple
+            
+                                break 
+                        else:
+                            continue
                         break
+                    else:
+                        continue
+                    break
+                else:
+                    continue
+
         return morpho
+
+
+
+
+        #     print sec.name()
+
+        # # root_ref = h.SectionRef(sec=root)
+        # # idx_count=-2
+        # # nchildren_start = root_ref.nchild()
+        # # children=[[]]
+        # # for child_sec_i in range(int(nchildren_start)):
+        # #     child_sec = root_ref.child[child_sec_i]
+        # #     print child_sec.name()
+        # idx_count=-2
+        # children=[[]]
+        # children[0].append({'sec':root,'seg':[], 'idx':[]})
+        # for seg_i, seg in enumerate(root):
+        #     idx_count += 1
+        #     print 'idx_count:', idx_count
+        #     children[0][0]['seg'].append(seg)
+        #     children[0][0]['idx'].append(idx_count)
+            
+        #     # find corresponding tree, section, segment index
+        #                     # iterate 
+        #     for tree_key_local, tree_local in geo.iteritems():
+
+        #         for sec_i_local, sec_local in enumerate(tree_local):
+
+        #             for seg_i_local, seg_local in enumerate(sec_local):
+        #                 # print sec.name(), sec_local.name()
+        #                 # print seg_i, seg_i_local
+        #                 if (root.name() == sec_local.name()) and (seg_i == seg_i_local):
+
+        #                     if idx_count < 2:
+        #                         print 'segment found:', idx_count
+        #                     current_tree=tree_key_local
+        #                     current_sec=sec_i_local
+        #                     current_seg=seg_i_local
+        #                     diam = seg_local.diam
+        #                     xyz = self.seg_location(sec_local)
+        #                     x = xyz[0][seg_i_local]
+        #                     y = xyz[1][seg_i_local]
+        #                     z = xyz[2][seg_i_local]
+        #                     name = tree_key_local + '_'+ str(sec_i_local) + '_'  +str(seg_i_local)
+        #                     morph_tuple = (idx_count, name, x, y, z, diam, -1)
+        #                     morpho[tree_key_local][sec_i_local][seg_i_local] = morph_tuple
+
+        #                     break
+        #             else:
+        #                 continue
+        #             break
+        #         else:
+        #             continue
+        #         break
+        #     else:
+        #         continue
+        #     break
+        # # print morpho['soma'][0][0]
+
+        # has_children=True
+        # while has_children:
+
+        #     # reset check for children sections on each iteration
+        #     has_children=False
+
+        #     # children from previous iteration become parents
+        #     parents=[]
+        #     children_copy = copy.copy(children)
+        #     # flatten children
+        #     for parent_sec_i, parent_sec in enumerate(children_copy):
+        #         for child_sec_i, child_sec in enumerate(parent_sec):
+        #             # [sections], each list entry is a dictionary with the section object, list of segment objects, list of indeces for each segment 
+        #             if child_sec['sec']:
+        #                 parents.append(child_sec)
+        #             # print 'child sec:', child_sec
+
+
+        #     # collect new group of children
+        #     children = []
+        #     # iterate through parent sections
+        #     for parent_sec_i, parent_sec in enumerate(parents):
+
+        #         # add a list to store children for each parent section
+        #         children.append([])
+
+        #         # if there are no children, store empty list
+        #         if int(h.SectionRef(sec=parent_sec['sec']).nchild()) is 0:
+        #             children[parent_sec_i].append({'sec':[], 'seg':[], 'idx':[]})
+        #         # else if there are children    
+        #         else:
+        #             # iterate over child sections
+        #             for child_sec_i, child_sec in enumerate(h.SectionRef(sec=parent_sec['sec']).child):
+
+        #                 # add child section to list, add list for storing segments and indeces
+        #                 children[parent_sec_i].append({'sec':child_sec, 'seg':[], 'idx':[]})
+        #                 # iterate over segments in child section
+        #                 for seg_i, seg in enumerate(child_sec):
+        #                     # each segment increases index by 1
+        #                     idx_count += 1
+        #                     # print 'count:', idx_count
+
+        #                     # add segment to list
+        #                     children[parent_sec_i][child_sec_i]['seg'].append(seg)
+        #                     # add index to list
+        #                     children[parent_sec_i][child_sec_i]['idx'].append(idx_count)
+
+        #                     # get index of parent segment
+        #                     # if this is the first segment in the child section
+        #                     if seg_i is 0:
+        #                         # its parent is the last segment from the parent section
+        #                         current_parent_idx = parent_sec['idx'][-1]
+        #                     # else its parent is the previous segment
+        #                     else:
+        #                         current_parent_idx = idx_count-1
+
+        #                     # find corresponding tree, section, segment index
+        #                     # iterate 
+        #                     for tree_key_local, tree_local in geo.iteritems():
+        #                         for sec_i_local, sec_local in enumerate(tree_local):
+
+        #                             for seg_i_local, seg_local in enumerate(sec_local):
+        #                                 # print sec.name(), sec_local.name()
+        #                                 # print seg_i, seg_i_local
+        #                                 if (sec.name() == sec_local.name()) and (seg_i == seg_i_local):
+        #                                     # print sec.name()
+
+        #                                     current_tree=tree_key_local
+        #                                     current_sec=sec_i_local
+        #                                     current_seg=seg_i_local
+        #                                     diam = seg_local.diam
+        #                                     xyz = self.seg_location(sec_local)
+        #                                     x = xyz[0][seg_i_local]
+        #                                     y = xyz[1][seg_i_local]
+        #                                     z = xyz[2][seg_i_local]
+        #                                     name = tree_key_local + '_'+ str(sec_i_local) + '_'  +str(seg_i_local)
+        #                                     morph_tuple = (idx_count, name, x, y, z, diam, current_parent_idx)
+        #                                     morpho[tree_key_local][sec_i_local][seg_i_local] = morph_tuple
+
+        #                                     break
+        #                             else:
+        #                                 continue
+        #                             break
+        #                         else:
+        #                             continue
+        #                         break
+        #                     else:
+        #                         continue
+        #                     break
+
+        #     # check if there are children
+        #         for parent_sec_i, child_group in enumerate(children):
+        #             if len(child_group)>0:
+        #                 has_children=True
+        #                 break
+        # print 'soma:', morpho['soma'][0][0]
+        # return morpho
 
         # # assign index to each segment
         # seg_idx = {}
