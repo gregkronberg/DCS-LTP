@@ -101,7 +101,7 @@ class ShapePlot():
         # plot collection
         axes.add_collection(p)
         # show colorbar
-        plt.colorbar(p)
+        # plt.colorbar(p)
         # autoscale axes
         axes.autoscale()
         return axes
@@ -974,8 +974,6 @@ class Experiment:
                     
                     # add to processed list
                     id_list_spike_times.append(data_file)
-
-                    
 
                     # get tree, section, segment info (only one segment is active)
                     tree = p['trees'][0]

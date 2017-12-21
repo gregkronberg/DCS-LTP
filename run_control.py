@@ -34,11 +34,14 @@ class Experiment:
 
         kwargs must be a dictionary with 'experiment' as a key, the corresponding value points to a given experiment, which is then fed the same kwarg dictionary and run
         """
-        # retrieve which experiment to run
-        experiment = getattr(self, kwargs['experiment'])
+        if not kwargs:
+            pass
+        else:
+            # retrieve which experiment to run
+            experiment = getattr(self, kwargs['experiment'])
 
-        # run experiment
-        experiment(**kwargs) 
+            # run experiment
+            experiment(**kwargs) 
 
     # random fraction of all synapses in a given tree
     def exp_1(self, **kwargs):
@@ -690,117 +693,100 @@ class Experiment:
                                 if spike_count ==len(self.p['field']):
                                     print 'spike detected for all polarities'
                                     break
-
+                                
     def exp_2d(self, **kwargs):
-        """ run parallel simulations, same as 2c
+        """ active each segment with varying weights (number of synapses). monitor spike initiation in soma/dendrite as a function of distance from soma
 
         """
-        # python needs to be called with syntax: 
-        # 'mpiexec -n 10 python module.py'
+        w_mean = .001 # weight of single synapse uS
+        trees = ['apical_tuft','apical_trunk', 'basal']
+        nsyns = kwargs['nsyns']
+        self.kwargs = {
+        'experiment' : 'exp_2d', 
+        'trees' : trees,
+        'nsyns':nsyns,
+        'num_sec':1,
+        'seg_L' : 4.,
+        'seg_spacing':20,
+        'max_seg':[],
+        'branch':False,
+        'full_path':False,
+        'branch_distance':[],
+        'branch_seg_distance':[],
+        'sequence_delay': 0,
+        'sequence_direction':'in',
+        'trials' : 1,
+        'w_mean' : [],
+        'w_std' : [.002],
+        'w_rand' : False, 
+        'syn_frac' : .2,
+        'field':[-20.,0.,20.],
+        'KMULT':1.*.03,
+        'KMULTP':1.*.03,
+        'ka_grad':1.,
+        'SOMAM': 1.5,
+        'AXONM': 50.,
+        'gna':.04,
+        'dgna':1.*-.000025,
+        'pulses':4,
+        'pulse_freq':100,
+        'group_trees':False,
+        'plot_variables':['v','gbar'],
+        'cell':[],
+        'tstop':70
+        }
 
-        def dummy(self, nsyns):
-            print 'i am working:',nsyns
+        # update kwargs
+        for key, val in kwargs.iteritems():
+            self.kwargs[key]=val
+        # instantiate default parameter class
+        self.p_class = param.Default()
 
-        pc = h.ParallelContext()
-        nhost = int(pc.nhost())
-        print 'number of hosts:', nhost
-        nsyns_range = range(2,22,2)
+        # reference to default parameters
+        self.p = self.p_class.p
 
-        pc.runworker()
+        # update parameters
+        for key, val in self.kwargs.iteritems():        # update parameters
+            self.p[key] = val
 
-        for nsyns in nsyns_range:
-            print 'doing something'
-            # pc.submit(self.single_cell, nsyns)
-            pc.submit(self.dummy, nsyns)
+        # data and figure folder
+        self.p['data_folder'] = 'Data/'+self.p['experiment']+'/'
+        self.p['fig_folder'] =  'png figures/'+self.p['experiment']+'/'
 
-        while pc.working():
-            pass
-        pc.done()
+        # load cell and store in parameter dictionary
+        cell1 = cell.CellMigliore2005(self.p)
+        cell1.geometry(self.p)
+        # insert mechanisms
+        cell1.mechanisms(self.p)
+        # measure distance of each segment from the soma and store in parameter dictionary
+        self.p_class.seg_distance(cell1)
 
-        
-        
+        self.p['morpho'] = self.p_class.create_morpho(cell1.geo)
 
-        def single_cell(self, nsyns):
-            print 'i am doing something'
-            
-            w_mean = .001 # weight of single synapse uS
-            trees = ['apical_trunk', 'apical_tuft', 'basal']
-            self.kwargs = {
-            'experiment' : 'exp_2d', 
-            'trees' : ['apical_tuft', 'apical_trunk', 'basal'],
-            'nsyns':nsyns,
-            'num_sec':1,
-            'seg_L' : 4.,
-            'seg_spacing':20,
-            'max_seg':[],
-            'branch':False,
-            'full_path':False,
-            'branch_distance':[],
-            'branch_seg_distance':[],
-            'sequence_delay': 0,
-            'sequence_direction':'in',
-            'trials' : 1,
-            'w_mean' : [],
-            'w_std' : [.002],
-            'w_rand' : False, 
-            'syn_frac' : .2,
-            'field':[-20.,0.,20.],
-            'KMULT':1.*.03,
-            'KMULTP':1.*.03,
-            'ka_grad':1.,
-            'SOMAM': 1.5,
-            'AXONM': 50.,
-            'gna':.04,
-            'dgna':1.*-.000025,
-            'pulses':4,
-            'pulse_freq':100,
-            'group_trees':False,
-            'plot_variables':['v','gbar'],
-            'cell':[],
-            'tstop':70
-            }
+        for tree_key_morph, tree_morph in self.p['morpho'].iteritems():
+            for sec_i_morph, sec_morph in enumerate(tree_morph):
+                for seg_i_morph, seg_morph in enumerate(sec_morph):
+                    pass
 
-            # instantiate default parameter class
-            self.p_class = param.Default()
 
-            # reference to default parameters
-            self.p = self.p_class.p
+        spike_analysis = analysis.Spikes()
+        threshold=-30
 
-            # update parameters
-            for key, val in self.kwargs.iteritems():        # update parameters
-                self.p[key] = val
+        # iterate over all segments in tree
+        for trial_i, trial in enumerate(range(self.p['trials'])):
+            for tree_key, tree in cell1.geo.iteritems():
+                if tree_key in trees:
+                    self.p['trees'] = [tree_key]
+                    for sec_i, sec in enumerate(tree):
+                        for seg_i, seg in enumerate(sec):
+                            sec_list = {tree_key:[sec_i]}
+                            seg_list = {tree_key:[seg_i]}
+                            print sec_list, seg_list
+                            distance_from_soma = self.p['seg_dist'][tree_key][sec_i][seg_i]
 
-            # data and figure folder
-            self.p['data_folder'] = 'Data/'+self.p['experiment']+'/'
-            self.p['fig_folder'] =  'png figures/'+self.p['experiment']+'/'
+                            self.p_class.choose_seg_manual(trees=self.p['trees'], sec_list=sec_list, seg_list=seg_list)
 
-            
-            # load cell and store in parameter dictionary
-            cell1 = cell.CellMigliore2005(self.p)
-            cell1.geometry(self.p)
-            # insert mechanisms
-            cell1.mechanisms(self.p)
-            
-            # measure distance of each segment from the soma and store in parameter dictionary
-            self.p_class.seg_distance(cell1)
-
-            spike_analysis = analysis.Spikes()
-            threshold=-30
-
-            # iterate over all segments in tree
-            for trial_i, trial in enumerate(range(self.p['trials'])):
-                for tree_key, tree in cell1.geo.iteritems():
-                    if tree_key in trees:
-                        self.p['trees'] = [tree_key]
-                        for sec_i, sec in enumerate(tree):
-                            for seg_i, seg in enumerate(sec):
-                                sec_list = {tree_key:[sec_i]}
-                                seg_list = {tree_key:[seg_i]}
-                                print sec_list, seg_list
-                                distance_from_soma = self.p['seg_dist'][tree_key][sec_i][seg_i]
-
-                                self.p_class.choose_seg_manual(trees=self.p['trees'], sec_list=sec_list, seg_list=seg_list)
-
+                            for nsyn_i, nsyn in enumerate(self.p['nsyns']):
 
                                 self.p['w_mean'] = nsyn*w_mean
 
@@ -832,8 +818,6 @@ class Experiment:
                                 # print trial and simulation time
                                 print 'trial'+ str(self.p['trial']) + ' duration:' + str(end -start) 
                                 
-
-
                                 # set file name to save data
                                 file_name = str(
                                 self.p['experiment']+
@@ -858,6 +842,20 @@ class Experiment:
                                     xlim=[self.p['warmup']-5,self.p['tstop']],
                                     ylim=[])
                                 
+                                spike_count=0
+                                for f_i, f in enumerate(self.p['field']):
+                                    # if threshold crossed, continue
+                                    dend_spike = spike_analysis.detect_spikes(sim.data[str(f)][tree_key+'_v'][0][0], threshold=threshold)['times'][0]
+
+                                    soma_spike = spike_analysis.detect_spikes(sim.data[str(f)]['soma'+'_v'][0][0], threshold=threshold)['times'][0]
+
+                                    if len(dend_spike)>0 or len(soma_spike)>0:
+                                        spike_count+=1
+
+                                print 'spike count:', spike_count
+                                if spike_count ==len(self.p['field']):
+                                    print 'spike detected for all polarities'
+                                    break
     # random fraction of all synapses in a given tree
     def exp_3a(self, **kwargs):
         exp = 'exp_3'
@@ -1329,6 +1327,34 @@ class Experiment:
 
         self.p = p
     
+# function to pass to parallel context message board
+def _f_parallel(parameters):
+    experiment = parameters['experiment']
+    exp_instance = Experiment()
+    f = getattr(exp_instance, experiment)
+    return f(**parameters)
+
+# function for controlling parallel    
+def _run_parallel():
+    global pc
+
+    experiment ='exp_2d'
+    # divide up parameters
+    nsyns = range(2,22,2)
+    parameters=[]
+    for syns in nsyns:
+        parameters.append({'nsyns':[syns], 'experiment':experiment})
+
+    # start parallel context
+    pc = h.ParallelContext()
+    pc.runworker()
+    
+    # distribute parameters
+    for param in parameters:
+        pc.submit(_f_parallel, param)
+
+    pc.done()
+
 
 class Arguments:
     """
@@ -1660,9 +1686,10 @@ class Arguments:
 
 
 if __name__ =="__main__":
-    kwargs = {'experiment':'exp_2c'}
+    _run_parallel()
+    # kwargs = {'experiment':'exp_2c'}
     # kwargs = Arguments('exp_1').kwargs
-    x = Experiment(**kwargs)
+    # x = Experiment(**kwargs)
     # analysis.Experiment(**kwargs)
     # plots = analysis.PlotRangeVar()
     # plots.plot_all(x.p)
