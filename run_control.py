@@ -699,7 +699,7 @@ class Experiment:
 
         """
         w_mean = .001 # weight of single synapse uS
-        trees = ['apical_tuft','apical_trunk', 'basal']
+        trees = ['apical_tuft','apical_trunk','basal']
         nsyns = kwargs['nsyns']
         self.kwargs = {
         'experiment' : 'exp_2d', 
@@ -1329,6 +1329,7 @@ class Experiment:
     
 # function to pass to parallel context message board
 def _f_parallel(parameters):
+    print 'check'
     experiment = parameters['experiment']
     exp_instance = Experiment()
     f = getattr(exp_instance, experiment)
@@ -1337,12 +1338,12 @@ def _f_parallel(parameters):
 # function for controlling parallel    
 def _run_parallel():
     global pc
-
     experiment ='exp_2d'
     # divide up parameters
     nsyns = range(2,22,2)
     parameters=[]
     for syns in nsyns:
+        print syns
         parameters.append({'nsyns':[syns], 'experiment':experiment})
 
     # start parallel context
@@ -1353,6 +1354,8 @@ def _run_parallel():
     for param in parameters:
         pc.submit(_f_parallel, param)
 
+    while pc.working():
+        pass
     pc.done()
 
 
