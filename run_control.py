@@ -695,7 +695,9 @@ class Experiment:
                                     break
                                 
     def exp_2d(self, **kwargs):
-        """ active each segment with varying weights (number of synapses). monitor spike initiation in soma/dendrite as a function of distance from soma
+        """ Apply a single theta burst for each segment, one segment at a time.  Step through increasing number of synapses (weight) to detect thresholds
+
+        Simulations are run in parallel.  See the functions _f_parallel and _run_parallel
 
         """
         w_mean = .001 # weight of single synapse uS
@@ -1329,35 +1331,62 @@ class Experiment:
     
 # function to pass to parallel context message board
 def _f_parallel(parameters):
-    print 'check'
+    """ wrapper around experiment so that it exists in global namespace and can be accessed by mpi
+
+    Arguments: 
+    parameters - dictionary with entries 'experiment' and parameters to be iterated through.  'experiment specifies which experiment to run'
+    """
+    # get experiment info
     experiment = parameters['experiment']
+    
+    # create experiment class instance
     exp_instance = Experiment()
+
+    # get specific experiment function
     f = getattr(exp_instance, experiment)
+
+    # run experiment
     return f(**parameters)
 
 # function for controlling parallel    
 def _run_parallel():
+    """ set up for running parallel simulations
+    python script must be called from the interpreter using syntax
+
+    mpiexec -n 10 python script.py
+
+    the call to mpiexec initializes the mpi with 10 workers
+    """
+
+    # make parallel context global
     global pc
+
+    # choose experiment
     experiment ='exp_2d'
+
     # divide up parameters
     nsyns = range(2,22,2)
+    # list of parameter values to be sent to each worker [worker number]{'parameter':[values], 'experiment':exp_number}
     parameters=[]
     for syns in nsyns:
         print syns
         parameters.append({'nsyns':[syns], 'experiment':experiment})
 
-    # start parallel context
+    # create parallel context instance
     pc = h.ParallelContext()
+    # start workers, begins an infinitely loop where master workers posts jobs and workers pull jobs until all jobs are finished
     pc.runworker()
     
-    # distribute parameters
+    # distribute experiment and parameters to workers
     for param in parameters:
         pc.submit(_f_parallel, param)
 
+    # continue runnning until all workers are finished
     while pc.working():
         pass
-    pc.done()
 
+    # close parallel context 
+    pc.done()
 
 class Arguments:
     """
@@ -1685,8 +1714,6 @@ class Arguments:
         'diam_apical_dist' : 1.*2.75,
         'RaAll' : 10.*150.,
         }
-
-
 
 if __name__ =="__main__":
     _run_parallel()
