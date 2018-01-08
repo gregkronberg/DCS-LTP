@@ -469,52 +469,57 @@ class Default(object):
         self.p['sec_idx']={}
         self.p['seg_idx']={}
 
-        # iterate over all trees
-        for tree_key, tree in syns.iteritems():
 
-            # if tree is in active list
-            if tree_key in trees:
+        # list all segments as [[section,segment]] 
+        segs_all = [[sec_i,seg_i, tree_key] for tree_key, tree in syns.iteritems() for sec_i,sec in enumerate(tree) for seg_i,seg in enumerate(tree[sec_i]) if tree_key in trees]
 
-                # list all segments as [[section,segment]] 
-                segs_all = [[sec_i,seg_i] for sec_i,sec in enumerate(tree) for seg_i,seg in enumerate(tree[sec_i])]
+        # apply distance criteria
+        if distance:
 
-                # apply distance criteria
-                if distance:
+            # print 'distance requirement'
+            segs_all_dist = [seg for seg_i, seg in enumerate(segs_all) if seg_dist[seg[2]][seg[0]][seg[1]]>distance[0] and seg_dist[seg[2]][seg[0]][seg[1]]<distance[1]] 
 
-                    print 'distance requirement'
-                    segs_all_dist = [seg for seg_i, seg in enumerate(segs_all) if seg_dist[tree_key][seg[0]][seg[1]]>distance[0] and seg_dist[tree_key][seg[0]][seg[1]]<distance[1]] 
+            # print len(segs_all_dist)
+            segs_all = segs_all_dist
 
-                    print len(segs_all_dist)
-                    segs_all = segs_all_dist
+        if syn_num:
+            print 'syn_num:', int(syn_num)
+            print 'available segments:'
+            # choose segments to activate
+            segs_choose = np.random.choice(len(segs_all), int(syn_num), replace=False)
 
-                if syn_num:
-                    # choose segments to activate
-                    segs_choose = np.random.choice(len(segs_all), syn_num, replace=False)
+        else:
+            # choose segments to activate
+            segs_choose = np.random.choice(len(segs_all), int(syn_frac*len(segs_all)), replace=False)
 
-                else:
-                    # choose segments to activate
-                    segs_choose = np.random.choice(len(segs_all), int(syn_frac*len(segs_all)), replace=False)
+        # list of active sections (contains duplicates)3
+        sec_list_all = [segs_all[a][0] for a in segs_choose]
+    
+        # list of active segments
+        seg_list_all = [segs_all[a][1] for a in segs_choose]
 
-                # list of active sections (contains duplicates)3
-                sec_list = [segs_all[a][0] for a in segs_choose]
-            
-                # list of active segments
-                seg_list = [segs_all[a][1] for a in segs_choose]
+        # list of trees
+        tree_list_all = [segs_all[a][2] for a in segs_choose]
 
-                # uniqure list of active sections
-                sec_idx  = list(set(sec_list))
-            
-                # list of active segments as [unique section][segments]
-                seg_idx = []
-                for sec in sec_idx:
-                    seg_idx.append([seg_list[sec_i] for sec_i,sec_num in enumerate(sec_list) if sec_num==sec])
+        for tree_key in trees:
 
-                # update parameter dictionary
-                self.p['sec_list'][tree_key] = sec_list
-                self.p['seg_list'][tree_key] = seg_list
-                self.p['sec_idx'][tree_key] = sec_idx
-                self.p['seg_idx'][tree_key] = seg_idx
-                self.p['syn_frac'] = syn_frac
+            sec_list = [sec_list_all[i] for i,tree in enumerate(tree_list_all) if tree==tree_key]
+
+            seg_list = [seg_list_all[i] for i,tree in enumerate(tree_list_all) if tree==tree_key]
+
+            sec_idx = list(set(sec_list))
+
+            # list of active segments as [unique section][segments]
+            seg_idx = []
+            for sec in sec_idx:
+                seg_idx.append([seg_list[sec_i] for sec_i,sec_num in enumerate(sec_list) if sec_num==sec])
+
+            # update parameter dictionary
+            self.p['sec_list'][tree_key] = sec_list
+            self.p['seg_list'][tree_key] = seg_list
+            self.p['sec_idx'][tree_key] = sec_idx
+            self.p['seg_idx'][tree_key] = seg_idx
+            self.p['syn_frac'] = syn_frac
 
     def choose_seg_manual(self, trees, sec_list, seg_list):
         """ manually choose segments to activate
@@ -1032,278 +1037,6 @@ class Default(object):
         #             morpho[tree_key][sec_i].append(morph_tuple)
 
         # return morpho
-   
-class Experiment(Default):
-    """
-    """
-    def __init__(self, **kwargs):
-        # initialize with default parameters
-        super(Experiment, self).__init__()
-
-        # retrieve experiment to run
-        experiment = getattr(self, kwargs['experiment'])
-
-        # set specific experimental parameters
-        experiment(**kwargs) 
-
-    def exp_1(self, **kwargs):
-        """ randomly activate subset of synapses
-
-        set parameters in dictionary p
-        
-        p cannot contain any hoc objects, as this will be pickled and stored with each experiment so that the parameters can be retrieved
-    
-        """
-        # update parameters
-        for key, val in kwargs.iteritems():
-            self.p[key] = val
-
-        self.p['data_folder'] = 'Data/'+self.p['experiment']+'/'
-        self.p['fig_folder'] =  'png figures/'+self.p['experiment']+'/'
-
-        # load cell
-        self.cell = cell.CellMigliore2005(self.p)
-        self.seg_distance(self.cell)
-        # randomly choose active segments 
-        self.choose_seg_rand(syn_list=self.cell.syns[tree]['ampa'], syn_frac=self.p['syn_frac'])
-        
-        # set weights for active segments
-        self.set_weights(seg_idx=self.p['seg_idx'], w_mean=self.p['w_mean'], w_std=self.p['w_std'], w_rand=self.p['w_rand'])
-
-    def exp_2(self, **kwargs):
-        """ choose specific section/segment and activate with varying weights
-        """
-        # update parameters
-        for key, val in kwargs.iteritems():
-            self.p[key] = val
-
-        self.p['data_folder'] = 'Data/'+self.p['experiment']+'/'
-        self.p['fig_folder'] =  'png figures/'+self.p['experiment']+'/'
-
-        self.cell = cell.CellMigliore2005(self.p)
-        self.seg_distance(self.cell)
-        sec_idx = kwargs['sec_idx']
-        seg_idx = kwargs['seg_idx']
-        sec_list = [sec_idx[sec_i] for sec_i,sec in enumerate(seg_idx) for seg in sec]
-        seg_list = [ seg for sec_i,sec in enumerate(seg_idx) for seg in sec]
-
-        # update parameter dictionary
-        self.p['sec_list'] = sec_list
-        self.p['seg_list'] = seg_list
-        self.p['sec_idx'] = sec_idx
-        self.p['seg_idx'] = seg_idx
-
-        # create weight list
-        self.set_weights(seg_idx=self.p['seg_idx'], w_mean=self.p['w_mean'], w_std=self.p['w_std'], w_rand=self.p['w_rand'])
-
-    def exp_3(self, **kwargs):
-        """ randomly activate subset of synapses for reduced 4 compartment model
-    
-        """
-        # update parameters
-        for key, val in kwargs.iteritems():
-            self.p[key] = val
-
-        self.p['data_folder'] = 'Data/'+self.p['experiment']+'/'
-        self.p['fig_folder'] =  'png figures/'+self.p['experiment']+'/'
-
-        # load cell
-        self.cell = cell.PyramidalCell(self.p)
-        self.seg_distance(self.cell)
-        # randomly choose active segments 
-
-        self.choose_seg_rand(syn_list=self.cell.syns[self.p['tree']]['ampa'], syn_frac=self.p['syn_frac'])
-        
-        # set weights for active segments
-        self.set_weights(seg_idx=self.p['seg_idx'], w_mean=self.p['w_mean'], w_std=self.p['w_std'], w_rand=self.p['w_rand'])
-
-        print self.p['seg_idx']
-
-    def exp_4(self, **kwargs):
-        """ randomly activate subset of synapses for reduced 4 compartment model
-    
-        """
-        # update parameters
-        for key, val in kwargs.iteritems():
-            self.p[key] = val
-
-        self.p['data_folder'] = 'Data/'+self.p['experiment']+'/'
-        self.p['fig_folder'] =  'png figures/'+self.p['experiment']+'/'
-
-        # load cell
-        self.cell = cell.PyramidalCell(self.p)
-        self.seg_distance(self.cell)
-        # randomly choose active segments 
-
-        self.choose_seg_rand(syn_list=self.cell.syns[self.p['tree']]['ampa'], syn_frac=self.p['syn_frac'])
-        
-        # set weights for active segments
-        self.set_weights(seg_idx=self.p['seg_idx'], w_mean=self.p['w_mean'], w_std=self.p['w_std'], w_rand=self.p['w_rand'])
-
-        print self.p['seg_idx']
-
-    def exp_5(self, **kwargs):
-        """ vary gradient of Ka and Ih
-
-        measure steady state membrane polarization in the absence of synaptic inputs
-    
-        """
-        # update parameters
-        for key, val in kwargs.iteritems():
-            self.p[key] = val
-
-        self.p['data_folder'] = 'Data/'+self.p['experiment']+'/'
-        self.p['fig_folder'] =  'png figures/'+self.p['experiment']+'/'
-
-        # load cell
-        self.cell = cell.PyramidalCell(self.p)
-        self.seg_distance(self.cell)
-        # randomly choose active segments 
-
-        self.choose_seg_rand(syn_list=self.cell.syns[self.p['tree']]['ampa'], syn_frac=self.p['syn_frac'])
-        
-        # set weights for active segments
-        self.set_weights(seg_idx=self.p['seg_idx'], w_mean=self.p['w_mean'], w_std=self.p['w_std'], w_rand=self.p['w_rand'])
-
-        print self.p['seg_idx']
-
-    def exp_6(self, **kwargs):
-        """ vary gradient of Ka and Ih
-
-        measure peak membrane depolarization in response to synaptic input
-    
-        """
-        # update parameters
-        for key, val in kwargs.iteritems():
-            self.p[key] = val
-
-        self.p['data_folder'] = 'Data/'+self.p['experiment']+'/'
-        self.p['fig_folder'] =  'png figures/'+self.p['experiment']+'/'
-
-        # load cell
-        self.p['cell'] = cell.PyramidalCell(self.p)
-        self.seg_distance(self.p['cell'])
-        # randomly choose active segments 
-
-        self.choose_seg_manual(sec_list=self.p['sec_list'], seg_list=self.p['seg_list'])
-        
-        # set weights for active segments
-        self.set_weights(seg_idx=self.p['seg_idx'], w_mean=self.p['w_mean'], w_std=self.p['w_std'], w_rand=self.p['w_rand'])
-
-        print self.p['seg_idx']
-        print self.p['w_list']
-        print self.p['pulses']
-
-        # delete created cell
-        # self.cell=None
-
-    def exp_7(self, **kwargs):
-        """ vary gradient of Ka and Ih
-
-        measure peak membrane depolarization in response to synaptic input
-    
-        """
-        # update parameters
-        for key, val in kwargs.iteritems():
-            self.p[key] = val
-
-        self.p['data_folder'] = 'Data/'+self.p['experiment']+'/'
-        self.p['fig_folder'] =  'png figures/'+self.p['experiment']+'/'
-
-        # load cell
-        self.p['cell'] = cell.CellMigliore2005(self.p)
-        # self.p['cell'] = cell.PyramidalCell(self.p)
-        self.seg_distance(self.p['cell'])
-        # randomly choose active segments 
-
-        self.choose_seg_manual(sec_list=self.p['sec_list'], seg_list=self.p['seg_list'])
-        
-        # set weights for active segments
-        self.set_weights(seg_idx=self.p['seg_idx'], w_mean=self.p['w_mean'], w_std=self.p['w_std'], w_rand=self.p['w_rand'])
-
-        # delete created cell
-        # self.cell=None
-
-    def exp_8(self, **kwargs):
-        """ vary gradient of Ka and Ih
-
-        measure peak membrane depolarization in response to synaptic input
-    
-        """
-        # update parameters
-        for key, val in kwargs.iteritems():
-            self.p[key] = val
-
-        self.p['data_folder'] = 'Data/'+self.p['experiment']+'/'
-        self.p['fig_folder'] =  'png figures/'+self.p['experiment']+'/'
-
-        # load cell
-        self.p['cell'] = cell.PyramidalCylinder(self.p)
-        # self.p['cell'] = cell.PyramidalCell(self.p)
-        self.seg_distance(self.p['cell'])
-        # randomly choose active segments 
-
-        self.choose_seg_manual(sec_list=self.p['sec_list'], seg_list=self.p['seg_list'])
-        
-        # set weights for active segments
-        self.set_weights(seg_idx=self.p['seg_idx'], w_mean=self.p['w_mean'], w_std=self.p['w_std'], w_rand=self.p['w_rand'])
-
-        # delete created cell
-        # self.cell=None
-
-    def exp_9(self, **kwargs):
-        """ vary gradient of Ka and Ih
-
-        measure peak membrane depolarization in response to synaptic input
-    
-        """
-        # update parameters
-        for key, val in kwargs.iteritems():
-            self.p[key] = val
-
-        self.p['data_folder'] = 'Data/'+self.p['experiment']+'/'
-        self.p['fig_folder'] =  'png figures/'+self.p['experiment']+'/'
-
-        # load cell
-        self.p['cell'] = cell.CellMigliore2005(self.p)
-        # self.p['cell'] = cell.PyramidalCell(self.p)
-        self.seg_distance(self.p['cell'])
-        # randomly choose active segments 
-
-        self.choose_seg_manual(sec_list=self.p['sec_list'], seg_list=self.p['seg_list'])
-        
-        # set weights for active segments
-        self.set_weights(seg_idx=self.p['seg_idx'], w_mean=self.p['w_mean'], w_std=self.p['w_std'], w_rand=self.p['w_rand'])
-
-        # delete created cell
-        # self.cell=None
-
-    def exp_10(self, **kwargs):
-        """ vary gradient of Ka and Ih
-
-        measure peak membrane depolarization in response to synaptic input
-    
-        """
-        # update parameters
-        for key, val in kwargs.iteritems():
-            self.p[key] = val
-
-        self.p['data_folder'] = 'Data/'+self.p['experiment']+'/'
-        self.p['fig_folder'] =  'png figures/'+self.p['experiment']+'/'
-
-        # load cell
-        self.p['cell'] = cell.CellMigliore2005(self.p)
-        # self.p['cell'] = cell.PyramidalCell(self.p)
-        self.seg_distance(self.p['cell'])
-        # randomly choose active segments 
-
-        self.choose_seg_manual(sec_list=self.p['sec_list'], seg_list=self.p['seg_list'])
-        
-        # set weights for active segments
-        self.set_weights(seg_idx=self.p['seg_idx'], w_mean=self.p['w_mean'], w_std=self.p['w_std'], w_rand=self.p['w_rand'])
-
-        # delete created cell
-        # self.cell=None
 
 # set procedure if called as a script
 if __name__ == "__main__":

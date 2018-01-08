@@ -858,476 +858,150 @@ class Experiment:
                                 if spike_count ==len(self.p['field']):
                                     print 'spike detected for all polarities'
                                     break
-    # random fraction of all synapses in a given tree
-    def exp_3a(self, **kwargs):
-        exp = 'exp_3'
-        tree = kwargs['tree']
-        trials = kwargs['trials']
-        w_mean = kwargs['w_mean']
-        w_std = kwargs['w_std']
-        w_rand = kwargs['w_rand']
-        syn_frac = kwargs['syn_frac']
 
-        # loop over trials
-        for tri in range(trials):
-            # loop over weights
-            for w_i,w in enumerate(w_mean):
-                # choose fraction of synapses to be activated
-                # syn_frac = np.random.normal(loc=.1, scale=.1) # chosen from gaussian
-                
-                # load rest of parameters from parameter module
-                p = param.Experiment(experiment=exp, tree=tree, w_mean=w, w_std=w_std, w_rand=w_rand, syn_frac=syn_frac).p
-                
+    def exp_2e(self, **kwargs):
+        """ choose a random subset of segments (fixed number of segments) within a given distance from the soma and apply theta burst
+
+        vary number of synapses, weight of each synapse, and distance from soma.  For each combination of these variables, do several repeats to randomly choose specific synapse locations 
+
+        run simulations in parallel.  distribute distance and number of synapses across workers. iterate over weights and random drawings within a given worker
+
+        """
+        print 'running', kwargs['experiment'], 'on worker', pc.id()
+        print kwargs
+        w_mean = .001 # weight of single synapse uS
+        trees = kwargs['trees']
+        nsyns = kwargs['nsyns']
+        syn_num = kwargs['syn_num']
+        syn_dist = kwargs['syn_dist']
+        trials = 10
+        self.kwargs = {
+        'experiment' : 'exp_2e', 
+        'trees' : trees,
+        'nsyns':nsyns,
+        'syn_num':syn_num,
+        'syn_dist': syn_dist,
+        'num_sec':1,
+        'seg_L' : 4.,
+        'seg_spacing':20,
+        'max_seg':[],
+        'branch':False,
+        'full_path':False,
+        'branch_distance':[],
+        'branch_seg_distance':[],
+        'sequence_delay': 0,
+        'sequence_direction':'in',
+        'trials' : trials,
+        'w_mean' : [],
+        'w_std' : [.002],
+        'w_rand' : False, 
+        'syn_frac' : .2,
+        'field':[-20.,0.,20.],
+        'KMULT':1.*.03,
+        'KMULTP':1.*.03,
+        'ka_grad':1.,
+        'SOMAM': 1.5,
+        'AXONM': 50.,
+        'gna':.04,
+        'dgna':1.*-.000025,
+        'pulses':4,
+        'pulse_freq':100,
+        'group_trees':False,
+        'plot_variables':['v','gbar'],
+        'cell':[],
+        'tstop':70
+        }
+
+        # update kwargs
+        for key, val in kwargs.iteritems():
+            self.kwargs[key]=val
+        
+        # instantiate default parameter class
+        self.p_class = param.Default()
+
+        # reference to default parameters
+        self.p = self.p_class.p
+
+        # update parameters
+        for key, val in self.kwargs.iteritems():        # update parameters
+            self.p[key] = val
+
+        # data and figure folder
+        self.p['data_folder'] = 'Data/'+self.p['experiment']+'/'
+        self.p['fig_folder'] =  'png figures/'+self.p['experiment']+'/'
+
+        # load cell and store in parameter dictionary
+        cell1 = cell.CellMigliore2005(self.p)
+        cell1.geometry(self.p)
+        # insert mechanisms
+        cell1.mechanisms(self.p)
+        
+        # measure distance of each segment from the soma and store in parameter dictionary
+        self.p_class.seg_distance(cell1)
+
+        self.p['morpho'] = self.p_class.create_morpho(cell1.geo)
+
+        threshold=-30
+
+        # iterate over all segments in tree
+        for syn_num_i, syn_num in enumerate(self.p['syn_num']):
+            for trial_i, trial in enumerate(range(self.p['trials'])):
+
+                self.p_class.choose_seg_rand(trees=self.p['trees'], syns=cell1.syns, syn_frac=0., seg_dist=self.p['seg_dist'], syn_num=syn_num, distance=self.p['syn_dist'])
+
+                self.p['w_mean'] = self.p['nsyns']*w_mean
+
+                self.p_class.set_weights(seg_idx=self.p['seg_idx'], w_mean=self.p['w_mean'], w_std=self.p['w_std'], w_rand=self.p['w_rand'])
+
+                self.p_class.set_branch_sequence_ordered(seg_idx=self.p['seg_idx'], delay=self.p['sequence_delay'], direction=self.p['sequence_direction'])
+
+                print 'syn_num:', self.p['syn_num']
+                print 'nsyn:',self.p['nsyns'], 'w (nS):',self.p['w_mean'] 
+                print 'distance from soma:', self.p['syn_dist']
+
                 # store trial number
-                p['trial']=tri
-                
+                self.p['trial']=trial
+                                
                 # create unique identifier for each trial
-                p['trial_id'] = str(uuid.uuid4())
-                
+                self.p['trial_id'] = str(uuid.uuid4())
+                                
                 # start timer
                 start = time.time() 
                 
+                # print cell1.syns
                 # run simulation
-                sim = run.Run(p)    
+                sim = run.Run(p=self.p, cell=cell1) 
 
                 # end timer
                 end = time.time() 
 
                 # print trial and simulation time
-                print 'trial'+ str(tri) + ' duration:' + str(end -start) 
+                print 'trial'+ str(self.p['trial']) + ' duration:' + str(end -start) 
                 
+                # set file name to save data
+                file_name = str(
+                self.p['experiment']+
+                '_weight_'+str(self.p['w_mean'])+
+                '_trial_'+str(self.p['trial'])+
+                '_dist_'+str(self.p['syn_dist'][-1])+
+                '_syn_num_'+str(syn_num)+
+                '_id_'+self.p['trial_id']
+                )
+
                 # save data for eahc trial
-                run.save_data(sim.data)
-
-        self.p = p
-
-    def exp_4(self, **kwargs):
-        exp = 'exp_4'
-        tree = kwargs['tree']
-        trials = kwargs['trials']
-        w_mean = kwargs['w_mean']
-        w_std = kwargs['w_std']
-        w_rand = kwargs['w_rand']
-        syn_frac = kwargs['syn_frac']
-
-        # loop over trials
-        for tri in range(trials):
-            for gh_i, gh in enumerate(kwargs['conductance_range']):
-                for gka_i, gka in enumerate(kwargs['conductance_range']):
-                    
-                    # load rest of parameters from parameter module
-                    p = param.Experiment(**kwargs).p
-                    
-                    # set Ih and Ka conductance parameters
-                    p['ghd'] = gh*0.00005
-                    p['KMULT'] =  gka*0.03
-                    p['KMULTP'] =  gka*0.03
-
-                    print 'g_h:', p['ghd'], 'g_ka:', p['KMULT']
-
-                    # store trial number
-                    p['trial']=tri
-                    
-                    # create unique identifier for each trial
-                    p['trial_id'] = str(uuid.uuid4())
-                    
-                    # start timer
-                    start = time.time() 
-                    
-                    # run simulation
-                    sim = run.Run(p)    
-
-                    # end timer
-                    end = time.time() 
-
-                    # print trial and simulation time
-                    print 'trial'+ str(tri) + ' duration:' + str(end -start) 
-                    
-                    # save data for eahc trial
-                    run.save_data(sim.data)
-
-        self.p = p
-
-    def exp_5(self, **kwargs):
-        exp = 'exp_5'
-        tree = kwargs['tree']
-        trials = kwargs['trials']
-        w_mean = kwargs['w_mean']
-        w_std = kwargs['w_std']
-        w_rand = kwargs['w_rand']
-        syn_frac = kwargs['syn_frac']
-
-        # loop over trials
-        for tri in range(trials):
-            for h_grad_i, h_grad in enumerate(kwargs['grad_range']):
-                for ka_grad_i, ka_grad in enumerate(kwargs['grad_range']):
-                    
-                    # load rest of parameters from parameter module
-                    p = param.Experiment(**kwargs).p
-                    
-                    # set Ih and Ka conductance parameters
-                    p['ghd_grad'] = h_grad*3.
-                    p['ka_grad'] =  ka_grad*1
-
-                    # store trial number
-                    p['trial']=tri
-                    
-                    # create unique identifier for each trial
-                    p['trial_id'] = str(uuid.uuid4())
-                    
-                    # start timer
-                    start = time.time() 
-                    
-                    # run simulation
-                    sim = run.Run(p)    
-
-                    # end timer
-                    end = time.time() 
-
-                    # print trial and simulation time
-                    print 'trial'+ str(tri) + ' duration:' + str(end -start) 
-                    
-                    # save data for eahc trial
-                    run.save_data(sim.data)
-
-        self.p = p
-
-    def exp_6(self, **kwargs):
-        """ vary Ih and Ka parameters and measure effects on peak EPSP
-        """
-        exp = 'exp_6'
-        tree = kwargs['tree']
-        trials = kwargs['trials']
-        w_mean = kwargs['w_mean']
-        w_std = kwargs['w_std']
-        w_rand = kwargs['w_rand']
-        syn_frac = kwargs['syn_frac']
-        plots = analysis.Voltage()
-
-        # loop over trials
-        for tri in range(trials):
-            for gh_i, gh in enumerate(kwargs['conductance_range']):
-                for gka_i, gka in enumerate(kwargs['conductance_range']):
-                    for gh_grad_i, gh_grad in enumerate(kwargs['grad_range']):
-                        if gh==0.:
-                            continue
-                        for ka_grad_i, ka_grad in enumerate(kwargs['grad_range']):
-                            if gka==0.:
-                                continue 
-
-
-                    
-                            # load rest of parameters from parameter module
-                            p = param.Experiment(**kwargs).p
-                            
-                            # set Ih and Ka conductance parameters
-                            p['ghd'] = gh*kwargs['ghd']
-                            p['KMULT'] =  gka*kwargs['KMULT']
-                            p['KMULTP'] =  gka*kwargs['KMULTP']
-                            p['ghd_grad'] = gh_grad*kwargs['ghd_grad']
-                            p['ka_grad'] =ka_grad*kwargs['ka_grad']
-
-                            print 'g_h:', p['ghd'], 'g_ka:', p['KMULT'], 'h_grad:', p['ghd_grad'], 'ka_grad:', p['ka_grad']
-
-                            # store trial number
-                            p['trial']=tri
-                            
-                            # create unique identifier for each trial
-                            p['trial_id'] = str(uuid.uuid4())
-                            
-                            # start timer
-                            start = time.time() 
-                            
-                            # run simulation
-                            sim = run.Run(p)    
-
-
-                            # end timer
-                            end = time.time() 
-
-                            # print trial and simulation time
-                            print 'trial'+ str(tri) + ' duration:' + str(end -start) 
-                            
-                            # save data for eahc trial
-                            run.save_data(sim.data)
-
-                            plots.plot_trace(data=sim.data, 
-                            tree=p['tree'], 
-                            sec_idx=p['sec_idx'], 
-                            seg_idx=p['seg_idx'],
-                            variables=p['plot_variables'])
-
-                            
-
-
-
-        self.p = p
-
-    def exp_7(self, **kwargs):
-        """ vary Ih parameters and measure effects on peak EPSP
-        """
-        vhalfl_hd_prox=copy.copy(kwargs['vhalfl_hd_prox'])
-        vhalfl_hd_dist=copy.copy(kwargs['vhalfl_hd_dist'])
-        ghd = copy.copy(kwargs['ghd'])
-        kl_hd = copy.copy(kwargs['kl_hd'])
-        plots = analysis.PlotRangeVar()
-
-        # loop over trials
-        for tri in range(kwargs['trials']):
-            for conductance_i, conductance  in enumerate(kwargs['conductance_range']):
-                for vhalfl_h_i, vhalfl_h in enumerate(kwargs['activation_range_h']):
-                    for slope_i, slope in enumerate(kwargs['slope_range']):
-                        if conductance==0. and (vhalfl_h_i >0 or slope_i> 0):
-                            continue
-
-                        
-                        
-                        # set Ih and Ka conductance parameters
-                        kwargs['vhalfl_hd_prox'] = vhalfl_h+vhalfl_hd_prox
-                        kwargs['vhalfl_hd_dist'] = vhalfl_h+vhalfl_hd_dist
-                        kwargs['ghd'] = conductance*ghd
-                        kwargs['kl_hd'] = kl_hd-slope
-
-                        # load rest of parameters from parameter module
-                        p = param.Experiment(**kwargs).p
-
-                        print 'vhalfl_hd_prox:', p['vhalfl_hd_prox'] 
-                        print 'ghd:', p['ghd'] 
-                        print 'kl_hd:', p['kl_hd']
-
-
-                        # store trial number
-                        p['trial']=tri
-                        
-                        # create unique identifier for each trial
-                        p['trial_id'] = str(uuid.uuid4())
-                        
-                        # start timer
-                        start = time.time() 
-                        
-                        # run simulation
-                        sim = run.Run(p)    
-
-
-                        # end timer
-                        end = time.time() 
-
-                        # print trial and simulation time
-                        print 'trial'+ str(tri) + ' duration:' + str(end -start) 
-                        
-                        # save data for eahc trial
-                        run.save_data(sim.data)
-
-                        plots.plot_trace(data=sim.data, 
-                        tree=p['tree'], 
-                        sec_idx=p['sec_idx'], 
-                        seg_idx=p['seg_idx'],
-                        variables=p['plot_variables'])
-
-        self.p = p
-    
-    def exp_8(self, **kwargs):
-        """ vary Ih parameters and measure effects on peak EPSP
-        """
-        vhalfl_hd_prox=copy.copy(kwargs['vhalfl_hd_prox'])
-        vhalfl_hd_dist=copy.copy(kwargs['vhalfl_hd_dist'])
-        ghd = copy.copy(kwargs['ghd'])
-        kl_hd = copy.copy(kwargs['kl_hd'])
-
-        plots = analysis.PlotRangeVar()
-
-        # loop over trials
-        for tri in range(kwargs['trials']):
-            for conductance_i, conductance  in enumerate(kwargs['conductance_range']):
-                for vhalfl_h_i, vhalfl_h in enumerate(kwargs['activation_range_h']):
-                    for slope_i, slope in enumerate(kwargs['slope_range']):
-                        if conductance==0. and (vhalfl_h_i >0 or slope_i> 0):
-                            continue
-
-                        # set Ih and Ka conductance parameters
-                        kwargs['vhalfl_hd_prox'] = vhalfl_h+vhalfl_hd_prox
-                        kwargs['vhalfl_hd_dist'] = vhalfl_h+vhalfl_hd_dist
-                        kwargs['ghd'] = conductance*ghd
-                        kwargs['kl_hd'] = kl_hd-slope
-
-                        # load rest of parameters from parameter module
-                        p = param.Experiment(**kwargs).p
-
-                        print 'vhalfl_hd_prox:', p['vhalfl_hd_prox'] 
-                        print 'ghd:', p['ghd'] 
-                        print 'kl_hd:', p['kl_hd']
-
-
-                        # store trial number
-                        p['trial']=tri
-                        
-                        # create unique identifier for each trial
-                        p['trial_id'] = str(uuid.uuid4())
-                        
-                        # start timer
-                        start = time.time() 
-                        
-                        # run simulation
-                        sim = run.Run(p)    
-
-                        # end timer
-                        end = time.time() 
-
-                        # print trial and simulation time
-                        print 'trial'+ str(tri) + ' duration:' + str(end -start) 
-                        
-                        # save data for eahc trial
-                        run.save_data(sim.data)
-
-                        plots.plot_trace(data=sim.data, 
-                        tree=p['tree'], 
-                        sec_idx=p['sec_idx'], 
-                        seg_idx=p['seg_idx'],
-                        variables=p['plot_variables'],
-                        x_var='t')
-
-                        plots.plot_trace(data=sim.data, 
-                        tree=p['tree'], 
-                        sec_idx=p['sec_idx'], 
-                        seg_idx=p['seg_idx'],
-                        variables=p['plot_variables'],
-                        x_var='v')
-
-        self.p = p
-
-    def exp_9(self, **kwargs):
-        """ vary Ih parameters and measure effects on peak EPSP
-        """
-        vhalfl_hd_prox=copy.copy(kwargs['vhalfl_hd_prox'])
-        vhalfl_hd_dist=copy.copy(kwargs['vhalfl_hd_dist'])
-        ghd = copy.copy(kwargs['ghd'])
-        kl_hd = copy.copy(kwargs['kl_hd'])
-        plots = analysis.PlotRangeVar()
-
-        # loop over trials
-        for tri in range(kwargs['trials']):
-            for conductance_i, conductance  in enumerate(kwargs['conductance_range']):
-                for vhalfl_h_i, vhalfl_h in enumerate(kwargs['activation_range_h']):
-                    for slope_i, slope in enumerate(kwargs['slope_range']):
-                        if conductance==0. and (vhalfl_h_i >0 or slope_i> 0):
-                            continue
-
-                        
-                        
-                        # set Ih and Ka conductance parameters
-                        kwargs['vhalfl_hd_prox'] = vhalfl_h+vhalfl_hd_prox
-                        kwargs['vhalfl_hd_dist'] = vhalfl_h+vhalfl_hd_dist
-                        kwargs['ghd'] = conductance*ghd
-                        kwargs['kl_hd'] = kl_hd-slope
-
-                        # load rest of parameters from parameter module
-                        p = param.Experiment(**kwargs).p
-
-                        print 'vhalfl_hd_prox:', p['vhalfl_hd_prox'] 
-                        print 'ghd:', p['ghd'] 
-                        print 'kl_hd:', p['kl_hd']
-
-
-                        # store trial number
-                        p['trial']=tri
-                        
-                        # create unique identifier for each trial
-                        p['trial_id'] = str(uuid.uuid4())
-                        
-                        # start timer
-                        start = time.time() 
-                        
-                        # run simulation
-                        sim = run.Run(p)    
-
-
-                        # end timer
-                        end = time.time() 
-
-                        # print trial and simulation time
-                        print 'trial'+ str(tri) + ' duration:' + str(end -start) 
-                        
-                        # save data for eahc trial
-                        run.save_data(sim.data)
-
-                        plots.plot_trace(data=sim.data, 
-                        tree=p['tree'], 
-                        sec_idx=p['sec_idx'], 
-                        seg_idx=p['seg_idx'],
-                        variables=p['plot_variables'])
-
-        self.p = p
-    
-    def exp_10(self, **kwargs):
-        """ vary Ih parameters and measure effects on peak EPSP
-        """
-        vhalfl_hd_prox=copy.copy(kwargs['vhalfl_hd_prox'])
-        vhalfl_hd_dist=copy.copy(kwargs['vhalfl_hd_dist'])
-        ghd = copy.copy(kwargs['ghd'])
-        kl_hd = copy.copy(kwargs['kl_hd'])
-        plots = analysis.PlotRangeVar()
-
-        # loop over trials
-        for tri in range(kwargs['trials']):
-            for conductance_i, conductance  in enumerate(kwargs['conductance_range']):
-                for vhalfl_h_i, vhalfl_h in enumerate(kwargs['activation_range_h']):
-                    for slope_i, slope in enumerate(kwargs['slope_range']):
-                        if conductance==0. and (vhalfl_h_i >0 or slope_i> 0):
-                            continue
-
-                        
-                        
-                        # set Ih and Ka conductance parameters
-                        kwargs['vhalfl_hd_prox'] = vhalfl_h+vhalfl_hd_prox
-                        kwargs['vhalfl_hd_dist'] = vhalfl_h+vhalfl_hd_dist
-                        kwargs['ghd'] = conductance*ghd
-                        kwargs['kl_hd'] = kl_hd-slope
-
-                        # load rest of parameters from parameter module
-                        p = param.Experiment(**kwargs).p
-
-                        print 'vhalfl_hd_prox:', p['vhalfl_hd_prox'] 
-                        print 'ghd:', p['ghd'] 
-                        print 'kl_hd:', p['kl_hd']
-
-
-                        # store trial number
-                        p['trial']=tri
-                        
-                        # create unique identifier for each trial
-                        p['trial_id'] = str(uuid.uuid4())
-                        
-                        # start timer
-                        start = time.time() 
-                        
-                        # run simulation
-                        sim = run.Run(p)    
-
-
-                        # end timer
-                        end = time.time() 
-
-                        # print trial and simulation time
-                        print 'trial'+ str(tri) + ' duration:' + str(end -start) 
-                        
-                        # save data for eahc trial
-                        run.save_data(sim.data)
-
-                        plots.plot_trace(data=sim.data, 
-                        tree=p['tree'], 
-                        sec_idx=p['sec_idx'], 
-                        seg_idx=p['seg_idx'],
-                        variables=p['plot_variables'])
-
-                        plots.plot_trace(data=sim.data, 
-                        tree=p['tree'], 
-                        sec_idx=p['sec_idx'], 
-                        seg_idx=p['seg_idx'],
-                        variables=p['plot_variables'],
-                        x_var='v')
-
-
-        self.p = p
+                run.save_data(data=sim.data, file_name=file_name)
+
+                # plot traces
+                analysis.PlotRangeVar().plot_trace(data=sim.data, 
+                    trees=self.p['trees'], 
+                    sec_idx=self.p['sec_idx'], 
+                    seg_idx=self.p['seg_idx'],
+                    variables=self.p['plot_variables'],
+                    x_variables=self.p['x_variables'],
+                    file_name=file_name,
+                    group_trees=self.p['group_trees'],
+                    xlim=[self.p['warmup']-5,self.p['tstop']],
+                    ylim=[])
     
 # function to pass to parallel context message board
 def _f_parallel(parameters):
@@ -1349,7 +1023,7 @@ def _f_parallel(parameters):
     return f(**parameters)
 
 # function for controlling parallel    
-def _run_parallel():
+def _run_parallel(experiment):
     """ set up for running parallel simulations
     python script must be called from the interpreter using syntax
 
@@ -1362,30 +1036,42 @@ def _run_parallel():
     global pc
 
     # choose experiment
-    experiment ='exp_2d'
+    experiment =experiment
 
     # divide up parameters
-    nsyns = range(2,22,2)
+    # nsyns = np.arange(2.,4.,1.)
+    nsyns = range(2, 4, 1)
+    syn_nums = np.arange(2., 12.,2. )
+    syn_dists = [[0, 100], [100, 200], [200, 300], [300, 400], [400, 600]]
+    trees=['apical_tuft','apical_trunk']
+    
     # list of parameter values to be sent to each worker [worker number]{'parameter':[values], 'experiment':exp_number}
     parameters=[]
+    syns=nsyns
     for syns in nsyns:
-        print syns
-        parameters.append({'nsyns':[syns], 'experiment':experiment})
+        for syn_dist in syn_dists:
+            parameters.append({'nsyns':syns, 'experiment':experiment, 'syn_num':syn_nums, 'syn_dist':syn_dist, 'trees':trees})
 
     # create parallel context instance
     pc = h.ParallelContext()
+
+    print 'i am', pc.id(), 'of', pc.nhost()
     # start workers, begins an infinitely loop where master workers posts jobs and workers pull jobs until all jobs are finished
     pc.runworker()
     
-    # distribute experiment and parameters to workers
+    # print len(parameters)
+    # # # distribute experiment and parameters to workers
     for param in parameters:
+        # print len(parameters)
+        # print param
         pc.submit(_f_parallel, param)
+        # print param
 
-    # continue runnning until all workers are finished
+    # # continue runnning until all workers are finished
     while pc.working():
-        pass
+        print pc.id(), 'is working'
 
-    # close parallel context 
+    # # close parallel context 
     pc.done()
 
 class Arguments:
@@ -1412,311 +1098,8 @@ class Arguments:
         'syn_frac' : .2
         }
 
-    def exp_2(self):
-        """ choose a specific set of synapses, iterate over increasing synaptic weights, measure resulting LTP and dendritic spike initiation
-        """
-        weights = np.arange(.005, .03, .005)
-        # weights = np.arange(.5, 1, .1)
-        weights = [0.0005]#[.03]
-        self.kwargs = {
-        'experiment' : 'exp_2', 
-        'tree' : 'apical_tuft' ,
-        'trials' : 1,
-        'w_mean' : weights,#[.001],
-        'w_std' : [.0002],
-        'w_rand' : False, 
-        'sec_idx' : [-1, -2, -3, -4, -5, -6, -7, -8, -9,-10,-11,-12,-13,-14,-15,-16], 
-        'seg_idx' : [[0], [0], [0],[0],[0],[0],[0],[0],[0],[0],[0],[0],[0],[0],[0],[0]],
-        'pulses' : 4,
-        'gna' : 0.025,
-        }
-
-    def exp_3(self):
-        """ choose a specific set of synapses, iterate over increasing synaptic weights, measure resulting LTP and dendritic spike initiation
-        """
-        weights = np.arange(.005, .03, .005)
-        # weights = np.arange(.5, 1, .1)
-        weights = [0]
-        self.kwargs = {
-        'experiment' : 'exp_3', 
-        'tree' : 'apical_dist',
-        'trials' : 1,
-        'w_mean' : weights,#[.001],
-        'w_std' : [.002],
-        'w_rand' : False, 
-        'syn_frac' : .1
-        }
-
-    def exp_4(self):
-        """ choose a specific set of synapses, iterate over increasing synaptic weights, measure resulting LTP and dendritic spike initiation
-        """
-        # weights = np.arange(.005, .03, .005)
-        # weights = np.arange(.5, 1, .1)
-        weights = [0]
-        self.kwargs = {
-        'conductance_range' : np.arange(.1, 3, .5),
-        'experiment' : 'exp_4', 
-        'tree' : 'apical_dist',
-        'trials' : 1,
-        'w_mean' : weights,#[.001],
-        'w_std' : [.002],
-        'w_rand' : False, 
-        'syn_frac' : 0
-        }
-
-    def exp_5(self):
-        """ choose a specific set of synapses, iterate over increasing synaptic weights, measure resulting LTP and dendritic spike initiation
-        """
-        # weights = np.arange(.005, .03, .005)
-        # weights = np.arange(.5, 1, .1)
-        weights = [0]
-        self.kwargs = {
-        'grad_range' : np.arange(0, 1, .2),
-        'KMULT' : 0.1*.03, # chosen based on experiment 4 results to bas towards depolarization
-        'KMULTP' : 0.1*.03,
-        'ghd' : 1*0.00005,
-        'experiment' : 'exp_5', 
-        'tree' : 'apical_dist',
-        'trials' : 1,
-        'w_mean' : weights,#[.001],
-        'w_std' : [.002],
-        'w_rand' : False, 
-        'syn_frac' : 0
-        }
-
-    def exp_6(self):
-        """ vary Ih and Ka parameters and measure effects on peak EPSP
-        """
-        
-        weights = 0.03
-        self.kwargs = {
-        'conductance_range' : np.arange(0., 3., .5),
-        'grad_range' :  np.arange(0., 3., .5),
-        'ghd' : 0.00005,
-        'KMULT' :  0.03,
-        'KMULTP' :  0.03,
-        'ghd_grad' : .75,
-        'ka_grad' : .25,
-        'experiment' : 'exp_6', 
-        'tree' : 'apical_dist',
-        'trials' : 1,
-        'w_mean' : weights,#[.001],
-        'w_std' : [.002],
-        'w_rand' : False, 
-        'syn_frac' : 0,
-        'seg_list' : [0, -1],
-        'sec_list' : [ 0, 0],
-        'pulses':3,
-        }
-
-    def exp_7(self):
-        """ vary Ih parameters and measure effects on peak EPSP
-        """
-        
-        weights = 0.002
-        self.kwargs = {
-        'activation_range_h': np.arange(0., 25., 4.),
-        'conductance_range' : np.arange(0., 3., .5),
-        'slope_range' : np.arange(0.,4., 1.),
-        'gna' : 0.,
-        'kl_hd' : -4,
-        'ghd' : 0.00005,
-        'KMULT' :  .5*0.03,
-        'KMULTP' :  .5*0.03,
-        'ghd_grad' : 5,
-        'ka_grad' : 1,
-        'vhalfl_hd_prox' : -95.,#-73.,          
-        'vhalfl_hd_dist' : -95.,
-        'experiment' : 'exp_7', 
-        'tree' : 'apical_tuft',
-        'trials' : 1,
-        'w_mean' : weights,#[.001],
-        'w_std' : [.002],
-        'w_rand' : False, 
-        'syn_frac' : 0,
-        'seg_list' : [-1, -1,],
-        'sec_list' : [-1, -2,],
-        'pulses':4,
-        'tstop':70,
-        'field_on':15,
-        'field_off':80,
-        }
-
-    def exp_8(self):
-        """ repeat experiment 7 using simplified cylinder model
-
-        vary Ih parameters and measure effects on peak EPSP
-        """
-        
-        weights = 0.001
-        self.kwargs = {
-        'activation_range_h': np.arange(0., 25., 5.),
-        'conductance_range' : np.arange(0., 2., .5),
-        'slope_range' : np.arange(0.,4., 2.),
-        'gna' : 0.,
-        'dgna':0,
-        'Vrest':-75.,
-        'gcalbar': 0.,
-        'kl_hd' : -4.,
-        'ghd' : 0.00005,
-        'KMULT' :  .5*0.03,
-        'KMULTP' :  .5*0.03,
-        'ghd_grad' : 5.,
-        'ka_grad' : 1.,
-        'vhalfl_hd_prox' : -95.,#-73.,          
-        'vhalfl_hd_dist' : -95.,
-        'experiment' : 'exp_8', 
-        'tree' : 'basal',
-        'trials' : 1,
-        'w_mean' : weights,#[.001],
-        'w_std' : [.002],
-        'w_rand' : False, 
-        'syn_frac' : 0,
-        'seg_list' : [-20,],
-        'sec_list' : [0,],
-        'pulses':4,
-        'tstop':70,
-        'field_on':15,
-        'field_off':80,
-        'field':[-30,0,30],
-        'L_basal' : 1600./4.,
-        'L_soma' : 7.5,
-        'L_apical_prox' : 1000./4.,
-        'L_apical_dist' : 1000./4.,
-        'diam1_basal' : 1.*1.9/4.,
-        'diam1_soma' : 7.5,
-        'diam1_apical_prox' : 1.*2.75/4.,
-        'diam1_apical_dist' : 1.*2.75/6.,
-        'diam2_basal' : 1.9/10.,
-        'diam2_soma' : 7.5,
-        'diam2_apical_prox' : 2.75/6.,
-        'diam2_apical_dist' : 2.75/10.,
-        'RaAll' : 1.*150.,
-        'fixnseg':True
-        }
-
-    def exp_9(self):
-        """ vary Ih parameters and measure effects on peak EPSP in basal dendrites
-        """
-        
-        weights = 0.005
-        self.kwargs = {
-        'activation_range_h': np.arange(0., 25., 4.),
-        'conductance_range' : np.arange(0., 3., .5),
-        'slope_range' : np.arange(0.,4., 1.),
-        'gna' : 0.,
-        'dgna':0.,
-        'kl_hd' : -4,
-        'ghd' : 0.00005,
-        'gcalbar': 0.,
-        'KMULT' :  .5*0.03,
-        'KMULTP' :  .5*0.03,
-        'ghd_grad' : 5,
-        'ka_grad' : 1,
-        'vhalfl_hd_prox' : -95.,#-73.,          
-        'vhalfl_hd_dist' : -95.,
-        'experiment' : 'exp_9', 
-        'tree' : 'basal',
-        'trials' : 1,
-        'w_mean' : weights,#[.001],
-        'w_std' : [.002],
-        'w_rand' : False, 
-        'syn_frac' : 0,
-        'seg_list' : [-1, -1,],
-        'sec_list' : [-1, -2,],
-        'pulses':4,
-        'tstop':70,
-        'field_on':15,
-        'field_off':80,
-        'field':[-30,0,30],
-        }
-
-    def exp_10(self):
-        """ vary Ih parameters and measure effects on peak EPSP in basal dendrites but remove Ih gradient
-        """
-        
-        weights = 0.005
-        self.kwargs = {
-        'activation_range_h': np.arange(0., 25., 4.),
-        'conductance_range' : np.arange(0., 3., .5),
-        'slope_range' : np.arange(0.,4., 1.),
-        'gna' : 0.,
-        'dgna':0.,
-        'kl_hd' : -4,
-        'ghd' : 0.00005,
-        'gcalbar': 0.,
-        'KMULT' :  1.*0.03,
-        'KMULTP' :  1.*0.03,
-        'ghd_grad' : 0,#####
-        'ka_grad' : 0,######
-        'vhalfl_hd_prox' : -95.,#-73.,          
-        'vhalfl_hd_dist' : -95.,
-        'experiment' : 'exp_10', 
-        'tree' : 'basal',
-        'trials' : 1,
-        'w_mean' : weights,#[.001],
-        'w_std' : [.002],
-        'w_rand' : False, 
-        'syn_frac' : 0,
-        'seg_list' : [-1, -1,],
-        'sec_list' : [-1, -2,],
-        'pulses':4,
-        'tstop':70,
-        'field_on':15,
-        'field_off':80,
-        'field':[-30,0,30],
-        }
-
-    def exp_11(self):
-        """ repeat experiment 7 using simplified cylinder model
-
-        vary Ih parameters and measure effects on peak EPSP
-        """
-        
-        weights = 0.005
-        self.kwargs = {
-        'activation_range_h': np.arange(0., 25., 5.),
-        'conductance_range' : np.arange(0., 9., 2.),
-        'slope_range' : np.arange(0.,4., 5.),
-        'gna' : 0.,
-        'dgna':0,
-        'Vrest':-80.,
-        'gcalbar': 0.,
-        'kl_hd' : -4.,
-        'ghd' : 0.0004,
-        'KMULT' :  .5*0.03,
-        'KMULTP' :  .5*0.03,
-        'ghd_grad' : 5.,
-        'ka_grad' : 1.,
-        'vhalfl_hd_prox' : -95.,#-73.,          
-        'vhalfl_hd_dist' : -95.,
-        'experiment' : 'exp_8', 
-        'tree' : 'basal',
-        'trials' : 1,
-        'w_mean' : weights,#[.001],
-        'w_std' : [.002],
-        'w_rand' : False, 
-        'syn_frac' : 0,
-        'seg_list' : [0,],
-        'sec_list' : [0,],
-        'pulses':4,
-        'tstop':70,
-        'field_on':15,
-        'field_off':80,
-        'field':[-30,0,30],
-        'L_basal' : 1600./4.,
-        'L_soma' : 7.5,
-        'L_apical_prox' : 1000./4.,
-        'L_apical_dist' : 1000./4.,
-        'diam_basal' : 1.*1.9,
-        'diam_soma' : 7.5,
-        'diam_apical_prox' : 1.*2.75,
-        'diam_apical_dist' : 1.*2.75,
-        'RaAll' : 10.*150.,
-        }
-
 if __name__ =="__main__":
-    _run_parallel()
+    _run_parallel(experiment='exp_2e')
     # kwargs = {'experiment':'exp_2c'}
     # kwargs = Arguments('exp_1').kwargs
     # x = Experiment(**kwargs)
