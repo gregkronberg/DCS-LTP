@@ -872,14 +872,14 @@ class Experiment:
         w_mean = .001 # weight of single synapse uS
         trees = kwargs['trees']
         nsyns = kwargs['nsyns']
-        syn_num = kwargs['syn_num']
+        syn_nums = kwargs['syn_num']
         syn_dist = kwargs['syn_dist']
-        trials = 10
+        trials = 20
         self.kwargs = {
         'experiment' : 'exp_2e', 
         'trees' : trees,
         'nsyns':nsyns,
-        'syn_num':syn_num,
+        'syn_num':[],
         'syn_dist': syn_dist,
         'num_sec':1,
         'seg_L' : 4.,
@@ -944,9 +944,9 @@ class Experiment:
         threshold=-30
 
         # iterate over all segments in tree
-        for syn_num_i, syn_num in enumerate(self.p['syn_num']):
+        for syn_num_i, syn_num in enumerate(syn_nums):
             for trial_i, trial in enumerate(range(self.p['trials'])):
-
+                self.p['syn_num']=syn_num
                 self.p_class.choose_seg_rand(trees=self.p['trees'], syns=cell1.syns, syn_frac=0., seg_dist=self.p['seg_dist'], syn_num=syn_num, distance=self.p['syn_dist'])
 
                 self.p['w_mean'] = self.p['nsyns']*w_mean
@@ -984,7 +984,7 @@ class Experiment:
                 '_weight_'+str(self.p['w_mean'])+
                 '_trial_'+str(self.p['trial'])+
                 '_dist_'+str(self.p['syn_dist'][-1])+
-                '_syn_num_'+str(syn_num)+
+                '_syn_num_'+str(self.p['syn_num'])+
                 '_id_'+self.p['trial_id']
                 )
 
