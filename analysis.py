@@ -824,7 +824,7 @@ class PlotRangeVar():
 
                         plt.close(fig[var][x_var])
 
-class Shapeplot():
+class IO():
     """ create shape plot 
     """
     pass
@@ -1678,9 +1678,7 @@ class Experiment:
         fig.savefig(file_name, dpi=250)
 
     def exp_2e(self, **kwargs):
-        """ Apply a single theta burst for each segment, one segment at a time.  Step through increasing number of synapses (weight) to detect thresholds
-
-        plot number of spikes
+        """ Apply a single theta burst to synapses with varying mean distance from soma 
         """
         # number of stimulation polarities tested
         n_pol =3
@@ -1723,22 +1721,40 @@ class Experiment:
             
             with open(data_folder+id_list_string_spike_times, 'rb') as pkl_file:
                 id_list_spike_times = pickle.load(pkl_file)
+
+            print 'id list loaded'
         
         # otherwise create empty list
         else:
             id_list_spike_times = []
 
         # string to save group data
-        save_string_group_data = 'spikes_grouped'+'.pkl'
+        save_string_group_data_raw = 'spikes_grouped_raw'+'.pkl'
         # if data file already exists
-        if save_string_group_data in files:
+        if save_string_group_data_raw in files:
             # load data
-            with open(data_folder+save_string_group_data, 'rb') as pkl_file:
+            print 'raw spike data found'
+            with open(data_folder+save_string_group_data_raw, 'rb') as pkl_file:
                 spike_data= pickle.load(pkl_file)
+            print 'raw spike data loaded'
         # otherwise create data structure
         else:
             # data organized as {location}{data_type}[trials][polarity]
             spike_data= []
+
+        # string to save group data
+        save_string_group_data_proc = 'spikes_grouped_proc'+'.pkl'
+        # if data file already exists
+        if save_string_group_data_proc in files:
+            # load data
+            print 'processed spike data found'
+            with open(data_folder+save_string_group_data_proc, 'rb') as pkl_file:
+                spike_data= pickle.load(pkl_file)
+            print 'processed spike data loaded'
+        # otherwise create data structure
+        else:
+            # data organized as {location}{data_type}[trials][polarity]
+            spike_data_group = {}
 
         variables = ['spikes', 'peak', 'distance', 'weight', 'seg_idx']
         
@@ -1767,24 +1783,30 @@ class Experiment:
                     # add to processed list
                     id_list_spike_times.append(data_file)
 
-                    spike_data[-1]['spikes'] = {'soma':[],'dend':{}}
+                    spike_data[-1]['spikes'] = {'soma':[],'dend':{}, 'dw':{}}
 
                     for tree_key, tree in p['sec_idx'].iteritems():
 
                         spike_data[-1]['spikes']['dend'][tree_key]=[]
+                        spike_data[-1]['spikes']['dw'][tree_key]=[]
                         
                         for sec_i, sec in enumerate(tree):
 
                             spike_data[-1]['spikes']['dend'][tree_key].append([])
+                            spike_data[-1]['spikes']['dw'][tree_key].append([])
 
                             for seg_i, seg in enumerate(p['seg_idx'][tree_key][sec_i]):
 
                                 spike_data[-1]['spikes']['dend'][tree_key][-1].append([])
+                                spike_data[-1]['spikes']['dw'][tree_key][-1].append([])
                                                     # iterate over field polarities
                                 for f_i, f in enumerate(p['field']):
 
                                     # detect spikes in dendrite
                                     spike_data[-1]['spikes']['dend'][tree_key][-1][-1].append(spike_analysis.detect_spikes(data[str(f)][tree_key+'_v'][sec_i][seg_i], threshold=threshold)['times'][0])
+
+                                    # detect spikes in dendrite
+                                    spike_data[-1]['spikes']['dw'][tree_key][-1][-1].append(data[str(f)][tree_key+'_gbar'][sec_i][seg_i][-1]/data[str(f)][tree_key+'_gbar'][sec_i][seg_i][0])
 
                     for f_i, f in enumerate(p['field']):
                                     # detect spikes in soma
@@ -1794,61 +1816,185 @@ class Experiment:
 
         # save processed file list
         with open(data_folder+id_list_string_spike_times, 'wb') as output:pickle.dump(id_list_spike_times, output,protocol=pickle.HIGHEST_PROTOCOL)
+        print 'id list saved'
         
         # save structure of all spike data
         save_group_data = spike_data
-        with open(data_folder+save_string_group_data, 'wb') as output:
+        with open(data_folder+save_string_group_data_raw, 'wb') as output:
             pickle.dump(save_group_data, output,protocol=pickle.HIGHEST_PROTOCOL)
+        print 'spike data saved'
 
-        # plot mean distance from soma vs number of spikes
-        # iterate over cells
-        # retrieve synapse number and individual weight
+        # spike data organized as {syn_num}{w_mean}[trials]{variable}[polarity]
         spike_data_group ={}
-        plots={} 
+        plots_spikes={} 
+        plots_weights ={}
+        plots_weights_mean = {}
+        time_bins = [[1200, 1600],[1600, 2000],[2000, 2400],[2400, 2800]]
         for trial_i, trial in enumerate(spike_data):
             p = spike_data[trial_i]['p']
             syn_num = p['syn_num']
             w_mean = p['w_mean']
+            # print syn_num, w_mean
             if str(syn_num) not in spike_data_group:
                 spike_data_group[str(syn_num)]={}
-                plots[str(syn_num)]={}
+                plots_spikes[str(syn_num)]={}
+                plots_weights[str(syn_num)]={}
+                plots_weights_mean[str(syn_num)]={}
             if str(w_mean) not in spike_data_group[str(syn_num)]:
                 spike_data_group[str(syn_num)][str(w_mean)]=[]
-                plots[str(syn_num)][str(w_mean)]=plt.figure()
-
-            spike_data_group[str(syn_num)][str(w_mean)].append({'dist':[],'dist_mean':[],'spikes_dend':[],'spikes_soma':[]})
+                # for f_i, f in enumerate(p['field']):
+                #     spike_data_group[str(syn_num)][str(w_mean)].append([])
+                plots_spikes[str(syn_num)][str(w_mean)]=plt.figure()
+                plots_weights[str(syn_num)][str(w_mean)]=plt.figure()
+                plots_weights_mean[str(syn_num)][str(w_mean)]=plt.figure()
+                    
+            
             # calculte mean distance
             
             for f_i, f in enumerate(p['field']):
+                spike_data_group[str(syn_num)][str(w_mean)].append({'dw':[],'dw_mean':[],'dist':[],'dist_spikes':[],'dist_mean':[],'spikes_dend':[],'spikes_soma':[], 'dist_spikes_binned':[],'spikes_dend_binned':[],'spikes_soma_binned':[], 'spikes_dend_diff_binned':[]})
                 color=p['field_color'][f_i]
                 marker='.'
                 spikes_soma = trial['spikes']['soma'][f_i]
                 spikes_dend = []
                 dist=[]
+                dw_list=[]
+                dist_spikes=[]
                 for tree_key, tree in p['sec_idx'].iteritems():
                     for sec_i, sec in enumerate(tree):
                         for seg_i, seg in enumerate(p['seg_idx'][tree_key][sec_i]):
                             distance = p['seg_dist'][tree_key][sec][seg]
                             spikes_dend_temp = trial['spikes']['dend'][tree_key][sec_i][seg_i][f_i]
+                            dw = trial['spikes']['dw'][tree_key][sec_i][seg_i][f_i]
                             for spike_i, spike in enumerate(spikes_dend_temp):
                                 spikes_dend.append(spike)
-                                dist.append(distance)
+                                dist_spikes.append(distance)
+                            dist.append(distance)
+                            dw_list.append(dw)
 
-                dist_mean  = np.mean(list(set(dist)))
-                spike_data_group[str(syn_num)][str(w_mean)][-1]['dist'].append(dist)
-                spike_data_group[str(syn_num)][str(w_mean)][-1]['dist_mean'].append(dist_mean)
-                spike_data_group[str(syn_num)][str(w_mean)][-1]['spikes_dend'].append(spikes_dend)
-                spike_data_group[str(syn_num)][str(w_mean)][-1]['spikes_soma'].append(spikes_soma)
+                dist_mean  = np.mean(dist)
+                dw_mean = np.mean(dw_list)
 
-                plt.figure(plots[str(syn_num)][str(w_mean)].number)
-                plt.plot(dist_mean, len(dist), color+marker)
+                # divide spikes in into bins 
+                spikes_soma_binned =[]
+                spikes_dend_binned=[]
+                spikes_dist_binned=[]
+                spikes_dend_diff_binned=[]
+                for time_bin_i, time_bin in enumerate(time_bins):
+                    # find spikes within current time bin
+                    binned_spikes_soma = [spike for spike_i, spike in enumerate(spikes_soma) if (spike > time_bin[0] and spike <= time_bin[1])]
+                    binned_spikes_dend = [spike for spike_i, spike in enumerate(spikes_dend) if (spike > time_bin[0] and spike <= time_bin[1])]
+                    binned_spikes_dist = [dist_spikes[spike_i] for spike_i, spike in enumerate(spikes_dend) if (spike > time_bin[0] and spike <= time_bin[1])]
+
+                    # count dendritic spikes
+                    spike_frac_dend = len(binned_spikes_dend)/len(dist)
+                    spike_time_diff=[]
+                    if len(binned_spikes_soma)==0:
+                        spike_time_diff = binned_spikes_dend
+                    elif len(binned_spikes_dend)>0:
+                        spike_time_diff = [t-binned_spikes_soma[0] for t in binned_spikes_dend]
+                    spikes_soma_binned.append(binned_spikes_soma) 
+                    spikes_dend_binned.append(binned_spikes_dend)
+                    spikes_dist_binned.append(binned_spikes_dist)
+                    spikes_dend_diff_binned.append(spike_time_diff)
+
+                spike_data_group[str(syn_num)][str(w_mean)][f_i]['dw'].append(dw_list)
+                spike_data_group[str(syn_num)][str(w_mean)][f_i]['dw_mean'].append(dw_mean)
+                spike_data_group[str(syn_num)][str(w_mean)][f_i]['dist_spikes'].append(dist_spikes)
+                spike_data_group[str(syn_num)][str(w_mean)][f_i]['dist_spikes_binned'].append(spikes_dist_binned)
+                spike_data_group[str(syn_num)][str(w_mean)][f_i]['dist'].append(dist)
+                spike_data_group[str(syn_num)][str(w_mean)][f_i]['dist_mean'].append(dist_mean)
+                spike_data_group[str(syn_num)][str(w_mean)][f_i]['spikes_dend'].append(spikes_dend)
+                spike_data_group[str(syn_num)][str(w_mean)][f_i]['spikes_soma_binned'].append(spikes_soma_binned)
+                spike_data_group[str(syn_num)][str(w_mean)][f_i]['spikes_dend_binned'].append(spikes_dend_binned)
+                spike_data_group[str(syn_num)][str(w_mean)][f_i]['spikes_dend_diff_binned'].append(spikes_dend_diff_binned)
+
+                # print plots[str(syn_num)][str(w_mean)].number
+                plt.figure(plots_spikes[str(syn_num)][str(w_mean)].number)
+                plt.plot(dist_mean, len(dist_spikes), color+marker)
+                plt.figure(plots_weights[str(syn_num)][str(w_mean)].number)
+                plt.plot(dist, dw_list, color+marker)
+                plt.figure(plots_weights_mean[str(syn_num)][str(w_mean)].number)
+                plt.plot(dist_mean, dw_mean, color+marker)
+
 
         # save and close figure
-        for plot_key1, plot1 in plots.iteritems():
+        for plot_key1, plot1 in plots_spikes.iteritems():
             for plot_key2, plot2 in plot1.iteritems():
-                plot_file_name = 'distance_x_spikes_'+'syn_num_'+str(syn_num)+ '_w_'+str(w_mean)
+                plot_file_name = 'distance_x_spikes_'+'syn_num_'+plot_key1+ '_w_'+plot_key2
                 plot2.savefig(data_folder+plot_file_name+'.png', dpi=250)
                 plt.close(plot2)
+
+        for plot_key1, plot1 in plots_weights.iteritems():
+            for plot_key2, plot2 in plot1.iteritems():
+                plot_file_name = 'distance_x_weights_'+'syn_num_'+plot_key1+ '_w_'+plot_key2
+                plot2.savefig(data_folder+plot_file_name+'.png', dpi=250)
+                plt.close(plot2)
+
+        for plot_key1, plot1 in plots_weights_mean.iteritems():
+            for plot_key2, plot2 in plot1.iteritems():
+                plot_file_name = 'distance_x_weights_mean_'+'syn_num_'+plot_key1+ '_w_'+plot_key2
+                plot2.savefig(data_folder+plot_file_name+'.png', dpi=250)
+                plt.close(plot2)
+
+        # bin trials according to distance from soma and take mean number of spikes for each bin distance
+        dist_bins = [[0., 100.],[100., 200.],[200., 300.],[300.,400.],[400., 600.]]
+        spike_nums=[]
+        syn_nums=[]
+        w_means=[]
+        for syn_num, data1 in spike_data_group.iteritems():
+            syn_nums.append(float(syn_num))
+            for w_mean, data2 in data1.iteritems():
+                w_means.append(float(w_mean))
+                for trial_i, trial in enumerate(data2):
+                    spike_nums.append([])
+                    for f_i, f in enumerate(p['field']):
+                        dist_mean = trial['dist_mean'][f_i]
+                        dist_bin_i = [dist_bin_i for dist_bin_i, dist_bin in enumerate(dist_bins) if (dist_mean > dist_bin[0] and dist_mean <= dist_bin[1])][0]
+                        num_spikes = len(trial['dist_spikes'][f_i])
+                        num_spikes_norm = num_spikes/float(syn_num)
+                        dw_mean = trial['dw_mean']
+                        print dist_bin_i, num_spikes_norm
+                        spike_nums[-1].append([float(syn_num), float(w_mean), dist_bin_i, num_spikes_norm, dw_mean])
+
+        syn_nums =  list(set(syn_nums))
+        w_means = list(set(w_means))
+        spikes_grouped_dist=[]
+        plots=[]
+        for syn_num_i, syn_num in enumerate(syn_nums):
+            spikes_grouped_dist.append([])
+            plots.append([])
+            for w_mean_i, w_mean in enumerate(w_means):
+                spikes_grouped_dist[-1].append([])
+                plots[-1].append(plt.figure())
+                for f_i, f in enumerate(p['field']):
+                    color = p['field_color'][f_i]
+                    spikes_grouped_dist[-1][-1].append([])
+                    for dist_bin_i, dist_bin in enumerate(dist_bins):
+                        spike_cnt = [spike_num[f_i][3] for spike_num_i, spike_num in enumerate(spike_nums) if (spike_num[f_i][2]==dist_bin_i and spike_num[f_i][0]==syn_num and spike_num[f_i][1]==w_mean)]
+                        dw_mean = [spike_num[f_i][4] for spike_num_i, spike_num in enumerate(spike_nums) if (spike_num[f_i][2]==dist_bin_i and spike_num[f_i][0]==syn_num and spike_num[f_i][1]==w_mean)]
+                        spike_cnt_mean = np.mean(spike_cnt)
+                        dw_mean_mean = np.mean(dw_mean)
+                        print dist_bin, syn_num, w_mean, spike_cnt_mean, dw_mean
+                        spike_cnt_std = np.std(spike_cnt)
+                        spike_cnt_sem = stats.sem(spike_cnt)
+                        spikes_grouped_dist[-1][-1][-1].append(spike_cnt)
+                        plt.plot(np.mean(dist_bin), spike_cnt_mean, color+'.')
+                        plt.errorbar(np.mean(dist_bin), spike_cnt_mean, yerr=spike_cnt_sem, ecolor=color)
+
+
+                plot_file_name = 'distance_x_spikes_mean_' + 'syn_num_'+str(syn_num) + '_w_mean_'+str(w_mean)
+                plots[-1][-1].savefig(data_folder+plot_file_name+'.png',dpi=250)
+                plt.close(plots[-1][-1])
+
+
+
+
+
+                    ## FIXME
+
+
+
 
 
 if __name__ =="__main__":

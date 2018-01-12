@@ -339,6 +339,7 @@ class CellMigliore2005:
                     # voltage gated sodium
                     sec.insert('na3')
                     sec.gbar_na3 = p['gna']*p['SOMAM']
+                    sec.ar_na3 = p['gna_inact']
                     # print 'soma sodium conductance:', sec.gbar_na3*10000
                     # h-current         
                     sec.insert('hd')
@@ -381,6 +382,7 @@ class CellMigliore2005:
                     # voltage gated sodium      
                     sec.insert('na3')
                     sec.gbar_na3 = p['gna']
+                    sec.ar_na3 = p['gna_inact']
 
                     # delayed rectifier potassium   
                     sec.insert('kdr')

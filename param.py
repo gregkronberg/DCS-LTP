@@ -101,12 +101,12 @@ class Default(object):
             # clopath synapse parameters
             'clopath_delay_steps': 1,
             'clopath_tau_0':6, # time constant (ms) for low passed membrane potential for depression
-            'clopath_tau_r' : 30, # time constant (ms) for low pass filter presynaptic variable
+            'clopath_tau_r' : 15, # time constant (ms) for low pass filter presynaptic variable
             'clopath_tau_y': 5, # time constant (ms) for low pass filter post membrane potential for potentiation
             'clopath_A_m':.0001, # depression magnitude parameter (mV^-1)
             'clopath_A_p': .0005, # amplitude for potentiation (mV^-2)
             'clopath_tetam':-60,#-41, # depression threshold (mV)
-            'clopath_tetap':-60,#-38, # potentiation threshold (mV)
+            'clopath_tetap':-40,#-38, # potentiation threshold (mV)
 
             # ampa synapse parameters
             'tau1_ampa' : 0.2,  # rise time constant (ms)
@@ -126,6 +126,7 @@ class Default(object):
             'gna' :  1.*0.025,#.025,                # peak sodium conductance (mho/cm2)
             'dgna' : -.000025,          # change in sodium conductance with distance (ohm/cm2/um) from Kim 2015
             'ena' : 55.,                    # sodium reversal potential (mV)
+            'gna_inact': .5, # sodium slow inactivation factor (1=none, 0=max inactivation)
             'AXONM' : 40.,              # multiplicative factor for axonal conductance to generate axon potentials in AIS
             'SOMAM':1.,
             'gkdr' : 1.*0.01,#0.01,             # delayed rectifier potassium peak conductance (mho/cm2)
