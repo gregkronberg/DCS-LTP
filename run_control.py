@@ -148,6 +148,161 @@ class Experiment:
                     file_name=self.p['trial_id'],
                     group_trees=self.p['group_trees'])
 
+    def exp_1a(self, **kwargs):
+        """ choose a random subset of segments (fixed number of segments) within a given distance from the soma and apply theta burst
+
+        vary number of synapses, weight of each synapse, and distance from soma.  For each combination of these variables, do several repeats to randomly choose specific synapse locations 
+
+        run simulations in parallel.  distribute distance and number of synapses across workers. iterate over weights and random drawings within a given worker
+
+        same as 2e, added sodium slow inactivation, shortened clopath tau_r time constant
+
+        """
+        print 'running', kwargs['experiment'], 'on worker', pc.id()
+        print kwargs
+        w_mean = .001 # weight of single synapse uS
+        trees = kwargs['trees']
+        nsyns = kwargs['nsyns']
+        syn_nums = kwargs['syn_num']
+        syn_dist = kwargs['syn_dist']
+        trials = 20
+        self.kwargs = {
+        'experiment' : 'exp_1a', 
+        'trees' : trees,
+        'nsyns':nsyns,
+        'syn_num':[],
+        'syn_dist': syn_dist,
+        'num_sec':1,
+        'seg_L' : 4.,
+        'seg_spacing':20,
+        'max_seg':[],
+        'branch':False,
+        'full_path':False,
+        'branch_distance':[],
+        'branch_seg_distance':[],
+        'sequence_delay': 0,
+        'sequence_direction':'in',
+        'trials' : trials,
+        'w_mean' : [],
+        'w_std' : [.002],
+        'w_rand' : False, 
+        'syn_frac' : .2,
+        'field':[-20.,0.,20.],
+        'KMULT':1.*.03,
+        'KMULTP':1.*.03,
+        'ka_grad':1.,
+        'SOMAM': 1.5,
+        'AXONM': 50.,
+        'gna':.04,
+        'dgna':1.*-.000025,
+        'pulses':4,
+        'pulse_freq':100,
+        'group_trees':False,
+        'plot_variables':['v','gbar'],
+        'cell':[],
+        'tstop':70,
+        'clopath_tau_r':8,
+        'gna_inact': 0.
+        }
+
+        # update kwargs
+        for key, val in kwargs.iteritems():
+            self.kwargs[key]=val
+        
+        # instantiate default parameter class
+        self.p_class = param.Default()
+
+        # reference to default parameters
+        self.p = self.p_class.p
+
+        # update parameters
+        for key, val in self.kwargs.iteritems():        # update parameters
+            self.p[key] = val
+
+        # data and figure folder
+        self.p['data_folder'] = 'Data/'+self.p['experiment']+'/'
+        self.p['fig_folder'] =  'png figures/'+self.p['experiment']+'/'
+
+        # load cell and store in parameter dictionary
+        cell1 = cell.CellMigliore2005(self.p)
+        cell1.geometry(self.p)
+        # insert mechanisms
+        cell1.mechanisms(self.p)
+        
+        # measure distance of each segment from the soma and store in parameter dictionary
+        self.p_class.seg_distance(cell1)
+
+        self.p['morpho'] = self.p_class.create_morpho(cell1.geo)
+
+        threshold=-30
+
+        # iterate over frequency
+        # iterate over synapse number
+        # iterate over trials
+        # iterate over all segments in tree
+        for freq_i, freq in enumerate(kwargs['stim_freqs']):
+            self.p['tstop'] = (self.p['pulses']*1000/freq)+self.p['warmup']
+            self.p['pulse_freq'] = freq
+            self.p['field_off'] = self.p['tstop']
+            for syn_num_i, syn_num in enumerate(syn_nums):
+                for trial_i, trial in enumerate(range(self.p['trials'])):
+                    self.p['syn_num']=syn_num
+                    self.p_class.choose_seg_rand(trees=self.p['trees'], syns=cell1.syns, syn_frac=0., seg_dist=self.p['seg_dist'], syn_num=syn_num, distance=self.p['syn_dist'], replace=True)
+
+                    self.p['w_mean'] = self.p['nsyns']*w_mean
+
+                    self.p_class.set_weights(seg_idx=self.p['seg_idx'], sec_idx=self.p['sec_idx'], sec_list=self.p['sec_list'], seg_list=self.p['seg_list'], w_mean=self.p['w_mean'], w_std=self.p['w_std'], w_rand=self.p['w_rand'])
+
+                    self.p_class.set_branch_sequence_ordered(seg_idx=self.p['seg_idx'], delay=self.p['sequence_delay'], direction=self.p['sequence_direction'])
+
+                    print 'syn_num:', self.p['syn_num']
+                    print 'nsyn:',self.p['nsyns'], 'w (nS):',self.p['w_mean'] 
+                    print 'distance from soma:', self.p['syn_dist']
+
+                    # store trial number
+                    self.p['trial']=trial
+                                    
+                    # create unique identifier for each trial
+                    self.p['trial_id'] = str(uuid.uuid4())
+                                    
+                    # start timer
+                    start = time.time() 
+                    
+                    # print cell1.syns
+                    # run simulation
+                    sim = run.Run(p=self.p, cell=cell1) 
+
+                    # end timer
+                    end = time.time() 
+
+                    # print trial and simulation time
+                    print 'trial'+ str(self.p['trial']) + ' duration:' + str(end -start) 
+                    
+                    # set file name to save data
+                    file_name = str(
+                    self.p['experiment']+
+                    '_dist_'+str(self.p['syn_dist'][-1])+
+                    '_freq_'+str(self.p['pulse_freq'])+
+                    '_syn_num_'+str(self.p['syn_num'])+
+                    '_trial_'+str(self.p['trial'])+
+                    '_id_'+self.p['trial_id']
+                    )
+
+                    # save data for eahc trial
+                    run.save_data(data=sim.data, file_name=file_name)
+
+                    # plot traces
+                    analysis.PlotRangeVar().plot_trace(data=sim.data, 
+                        trees=self.p['trees'], 
+                        sec_idx=self.p['sec_idx'], 
+                        seg_idx=self.p['seg_idx'],
+                        variables=self.p['plot_variables'],
+                        x_variables=self.p['x_variables'],
+                        file_name=file_name,
+                        group_trees=self.p['group_trees'],
+                        xlim=[self.p['warmup']-5,self.p['tstop']],
+                        ylim=[])
+
     # choose specific synapses
     def exp_2(self, **kwargs):
         """ choose a specific set of synapses, iterate over increasing synaptic weights, measure resulting LTP and dendritic spike initiation
@@ -1024,7 +1179,7 @@ class Experiment:
         syn_dist = kwargs['syn_dist']
         trials = 20
         self.kwargs = {
-        'experiment' : 'exp_2e', 
+        'experiment' : 'exp_2f', 
         'trees' : trees,
         'nsyns':nsyns,
         'syn_num':[],
@@ -1058,8 +1213,305 @@ class Experiment:
         'plot_variables':['v','gbar'],
         'cell':[],
         'tstop':70,
-        'clopath_tau_r':10,
+        'clopath_tau_r':8,
         'gna_inact': .5
+        }
+
+        # update kwargs
+        for key, val in kwargs.iteritems():
+            self.kwargs[key]=val
+        
+        # instantiate default parameter class
+        self.p_class = param.Default()
+
+        # reference to default parameters
+        self.p = self.p_class.p
+
+        # update parameters
+        for key, val in self.kwargs.iteritems():        # update parameters
+            self.p[key] = val
+
+        # data and figure folder
+        self.p['data_folder'] = 'Data/'+self.p['experiment']+'/'
+        self.p['fig_folder'] =  'png figures/'+self.p['experiment']+'/'
+
+        # load cell and store in parameter dictionary
+        cell1 = cell.CellMigliore2005(self.p)
+        cell1.geometry(self.p)
+        # insert mechanisms
+        cell1.mechanisms(self.p)
+        
+        # measure distance of each segment from the soma and store in parameter dictionary
+        self.p_class.seg_distance(cell1)
+
+        self.p['morpho'] = self.p_class.create_morpho(cell1.geo)
+
+        threshold=-30
+
+        # iterate over all segments in tree
+        for syn_num_i, syn_num in enumerate(syn_nums):
+            for trial_i, trial in enumerate(range(self.p['trials'])):
+                self.p['syn_num']=syn_num
+                self.p_class.choose_seg_rand(trees=self.p['trees'], syns=cell1.syns, syn_frac=0., seg_dist=self.p['seg_dist'], syn_num=syn_num, distance=self.p['syn_dist'])
+
+                self.p['w_mean'] = self.p['nsyns']*w_mean
+
+                self.p_class.set_weights(seg_idx=self.p['seg_idx'], w_mean=self.p['w_mean'], w_std=self.p['w_std'], w_rand=self.p['w_rand'])
+
+                self.p_class.set_branch_sequence_ordered(seg_idx=self.p['seg_idx'], delay=self.p['sequence_delay'], direction=self.p['sequence_direction'])
+
+                print 'syn_num:', self.p['syn_num']
+                print 'nsyn:',self.p['nsyns'], 'w (nS):',self.p['w_mean'] 
+                print 'distance from soma:', self.p['syn_dist']
+
+                # store trial number
+                self.p['trial']=trial
+                                
+                # create unique identifier for each trial
+                self.p['trial_id'] = str(uuid.uuid4())
+                                
+                # start timer
+                start = time.time() 
+                
+                # print cell1.syns
+                # run simulation
+                sim = run.Run(p=self.p, cell=cell1) 
+
+                # end timer
+                end = time.time() 
+
+                # print trial and simulation time
+                print 'trial'+ str(self.p['trial']) + ' duration:' + str(end -start) 
+                
+                # set file name to save data
+                file_name = str(
+                self.p['experiment']+
+                '_weight_'+str(self.p['w_mean'])+
+                '_trial_'+str(self.p['trial'])+
+                '_dist_'+str(self.p['syn_dist'][-1])+
+                '_syn_num_'+str(self.p['syn_num'])+
+                '_id_'+self.p['trial_id']
+                )
+
+                # save data for eahc trial
+                run.save_data(data=sim.data, file_name=file_name)
+
+                # plot traces
+                analysis.PlotRangeVar().plot_trace(data=sim.data, 
+                    trees=self.p['trees'], 
+                    sec_idx=self.p['sec_idx'], 
+                    seg_idx=self.p['seg_idx'],
+                    variables=self.p['plot_variables'],
+                    x_variables=self.p['x_variables'],
+                    file_name=file_name,
+                    group_trees=self.p['group_trees'],
+                    xlim=[self.p['warmup']-5,self.p['tstop']],
+                    ylim=[])
+
+    def exp_2g(self, **kwargs):
+        """ choose a random subset of segments (fixed number of segments) within a given distance from the soma and apply theta burst
+
+        vary number of synapses, weight of each synapse, and distance from soma.  For each combination of these variables, do several repeats to randomly choose specific synapse locations 
+
+        run simulations in parallel.  distribute distance and number of synapses across workers. iterate over weights and random drawings within a given worker
+
+        same as 2f, expanded distance range for activated synapses (e.g. from 0 to 200 um from soma)
+
+        """
+        print 'running', kwargs['experiment'], 'on worker', pc.id()
+        print kwargs
+        w_mean = .001 # weight of single synapse uS
+        trees = kwargs['trees']
+        nsyns = kwargs['nsyns']
+        syn_nums = kwargs['syn_num']
+        syn_dist = kwargs['syn_dist']
+        trials = 20
+        self.kwargs = {
+        'experiment' : 'exp_2g', 
+        'trees' : trees,
+        'nsyns':nsyns,
+        'syn_num':[],
+        'syn_dist': syn_dist,
+        'num_sec':1,
+        'seg_L' : 4.,
+        'seg_spacing':20,
+        'max_seg':[],
+        'branch':False,
+        'full_path':False,
+        'branch_distance':[],
+        'branch_seg_distance':[],
+        'sequence_delay': 0,
+        'sequence_direction':'in',
+        'trials' : trials,
+        'w_mean' : [],
+        'w_std' : [.002],
+        'w_rand' : False, 
+        'syn_frac' : .2,
+        'field':[-20.,0.,20.],
+        'KMULT':1.*.03,
+        'KMULTP':1.*.03,
+        'ka_grad':1.,
+        'SOMAM': 1.5,
+        'AXONM': 50.,
+        'gna':.04,
+        'dgna':1.*-.000025,
+        'pulses':4,
+        'pulse_freq':100,
+        'group_trees':False,
+        'plot_variables':['v','gbar'],
+        'cell':[],
+        'tstop':70,
+        'clopath_tau_r':8,
+        'gna_inact': .4
+        }
+
+        # update kwargs
+        for key, val in kwargs.iteritems():
+            self.kwargs[key]=val
+        
+        # instantiate default parameter class
+        self.p_class = param.Default()
+
+        # reference to default parameters
+        self.p = self.p_class.p
+
+        # update parameters
+        for key, val in self.kwargs.iteritems():        # update parameters
+            self.p[key] = val
+
+        # data and figure folder
+        self.p['data_folder'] = 'Data/'+self.p['experiment']+'/'
+        self.p['fig_folder'] =  'png figures/'+self.p['experiment']+'/'
+
+        # load cell and store in parameter dictionary
+        cell1 = cell.CellMigliore2005(self.p)
+        cell1.geometry(self.p)
+        # insert mechanisms
+        cell1.mechanisms(self.p)
+        
+        # measure distance of each segment from the soma and store in parameter dictionary
+        self.p_class.seg_distance(cell1)
+
+        self.p['morpho'] = self.p_class.create_morpho(cell1.geo)
+
+        threshold=-30
+
+        # iterate over all segments in tree
+        for syn_num_i, syn_num in enumerate(syn_nums):
+            for trial_i, trial in enumerate(range(self.p['trials'])):
+                self.p['syn_num']=syn_num
+                self.p_class.choose_seg_rand(trees=self.p['trees'], syns=cell1.syns, syn_frac=0., seg_dist=self.p['seg_dist'], syn_num=syn_num, distance=self.p['syn_dist'])
+
+                self.p['w_mean'] = self.p['nsyns']*w_mean
+
+                self.p_class.set_weights(seg_idx=self.p['seg_idx'], w_mean=self.p['w_mean'], w_std=self.p['w_std'], w_rand=self.p['w_rand'])
+
+                self.p_class.set_branch_sequence_ordered(seg_idx=self.p['seg_idx'], delay=self.p['sequence_delay'], direction=self.p['sequence_direction'])
+
+                print 'syn_num:', self.p['syn_num']
+                print 'nsyn:',self.p['nsyns'], 'w (nS):',self.p['w_mean'] 
+                print 'distance from soma:', self.p['syn_dist']
+
+                # store trial number
+                self.p['trial']=trial
+                                
+                # create unique identifier for each trial
+                self.p['trial_id'] = str(uuid.uuid4())
+                                
+                # start timer
+                start = time.time() 
+                
+                # print cell1.syns
+                # run simulation
+                sim = run.Run(p=self.p, cell=cell1) 
+
+                # end timer
+                end = time.time() 
+
+                # print trial and simulation time
+                print 'trial'+ str(self.p['trial']) + ' duration:' + str(end -start) 
+                
+                # set file name to save data
+                file_name = str(
+                self.p['experiment']+
+                '_weight_'+str(self.p['w_mean'])+
+                '_trial_'+str(self.p['trial'])+
+                '_dist_'+str(self.p['syn_dist'][-1])+
+                '_syn_num_'+str(self.p['syn_num'])+
+                '_id_'+self.p['trial_id']
+                )
+
+                # save data for eahc trial
+                run.save_data(data=sim.data, file_name=file_name)
+
+                # plot traces
+                analysis.PlotRangeVar().plot_trace(data=sim.data, 
+                    trees=self.p['trees'], 
+                    sec_idx=self.p['sec_idx'], 
+                    seg_idx=self.p['seg_idx'],
+                    variables=self.p['plot_variables'],
+                    x_variables=self.p['x_variables'],
+                    file_name=file_name,
+                    group_trees=self.p['group_trees'],
+                    xlim=[self.p['warmup']-5,self.p['tstop']],
+                    ylim=[])
+
+    def exp_2h(self, **kwargs):
+        """ choose a random subset of segments (fixed number of segments) within a given distance from the soma and apply theta burst
+
+        vary number of synapses, weight of each synapse, and distance from soma.  For each combination of these variables, do several repeats to randomly choose specific synapse locations 
+
+        run simulations in parallel.  distribute distance and number of synapses across workers. iterate over weights and random drawings within a given worker
+
+        same as 2f 2g, but with 20 Hz synaptic activity
+
+        """
+        print 'running', kwargs['experiment'], 'on worker', pc.id()
+        print kwargs
+        w_mean = .001 # weight of single synapse uS
+        trees = kwargs['trees']
+        nsyns = kwargs['nsyns']
+        syn_nums = kwargs['syn_num']
+        syn_dist = kwargs['syn_dist']
+        trials = 20
+        self.kwargs = {
+        'experiment' : 'exp_2h', 
+        'trees' : trees,
+        'nsyns':nsyns,
+        'syn_num':[],
+        'syn_dist': syn_dist,
+        'num_sec':1,
+        'seg_L' : 4.,
+        'seg_spacing':20,
+        'max_seg':[],
+        'branch':False,
+        'full_path':False,
+        'branch_distance':[],
+        'branch_seg_distance':[],
+        'sequence_delay': 0,
+        'sequence_direction':'in',
+        'trials' : trials,
+        'w_mean' : [],
+        'w_std' : [.002],
+        'w_rand' : False, 
+        'syn_frac' : .2,
+        'field':[-20.,0.,20.],
+        'KMULT':1.*.03,
+        'KMULTP':1.*.03,
+        'ka_grad':1.,
+        'SOMAM': 1.5,
+        'AXONM': 50.,
+        'gna':.04,
+        'dgna':1.*-.000025,
+        'pulses':10,
+        'pulse_freq':20,
+        'group_trees':False,
+        'plot_variables':['v','gbar'],
+        'cell':[],
+        'tstop':530,
+        'clopath_tau_r':8,
+        'gna_inact': 0.,
+        'field_off':520
         }
 
         # update kwargs
@@ -1190,9 +1642,10 @@ def _run_parallel(experiment):
 
     # divide up parameters
     # nsyns = np.arange(2.,4.,1.)
-    nsyns = range(2, 4, 1)
-    syn_nums = np.arange(4., 16.,2. )
-    syn_dists = [[0, 100], [100, 200], [200, 300], [300, 400], [400, 600]]
+    nsyns = range(1, 2, 1)
+    syn_nums = np.arange(6., 26.,2. )
+    stim_freqs = [20,50,100,200]
+    syn_dists = [[0, 50], [50, 100], [100, 150], [150, 200], [200, 250],[250,300],[300, 350], [350,400], [400,450],[450,500],[500,550],[550,600]]
     trees=['apical_tuft','apical_trunk']
     
     # list of parameter values to be sent to each worker [worker number]{'parameter':[values], 'experiment':exp_number}
@@ -1200,7 +1653,7 @@ def _run_parallel(experiment):
     syns=nsyns
     for syns in nsyns:
         for syn_dist in syn_dists:
-            parameters.append({'nsyns':syns, 'experiment':experiment, 'syn_num':syn_nums, 'syn_dist':syn_dist, 'trees':trees})
+            parameters.append({'nsyns':syns, 'experiment':experiment, 'syn_num':syn_nums, 'syn_dist':syn_dist, 'trees':trees, 'stim_freqs':stim_freqs})
 
     # create parallel context instance
     pc = h.ParallelContext()
@@ -1239,7 +1692,7 @@ class Arguments:
         # weights = np.arange(.5, 1, .1)
         weights = [.0015]
         self.kwargs = {
-        'experiment' : 'exp_1', 
+        'experiment' : 'exp_1a', 
         'tree' : ['apical_tuft','apical_trunk'],
         'trials' : 1,
         'w_mean' : weights,#[.001],
@@ -1249,7 +1702,7 @@ class Arguments:
         }
 
 if __name__ =="__main__":
-    _run_parallel(experiment='exp_2f')
+    _run_parallel(experiment='exp_1a')
     # kwargs = {'experiment':'exp_2c'}
     # kwargs = Arguments('exp_1').kwargs
     # x = Experiment(**kwargs)

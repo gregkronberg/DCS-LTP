@@ -453,7 +453,7 @@ class Default(object):
         # update parameter dictionary
         self.p['seg_idx'] = seg_idx
 
-    def choose_seg_rand(self, trees, syns, syn_frac, seg_dist, syn_num=[],distance=[]):
+    def choose_seg_rand(self, trees, syns, syn_frac, seg_dist, syn_num=[],distance=[], replace=False):
         """ choose random segments to activate
         arguments:
         
@@ -487,11 +487,11 @@ class Default(object):
             print 'syn_num:', int(syn_num)
             print 'available segments:'
             # choose segments to activate
-            segs_choose = np.random.choice(len(segs_all), int(syn_num), replace=False)
+            segs_choose = np.random.choice(len(segs_all), int(syn_num), replace=replace)
 
         else:
             # choose segments to activate
-            segs_choose = np.random.choice(len(segs_all), int(syn_frac*len(segs_all)), replace=False)
+            segs_choose = np.random.choice(len(segs_all), int(syn_frac*len(segs_all)), replace=replace)
 
         # list of active sections (contains duplicates)3
         sec_list_all = [segs_all[a][0] for a in segs_choose]
@@ -513,7 +513,7 @@ class Default(object):
             # list of active segments as [unique section][segments]
             seg_idx = []
             for sec in sec_idx:
-                seg_idx.append([seg_list[sec_i] for sec_i,sec_num in enumerate(sec_list) if sec_num==sec])
+                seg_idx.append(list(set([seg_list[sec_i] for sec_i,sec_num in enumerate(sec_list) if sec_num==sec])))
 
             # update parameter dictionary
             self.p['sec_list'][tree_key] = sec_list
@@ -549,7 +549,7 @@ class Default(object):
         self.p['sec_idx'] = sec_idx
         self.p['seg_idx'] = seg_idx
 
-    def set_weights(self, seg_idx, w_mean, w_std, w_rand):
+    def set_weights(self, seg_idx, sec_idx, sec_list, seg_list, w_mean, w_std, w_rand):
         """
         sets weights using nested list with same structure as seg_idx: [tree][section index][segment index]
 
@@ -579,14 +579,19 @@ class Default(object):
                 # loop over segments
                 for seg_i,seg in enumerate(sec):
 
+                    # find number of repeats for the current segment
+                    sec_num = sec_idx[tree_key][sec_i]
+                    seg_num = seg
+                    repeats = len([1 for i, section in enumerate(sec_list[tree_key]) if (section==sec_num and seg_list[tree_key][i]==seg_num)])
+
                     # if weights are randomized
                     if w_rand:
                         # choose from normal distribution
-                        w_list[tree_key][sec_i].append(np.random.normal(w_mean,w_std))
+                        w_list[tree_key][sec_i].append(np.random.normal(repeats*w_mean,w_std))
                     
                     # otherwise set all weights to the same
                     else:
-                        w_list[tree_key][sec_i].append(w_mean)
+                        w_list[tree_key][sec_i].append(repeats*w_mean)
 
         # update parameter dictionary
         self.p['w_list']=w_list
