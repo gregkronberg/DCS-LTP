@@ -149,13 +149,8 @@ class Experiment:
                     group_trees=self.p['group_trees'])
 
     def exp_1a(self, **kwargs):
-        """ choose a random subset of segments (fixed number of segments) within a given distance from the soma and apply theta burst
-
-        vary number of synapses, weight of each synapse, and distance from soma.  For each combination of these variables, do several repeats to randomly choose specific synapse locations 
-
-        run simulations in parallel.  distribute distance and number of synapses across workers. iterate over weights and random drawings within a given worker
-
-        same as 2e, added sodium slow inactivation, shortened clopath tau_r time constant
+        """ 
+        activate a varying number of synapses at varying frequency with varying distance from the soma.  Synapses are chosen from a window of 50 um, with the window moving along the dendrite.  Number of synapses is increased.  The threshold for generating a somatic or dendritic spike (in number of synapses) is measured as a function of mean distance from the soma and frequency of synaptic activity
 
         """
         print 'running', kwargs['experiment'], 'on worker', pc.id()
@@ -1643,7 +1638,7 @@ def _run_parallel(experiment):
     # divide up parameters
     # nsyns = np.arange(2.,4.,1.)
     nsyns = range(1, 2, 1)
-    syn_nums = np.arange(6., 26.,2. )
+    syn_nums = np.arange(26., 32.,2. )
     stim_freqs = [20,50,100,200]
     syn_dists = [[0, 50], [50, 100], [100, 150], [150, 200], [200, 250],[250,300],[300, 350], [350,400], [400,450],[450,500],[500,550],[550,600]]
     trees=['apical_tuft','apical_trunk']

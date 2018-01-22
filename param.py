@@ -583,6 +583,7 @@ class Default(object):
                     sec_num = sec_idx[tree_key][sec_i]
                     seg_num = seg
                     repeats = len([1 for i, section in enumerate(sec_list[tree_key]) if (section==sec_num and seg_list[tree_key][i]==seg_num)])
+                    print 'repeats:',repeats
 
                     # if weights are randomized
                     if w_rand:

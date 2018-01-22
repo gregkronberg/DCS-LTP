@@ -199,7 +199,7 @@ class Run():
             # h.finitialize()
             h.run()
 
-            print 'run complete'
+            # print 'run complete'
 
 
             # store recording vectors as arrays
