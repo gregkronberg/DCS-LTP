@@ -1638,7 +1638,7 @@ def _run_parallel(experiment):
     # divide up parameters
     # nsyns = np.arange(2.,4.,1.)
     nsyns = range(1, 2, 1)
-    syn_nums = np.arange(26., 32.,2. )
+    syn_nums = np.arange(30., 40.,2. )
     stim_freqs = [20,50,100,200]
     syn_dists = [[0, 50], [50, 100], [100, 150], [150, 200], [200, 250],[250,300],[300, 350], [350,400], [400,450],[450,500],[500,550],[550,600]]
     trees=['apical_tuft','apical_trunk']
@@ -1698,6 +1698,8 @@ class Arguments:
 
 if __name__ =="__main__":
     _run_parallel(experiment='exp_1a')
+    # kwargs = {'experiment':'exp_1a'}
+    # analysis.Experiment(**kwargs)
     # kwargs = {'experiment':'exp_2c'}
     # kwargs = Arguments('exp_1').kwargs
     # x = Experiment(**kwargs)
