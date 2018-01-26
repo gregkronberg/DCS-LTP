@@ -471,36 +471,105 @@ class Default(object):
         self.p['seg_idx']={}
 
 
-        # list all segments as [[section,segment]] 
+        # list all segments as [[section,segment, tree]] 
         segs_all = [[sec_i,seg_i, tree_key] for tree_key, tree in syns.iteritems() for sec_i,sec in enumerate(tree) for seg_i,seg in enumerate(tree[sec_i]) if tree_key in trees]
 
-        # apply distance criteria
-        if distance:
+        # there are multiple distance requirements
+        if len(distance)>0 and isinstance(distance[0],list):
+            print 'distance:',distance
+            sec_list_all = []
+            seg_list_all = []
+            tree_list_all =[]
+            # for each distance requirement
+            for distance_i, distances in enumerate(distance):
+                # all segments that fit the current distance requirement
+                segs_all_dist = [seg for seg_i, seg in enumerate(segs_all) if seg_dist[seg[2]][seg[0]][seg[1]]>distances[0] and seg_dist[seg[2]][seg[0]][seg[1]]<distances[1]] 
+
+                # print len(segs_all_dist)
+                # segs_all = segs_all_dist
+
+                # if different synapse numbers are provided for each distance bin
+                if isinstance(syn_num,list) and len(syn_num)>0:
+                    
+                    # choose segments to activate
+                    segs_choose = np.random.choice(len(segs_all_dist), int(syn_num[distance_i]), replace=replace)
+
+                # if a single scalar is given
+                elif syn_num:
+                    print 'syn_num:', int(syn_num)
+                    print 'available segments:',len(segs_all_dist)
+                    # choose segments to activate
+                    segs_choose = np.random.choice(len(segs_all_dist), int(syn_num), replace=replace)
+                # if no synapse number is given
+                else:
+                    # choose segments to activate
+                    segs_choose = np.random.choice(len(segs_all_dist), int(syn_frac*len(segs_all)), replace=replace)
+
+                # list of active sections (contains duplicates)
+                sec_list_all_temp = [segs_all_dist[a][0] for a in segs_choose]
+            
+                # list of active segments
+                seg_list_all_temp = [segs_all_dist[a][1] for a in segs_choose]
+
+                # list of trees
+                tree_list_all_temp = [segs_all_dist[a][2] for a in segs_choose]
+
+                # add to total list for distance requirements
+                for i, sec in enumerate(sec_list_all_temp):
+                    sec_list_all.append(sec)
+                    seg_list_all.append(seg_list_all_temp[i])
+                    tree_list_all.append(tree_list_all_temp[i])
+
+        # if only one distacne requirement is given
+        elif len(distance) > 0:
 
             # print 'distance requirement'
             segs_all_dist = [seg for seg_i, seg in enumerate(segs_all) if seg_dist[seg[2]][seg[0]][seg[1]]>distance[0] and seg_dist[seg[2]][seg[0]][seg[1]]<distance[1]] 
 
             # print len(segs_all_dist)
-            segs_all = segs_all_dist
+            # segs_all = segs_all_dist
 
-        if syn_num:
-            print 'syn_num:', int(syn_num)
-            print 'available segments:'
-            # choose segments to activate
-            segs_choose = np.random.choice(len(segs_all), int(syn_num), replace=replace)
+            # if synapse number is given
+            if syn_num:
+                print 'syn_num:', int(syn_num)
+                print 'available segments:'
+                # choose segments to activate
+                segs_choose = np.random.choice(len(segs_all_dist), int(syn_num), replace=replace)
 
+            else:
+                # choose segments to activate
+                segs_choose = np.random.choice(len(segs_all_dist), int(syn_frac*len(segs_all_dist)), replace=replace)
+
+            # list of active sections (contains duplicates)
+            sec_list_all = [segs_all_dist[a][0] for a in segs_choose]
+        
+            # list of active segments
+            seg_list_all = [segs_all_dist[a][1] for a in segs_choose]
+
+            # list of trees
+            tree_list_all = [segs_all_dist[a][2] for a in segs_choose]
+
+        # if no distance requirement given
         else:
-            # choose segments to activate
-            segs_choose = np.random.choice(len(segs_all), int(syn_frac*len(segs_all)), replace=replace)
+            if syn_num:
+                print 'syn_num:', int(syn_num)
+                print 'available segments:'
+                # choose segments to activate
+                segs_choose = np.random.choice(len(segs_all), int(syn_num), replace=replace)
 
-        # list of active sections (contains duplicates)3
-        sec_list_all = [segs_all[a][0] for a in segs_choose]
-    
-        # list of active segments
-        seg_list_all = [segs_all[a][1] for a in segs_choose]
+            else:
+                # choose segments to activate
+                segs_choose = np.random.choice(len(segs_all), int(syn_frac*len(segs_all)), replace=replace)
 
-        # list of trees
-        tree_list_all = [segs_all[a][2] for a in segs_choose]
+            # list of active sections (contains duplicates)
+            sec_list_all = [segs_all[a][0] for a in segs_choose]
+        
+            # list of active segments
+            seg_list_all = [segs_all[a][1] for a in segs_choose]
+
+            # list of trees
+            tree_list_all = [segs_all[a][2] for a in segs_choose]
+
 
         for tree_key in trees:
 
