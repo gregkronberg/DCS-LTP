@@ -1930,45 +1930,50 @@ class Experiment:
                                     seg_num = p['seg_idx'][tree_key][sec_i][seg_i]
                                     distance = p['seg_dist'][tree_key][sec_num][seg_num]
 
-                                    # list of spike times [spike_times]
-                                    spike_times = spike_analysis.detect_spikes(data[str(polarity)][tree_key+'_v'][sec_i][seg_i], threshold=threshold)['times'][0]
+                                    # distance requirement, only include synapses in the distal region
+                                    if distance > p['syn_dist'][-1][0] and distance <= p['syn_dist'][-1][1]:  
 
-                                    # scalar weight change
-                                    dw = data[str(polarity)][tree_key+'_gbar'][sec_i][seg_i][-1]/data[str(polarity)][tree_key+'_gbar'][sec_i][seg_i][0]
 
-                                    # add to dtemp structure
-                                    dtemp['spike_times'][tree_key][sec_i].append(spike_times)
-                                    dtemp['dw'][tree_key][sec_i].append(dw)
+                                        # list of spike times [spike_times]
+                                        spike_times = spike_analysis.detect_spikes(data[str(polarity)][tree_key+'_v'][sec_i][seg_i], threshold=threshold)['times'][0]
 
-                                    # record whether whether there was a spike in soma or dendrite first [all dendritic spike]
-                                    # no spike=0, dend first=1, soma first=2
-                                    # if there are dendritic spikes
-                                    if len(spike_times)>0:
-                                        # iterate through spike times
-                                        for spike_i, spike_time in enumerate(spike_times):
+                                        # scalar weight change
+                                        dw = data[str(polarity)][tree_key+'_gbar'][sec_i][seg_i][-1]/data[str(polarity)][tree_key+'_gbar'][sec_i][seg_i][0]
 
-                                            # add to list of all dendritic spike times for this trial/cell
-                                            dtemp['spikes_dend'].append(spike_time)
-                                            dtemp['spikes_dend_dist'].append(distance)
+                                        # add to dtemp structure
+                                        dtemp['spike_times'][tree_key][sec_i].append(spike_times)
+                                        dtemp['dw'][tree_key][sec_i].append(dw)
 
-                                            # if this is the first spike
-                                            if spike_i==0:
-                                                # if there is also a somatic spike
-                                                if len(dtemp['spikes_soma'])>0:
-                                                    # if the somatic spike occurs first
-                                                    if spike_time > dtemp['spikes_soma'][0]:
+                                        # record whether whether there was a spike in soma or dendrite first [all dendritic spike]
+                                        # no spike=0, dend first=1, soma first=2
+                                        # if there are dendritic spikes
+                                        if len(spike_times)>0:
+                                            # iterate through spike times
+                                            for spike_i, spike_time in enumerate(spike_times):
 
-                                                        # store as soma first
-                                                        dtemp['spikes_first'].append(2)
-                                                    # otherwise the spike is dend first
+                                                # add to list of all dendritic spike times for this trial/cell
+                                                dtemp['spikes_dend'].append(spike_time)
+                                                dtemp['spikes_dend_dist'].append(distance)
+                                                print 'distance:',distance
+
+                                                # if this is the first spike
+                                                if spike_i==0:
+                                                    # if there is also a somatic spike
+                                                    if len(dtemp['spikes_soma'])>0:
+                                                        # if the somatic spike occurs first
+                                                        if spike_time > dtemp['spikes_soma'][0]:
+
+                                                            # store as soma first
+                                                            dtemp['spikes_first'].append(2)
+                                                        # otherwise the spike is dend first
+                                                        else:
+                                                            dtemp['spikes_first'].append(1)
+                                                    # if there is a dendritic but no somatic spike, it is dend first
                                                     else:
                                                         dtemp['spikes_first'].append(1)
-                                                # if there is a dendritic but no somatic spike, it is dend first
-                                                else:
-                                                    dtemp['spikes_first'].append(1)
-                                    # otherwise no spike at all
-                                    else:
-                                        dtemp['spikes_first'].append(0)
+                                        # otherwise no spike at all
+                                        else:
+                                            dtemp['spikes_first'].append(0)
 
                         # create nested list of spike times with dimensions [pulse time bins][spike times]
                         dtemp['time_bins'] = []
@@ -2238,6 +2243,9 @@ class Experiment:
                     pickle.dump(plots[freq_key][syn_dist_key], output,protocol=pickle.HIGHEST_PROTOCOL)
                 print 'figure: ', plot_file_name, ' saved'
                 plt.close(plots[freq_key][syn_dist_key])
+
+        #%%
+        # create least squares fit for syn_num vs spike_num curves
     
     def exp_2(self, **kwargs):
         pass
@@ -3706,5 +3714,5 @@ if __name__ =="__main__":
     # kwargs = run_control.Arguments('exp_8').kwargs
     # plots = Voltage()
     # plots.plot_all(param.Experiment(**kwargs).p)
-    kwargs = {'experiment':'exp_1b'}
+    kwargs = {'experiment':'exp_1c'}
     Experiment(**kwargs)

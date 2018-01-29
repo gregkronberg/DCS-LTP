@@ -134,7 +134,7 @@ class Default(object):
             'celsius' : 35.0,               # temperature (degrees C)
             'KMULT' :  1.*0.03,#0.03,           # multiplicative factor for distal A-type potassium conductances
             'KMULTP' : 1.*.03,#0.03,                # multiplicative factor for proximal A-type potassium conductances
-            'ghd' : 0.5*0.0001,#0.0001,         # peak h-current conductance (mho/cm2)
+            'ghd' : 3.*0.0001,#0.0001,         # peak h-current conductance (mho/cm2)
             'gcalbar': 1.*.00125 ,          # L-type calcium conductance from Kim et al. 2015 (mho/cm2)
             'ehd' : -30.,                   # h-current reversal potential (mV)
             'kl_hd' : -6.,#-8.,
@@ -149,7 +149,7 @@ class Default(object):
             'RmAll' : 28000.,           # specific membrane resistance (ohm/cm2)
             'Cm' : 1.,                  # specific membrane capacitance (uf/cm2)
             'ka_grad' : 1.,#1.,#1.,             # slope of a-type potassium channel gradient with distance from soma 
-            'ghd_grad' : 3.,#1.,#3.,                # slope of h channel gradient with distance from soma 
+            'ghd_grad' : 1.5,#1.,#3.,                # slope of h channel gradient with distance from soma 
             }
 
     def set_branch_sequence_ordered(self, seg_idx, delay, direction):
