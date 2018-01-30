@@ -549,7 +549,7 @@ class Syn_act:
         # iterate over dendritic subtrees
         for tree_key,tree in syns.iteritems():
 
-            if tree_key in p['trees']:
+            if tree_key in p['seg_idx']:
 
                 self.nc[tree_key] =[]
                 # loop over active sections

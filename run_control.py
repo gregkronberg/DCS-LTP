@@ -1093,6 +1093,251 @@ class Experiment:
                         xlim=[self.p['warmup']-5,self.p['tstop']],
                         ylim=[])
     
+    """
+    Experiment 4
+
+    Pathway specificity, associativity
+    """
+    def exp_4a(self, **kwargs):
+        """
+        """
+        print 'running', kwargs['experiment'], 'on worker', pc.id()
+        print kwargs
+        w_mean = .001 # weight of single synapse uS
+        trees = kwargs['trees']
+        nsyns = kwargs['nsyns']
+        syn_nums = kwargs['syn_num']
+        syn_dist = kwargs['syn_dist']
+        trials = 20
+        # create seg_idx and stim info for 2 pathways
+        self.kwargs = {
+        'experiment' : kwargs['experiment'], 
+        'trees' : trees,
+        'nsyns':nsyns,
+        'syn_dist': syn_dist,
+        'trials' : trials,
+        'pulses':4,
+        'pulse_freq':100,
+        'group_trees':False,
+        'plot_variables':['v','gbar'],
+        'tstop':70,
+        'pathways': [],
+        'branch':False,
+        'full_path':False,
+        'branch_distance':[],
+        'branch_seg_distance':[],
+        'sequence_delay': 0,
+        'sequence_direction':'in',
+        }
+
+        # update kwargs
+        for key, val in kwargs.iteritems():
+            self.kwargs[key]=val
+        
+        # instantiate default parameter class
+        self.p_class = param.Default()
+
+        # reference to default parameters
+        self.p = self.p_class.p
+
+        # update parameters
+        for key, val in self.kwargs.iteritems():        # update parameters
+            self.p[key] = val
+
+        # data and figure folder
+        self.p['data_folder'] = 'Data/'+self.p['experiment']+'/'
+        self.p['fig_folder'] =  'png figures/'+self.p['experiment']+'/'
+
+        # load cell and store in parameter dictionary
+        cell1 = cell.CellMigliore2005(self.p)
+        cell1.geometry(self.p)
+        # insert mechanisms
+        cell1.mechanisms(self.p)
+        
+        # measure distance of each segment from the soma and store in parameter dictionary
+        self.p_class.seg_distance(cell1)
+
+        self.p['morpho'] = self.p_class.create_morpho(cell1.geo)
+
+        # create input patterns
+        num_patterns=3
+        num_pathways=2
+        pattern_names = ['strong', 'weak', 'strong+weak']
+        for pat in range(num_patterns):
+            patterns.append({'pathways':[]})
+            for path in range(num_pathways):
+                patterns[-1]['pathways'].append({})
+                # pattern 0, strong only
+            if pat==0:
+                patterns[pat]['pathways'][0]['sequence_delay']=0
+                patterns[pat]['pathways'][0]['sequence_direction']='in'
+                patterns[pat]['pathways'][0]['trees'] = ['apical_tuft','apical_trunk']
+                patterns[pat]['pathways'][0]['syn_num'] = syn_num[0]
+                patterns[pat]['pathways'][0]['syn_dist'] = syn_dist[0]
+                patterns[pat]['pathways'][0]['pulses']=4
+                patterns[pat]['pathways'][0]['pulse_freq']=100
+                patterns[pat]['pathways'][0]['bursts']=1
+                patterns[pat]['pathways'][0]['burst_freq']=5
+                patterns[pat]['pathways'][0]['warmup']= self.p['warmup']
+                patterns[pat]['pathways'][0]['noise']=0
+            # pattern 1, weak only
+            if pat==1:
+                patterns[pat]['pathways'][1]['sequence_delay']=0
+                patterns[pat]['pathways'][1]['sequence_direction']='in'
+                patterns[pat]['pathways'][1]['trees'] = ['apical_tuft','apical_trunk']
+                patterns[pat]['pathways'][1]['syn_num'] = syn_num[1]
+                patterns[pat]['pathways'][1]['syn_dist'] = syn_dist[0]
+                # single pulse
+                patterns[pat]['pathways'][1]['pulses']=1
+                patterns[pat]['pathways'][1]['pulse_freq']=100
+                patterns[pat]['pathways'][1]['bursts']=1
+                patterns[pat]['pathways'][1]['burst_freq']=5
+                # delay input by 1.5 pulses
+                patterns[pat]['pathways'][1]['warmup']= self.p['warmup']  + 15./self.p['dt']
+                patterns[pat]['pathways'][1]['noise']=0
+            # pattern 2, strong and weak together
+            if pat==2:
+                patterns[pat]['pathways'][0]= copy.copy(patterns[0]['pathways'][0])
+                patterns[pat]['pathways'][1]= copy.copy(patterns[1]['pathways'][1])
+
+        for pattern_i, pattern in enumerate(patterns):
+            for syn_num_i, syn_num in enumerate(syn_nums):
+                for trial_i, trial in enumerate(range(self.p['trials'])):
+                    for path_i, path in enumerate(pattern['pathways']):
+                        if path:
+                            path['syn_num'] = syn_num[path_i]
+                            # choose synapses and weights for each path
+                            self.p_class.choose_seg_rand(trees=path['trees'], syns=cell1.syns, syn_frac=0., seg_dist=self.p['seg_dist'], syn_num=path['syn_num'], distance=path['syn_dist'], replace=True)
+                            path['sec_list'] = copy.copy(p['sec_list'])
+                            path['seg_list'] = copy.copy(p['seg_list'])
+                            path['sec_idx'] = copy.copy(p['sec_idx'])
+                            path['seg_idx'] = copy.copy(p['seg_idx'])
+
+                            self.p_class.set_weights(seg_idx=path['seg_idx'], sec_idx=path['sec_idx'], sec_list=path['sec_list'], seg_list=path['seg_list'], w_mean=self.p['w_mean'], w_std=self.p['w_std'], w_rand=self.p['w_rand'])
+
+                            path['w_list'] = copy.copy(p['w_list'])
+
+                            self.p_class.set_branch_sequence_ordered(seg_idx=path['seg_idx'], delay=path['sequence_delay'], direction=path['sequence_direction'])
+
+                            path['sequence_delays'] = self.p['sequence_delays']
+
+                    print pattern_names[pattern_i]
+
+                    # store trial number
+                    self.p['trial']=trial
+                                    
+                    # create unique identifier for each trial
+                    self.p['trial_id'] = str(uuid.uuid4())
+                                    
+                    # start timer
+                    start = time.time() 
+                    
+                    # print cell1.syns
+                    # run simulation
+                    sim = run.Run(p=self.p, cell=cell1) 
+
+                    # end timer
+                    end = time.time() 
+
+                    # print trial and simulation time
+                    print 'trial'+ str(self.p['trial']) + ' duration:' + str(end -start) 
+                    
+                    # set file name to save data
+                    file_name = str(
+                    self.p['experiment']+
+                    '_'+pattern_names[pattern_i]+
+                    '_dist_'+str(self.p['syn_dist'][-1])+
+                    '_freq_'+str(self.p['pulse_freq'])+
+                    '_syn_num_'+str(self.p['syn_num'])+
+                    '_trial_'+str(self.p['trial'])+
+                    '_id_'+self.p['trial_id']
+                    )
+
+                    # save data for eahc trial
+                    run.save_data(data=sim.data, file_name=file_name)
+
+                    # plot traces
+                    analysis.PlotRangeVar().plot_trace(data=sim.data, 
+                        trees=self.p['trees'], 
+                        sec_idx=self.p['sec_idx'], 
+                        seg_idx=self.p['seg_idx'],
+                        variables=self.p['plot_variables'],
+                        x_variables=self.p['x_variables'],
+                        file_name=file_name,
+                        group_trees=self.p['group_trees'],
+                        xlim=[self.p['warmup']-5,self.p['tstop']],
+                        ylim=[])
+
+
+
+
+
+            
+
+        for freq_i, freq in enumerate(kwargs['stim_freqs']):
+            self.p['tstop'] = (self.p['pulses']*1000/freq)+self.p['warmup']
+            self.p['pulse_freq'] = freq
+            self.p['field_off'] = self.p['tstop']
+            for syn_num_i, syn_num in enumerate(syn_nums):
+                for trial_i, trial in enumerate(range(self.p['trials'])):
+                    self.p['syn_num']=syn_num
+                    self.p_class.choose_seg_rand(trees=self.p['trees'], syns=cell1.syns, syn_frac=0., seg_dist=self.p['seg_dist'], syn_num=syn_num, distance=self.p['syn_dist'], replace=True)
+
+                    self.p['w_mean'] = self.p['nsyns']*w_mean
+
+                    self.p_class.set_weights(seg_idx=self.p['seg_idx'], sec_idx=self.p['sec_idx'], sec_list=self.p['sec_list'], seg_list=self.p['seg_list'], w_mean=self.p['w_mean'], w_std=self.p['w_std'], w_rand=self.p['w_rand'])
+
+                    self.p_class.set_branch_sequence_ordered(seg_idx=self.p['seg_idx'], delay=self.p['sequence_delay'], direction=self.p['sequence_direction'])
+
+                    print 'syn_num:', self.p['syn_num']
+                    print 'nsyn:',self.p['nsyns'], 'w (nS):',self.p['w_mean'] 
+                    print 'distance from soma:', self.p['syn_dist']
+
+                    # store trial number
+                    self.p['trial']=trial
+                                    
+                    # create unique identifier for each trial
+                    self.p['trial_id'] = str(uuid.uuid4())
+                                    
+                    # start timer
+                    start = time.time() 
+                    
+                    # print cell1.syns
+                    # run simulation
+                    sim = run.Run(p=self.p, cell=cell1) 
+
+                    # end timer
+                    end = time.time() 
+
+                    # print trial and simulation time
+                    print 'trial'+ str(self.p['trial']) + ' duration:' + str(end -start) 
+                    
+                    # set file name to save data
+                    file_name = str(
+                    self.p['experiment']+
+                    '_dist_'+str(self.p['syn_dist'][-1])+
+                    '_freq_'+str(self.p['pulse_freq'])+
+                    '_syn_num_'+str(self.p['syn_num'])+
+                    '_trial_'+str(self.p['trial'])+
+                    '_id_'+self.p['trial_id']
+                    )
+
+                    # save data for eahc trial
+                    run.save_data(data=sim.data, file_name=file_name)
+
+                    # plot traces
+                    analysis.PlotRangeVar().plot_trace(data=sim.data, 
+                        trees=self.p['trees'], 
+                        sec_idx=self.p['sec_idx'], 
+                        seg_idx=self.p['seg_idx'],
+                        variables=self.p['plot_variables'],
+                        x_variables=self.p['x_variables'],
+                        file_name=file_name,
+                        group_trees=self.p['group_trees'],
+                        xlim=[self.p['warmup']-5,self.p['tstop']],
+                        ylim=[])
+
+
 # function to pass to parallel context message board
 def _f_parallel(parameters):
     """ wrapper around experiment so that it exists in global namespace and can be accessed by mpi

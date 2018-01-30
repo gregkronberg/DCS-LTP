@@ -69,16 +69,29 @@ class Run():
         # bipolar = stims.Bipolar()
         # bipolar.tbs(bursts=p['bursts'], warmup=p['warmup'], pulses=p['pulses'], pulse_freq=p['pulse_freq'])
         # self.stim = bipolar.stim
-        uncage = stims.Uncage()
-        uncage.branch_sequence(seg_idx=p['seg_idx'], 
-            delays=p['sequence_delays'], 
-            bursts=p['bursts'], pulses=p['pulses'], 
-            pulse_freq=p['pulse_freq'],
-            burst_freq=p['burst_freq'],
-            warmup=p['warmup'],
-            noise=p['noise'] )
-        self.stim = uncage.stim
-        self.nc = cell.Syn_act(p=p, syns=self.cell1.syns, stim=self.stim)
+        if 'pathways' in p:
+            for path in p['pathways']:
+                uncage = stims.Uncage()
+                uncage.branch_sequence(seg_idx=path['seg_idx'], 
+                    delays=path['sequence_delays'], 
+                    bursts=path['bursts'], pulses=path['pulses'], 
+                    pulse_freq=path['pulse_freq'],
+                    burst_freq=path['burst_freq'],
+                    warmup=path['warmup'],
+                    noise=path['noise'] )
+                self.stim = uncage.stim
+                self.nc = cell.Syn_act(p=path, syns=self.cell1.syns, stim=self.stim)
+        else:
+            uncage = stims.Uncage()
+            uncage.branch_sequence(seg_idx=p['seg_idx'], 
+                delays=p['sequence_delays'], 
+                bursts=p['bursts'], pulses=p['pulses'], 
+                pulse_freq=p['pulse_freq'],
+                burst_freq=p['burst_freq'],
+                warmup=p['warmup'],
+                noise=p['noise'] )
+            self.stim = uncage.stim
+            self.nc = cell.Syn_act(p=p, syns=self.cell1.syns, stim=self.stim)
 
     def shape_plot(self, p):
         # highlight active sections

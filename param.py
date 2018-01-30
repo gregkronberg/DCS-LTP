@@ -123,18 +123,18 @@ class Default(object):
             # conversion 10,000*(pS/um2) = 10*(nS/um2) = (mho/cm2) = .001*(mS/cm2)
             # *** units in paper are a typo, values are already reported in (mho/cm2) ***
             'Vrest' : -65.,             # resting potential (mV)
-            'gna' :  1.*0.025,#.025,                # peak sodium conductance (mho/cm2)
+            'gna' :  1.*0.04,#.025,                # peak sodium conductance (mho/cm2)
             'dgna' : -.000025,          # change in sodium conductance with distance (ohm/cm2/um) from Kim 2015
             'ena' : 55.,                    # sodium reversal potential (mV)
-            'gna_inact': .5, # sodium slow inactivation factor (1=none, 0=max inactivation)
-            'AXONM' : 40.,              # multiplicative factor for axonal conductance to generate axon potentials in AIS
-            'SOMAM':1.,
+            'gna_inact': 0., # sodium slow inactivation factor (1=none, 0=max inactivation)
+            'AXONM' : 50.,              # multiplicative factor for axonal conductance to generate axon potentials in AIS
+            'SOMAM':1.5,
             'gkdr' : 1.*0.01,#0.01,             # delayed rectifier potassium peak conductance (mho/cm2)
             'ek' : -90.,                    # potassium reversal potential
             'celsius' : 35.0,               # temperature (degrees C)
             'KMULT' :  1.*0.03,#0.03,           # multiplicative factor for distal A-type potassium conductances
             'KMULTP' : 1.*.03,#0.03,                # multiplicative factor for proximal A-type potassium conductances
-            'ghd' : 3.*0.0001,#0.0001,         # peak h-current conductance (mho/cm2)
+            'ghd' : 1.*0.0001,#0.0001,         # peak h-current conductance (mho/cm2)
             'gcalbar': 1.*.00125 ,          # L-type calcium conductance from Kim et al. 2015 (mho/cm2)
             'ehd' : -30.,                   # h-current reversal potential (mV)
             'kl_hd' : -6.,#-8.,

@@ -837,6 +837,34 @@ class Experiment:
 
         experiment(**kwargs) 
 
+    def sigmoid_opt(self, params, *data):
+        """
+        """
+        ymax = params[0]
+        x50 = params[1]
+        s = params[2]
+        x = data[0]
+        y = data[1]
+        y_fit = ymax/(1+np.exp((x50-x)/s))
+        ssq_error = np.sum(np.square(y-y_fit))
+        return ssq_error
+
+    def sigmoid2_opt(self, params, *data):
+        """
+        """
+        ymax_1 = params[0]
+        x50_1 = params[1]
+        s_1 = params[2]
+        ymax_2 = params[3]
+        x50_2 = params[4]
+        s_2 = params[5]
+        x = data[0]
+        y = data[1]
+        y_fit = ymax_1/(1+np.exp((x50_1-x)/s_1)) - ymax_2/(1+np.exp((x50_2-x)/s_2))
+        ssq_error = np.sum(np.square(y-y_fit))
+        return ssq_error
+
+
     def exp_1a(self, **kwargs):
         """ 
         activate a varying number of synapses at varying frequency with varying distance from the soma.  Synapses are chosen from a window of 50 um, with the window moving along the apical dendrite.  As number of synapses is increased, multiple synapses may impinge on the same compartment/segment, effectively increasing the weight in that segment.  The threshold for generating a somatic or dendritic spike (in number of synapses) is measured as a function of mean distance from the soma and frequency of synaptic activity.  
@@ -1589,10 +1617,12 @@ class Experiment:
                         opacity = 0.7
                         marker_soma = '.'
                         marker_dend= 'x'
+                        marker_all= '^'
 
                         # lsit of soma/dend spike fraction for each trial in current set of conditions
                         soma_frac=[]
                         dend_frac=[]
+                        all_frac=[]
                         # iterate through trials
                         for trial_i, trial in enumerate(polarity['spikes_first']):
                             # soma and dendrite spikes
@@ -1602,6 +1632,7 @@ class Experiment:
                             # add to list with dimension [trials]
                             soma_frac.append(float(len(soma_first))/float(len(trial)))
                             dend_frac.append(float(len(dend_first))/float(len(trial)))
+                            all_frac.append(float(len(dend_first)+len(soma_first))/float(len(trial)))
                         # group stats
                         soma_frac_mean = np.mean(soma_frac)
                         soma_frac_std = np.std(soma_frac)
@@ -1609,16 +1640,22 @@ class Experiment:
                         dend_frac_mean = np.mean(dend_frac)
                         dend_frac_std = np.std(dend_frac)
                         dend_frac_sem = stats.sem(dend_frac)
+                        all_frac_mean = np.mean(all_frac)
+                        all_frac_std = np.std(all_frac)
+                        all_frac_sem = stats.sem(all_frac)
 
                         # plot with errorbars
                         plt.figure(plots[freq_key][syn_dist_key].number)
-                        plt.plot(float(syn_num_key), soma_frac_mean, color=color, marker=marker_soma, markersize=size, alpha=opacity)
-                        plt.plot(float(syn_num_key), dend_frac_mean, color=color, marker=marker_dend, markersize=size, alpha=opacity)
+                        soma_plot = plt.plot(float(syn_num_key), soma_frac_mean, color=color, marker=marker_soma, markersize=size, alpha=opacity, label='soma driven')
+                        dend_plot = plt.plot(float(syn_num_key), dend_frac_mean, color=color, marker=marker_dend, markersize=size, alpha=opacity, label='dendrite driven')
+                        all_plot = plt.plot(float(syn_num_key), all_frac_mean, color=color, marker=marker_all, markersize=size, alpha=opacity, label='all')
                         plt.errorbar(float(syn_num_key), soma_frac_mean, yerr=soma_frac_sem, color=color, alpha=opacity)
                         plt.errorbar(float(syn_num_key), dend_frac_mean, yerr=dend_frac_sem, color=color, alpha=opacity)
+                        plt.errorbar(float(syn_num_key), all_frac_mean, yerr=all_frac_sem, color=color, alpha=opacity)
                         plt.xlabel('number of active synapses')
                         plt.ylabel('fraction of spiking synapses')
                         plt.title(freq_key + ' Hz, ' + syn_dist_key + ' um from soma')
+                        # plt.legend(loc='upper left')
 
                 # save and close figure
                 plt.figure(plots[freq_key][syn_dist_key].number)
@@ -1649,12 +1686,14 @@ class Experiment:
                         opacity = 0.7
                         marker_soma = '.'
                         marker_dend= 'x'
+                        marker_all = '^'
 
                         # lsit of soma/dend spike fraction for each trial in current set of conditions
 
                         # iterate through trials
                         soma_spikes_total=[]
                         dend_spikes_total=[]
+                        all_spikes_total=[]
                         for trial_i, trial in enumerate(polarity['spikes_dend_diff_bin']):
                             # count somatic/dendritic spikes for each trial
                             soma_count =[]
@@ -1677,6 +1716,7 @@ class Experiment:
                             # add to list for all trials
                             soma_spikes_total.append(soma_spikes_norm)
                             dend_spikes_total.append(dend_spikes_norm)
+                            all_spikes_total.append(soma_spikes_norm+dend_spikes_norm)
                             
                             # print 'dend_spikes_total:',dend_spikes_total
                         
@@ -1687,16 +1727,22 @@ class Experiment:
                         dend_total_mean = np.mean(dend_spikes_total)
                         dend_total_std = np.std(dend_spikes_total)
                         dend_total_sem = stats.sem(dend_spikes_total)
+                        all_total_mean = np.mean(all_spikes_total)
+                        all_total_std = np.std(all_spikes_total)
+                        all_total_sem = stats.sem(all_spikes_total)
 
                         # plot with errorbars
                         plt.figure(plots[freq_key][syn_dist_key].number)
-                        plt.plot(float(syn_num_key), soma_total_mean, color=color, marker=marker_soma, markersize=size, alpha=opacity)
-                        plt.plot(float(syn_num_key), dend_total_mean, color=color, marker=marker_dend, markersize=size, alpha=opacity)
+                        soma_plot = plt.plot(float(syn_num_key), soma_total_mean, color=color, marker=marker_soma, markersize=size, alpha=opacity, label='soma driven')
+                        dend_plot = plt.plot(float(syn_num_key), dend_total_mean, color=color, marker=marker_dend, markersize=size, alpha=opacity, label='dendrite driven')
+                        all_plot = plt.plot(float(syn_num_key), all_total_mean, color=color, marker=marker_all, markersize=size, alpha=opacity, label='all')
                         plt.errorbar(float(syn_num_key), soma_total_mean, yerr=soma_total_sem, color=color, alpha=opacity)
                         plt.errorbar(float(syn_num_key), dend_total_mean, yerr=dend_total_sem, color=color, alpha=opacity)
+                        plt.errorbar(float(syn_num_key), all_total_mean, yerr=all_total_sem, color=color, alpha=opacity)
                         plt.xlabel('number of active synapses')
                         plt.ylabel('Number of spikes/synapse')
                         plt.title(freq_key + ' Hz, ' + syn_dist_key + ' um from soma')
+                        # plt.legend(loc='upper left')
 
                 # save and close figure
                 plt.figure(plots[freq_key][syn_dist_key].number)
@@ -1728,6 +1774,7 @@ class Experiment:
                         opacity = 0.7
                         marker_soma = '.'
                         marker_dend= 'x'
+                        marker_all= '^'
 
                         # lsit of soma/dend spike fraction for each trial in current set of conditions
                         soma_frac=[]
@@ -1747,6 +1794,7 @@ class Experiment:
 
                         soma_timing_flat = [time*dt for times in soma_timing for time in times]
                         dend_timing_flat = [time*dt for times in dend_timing for time in times]
+                        all_timing_flat = soma_timing_flat + dend_timing_flat
                         
                         # group stats
                         soma_timing_mean = np.mean(soma_timing_flat)
@@ -1755,16 +1803,23 @@ class Experiment:
                         dend_timing_mean = np.mean(dend_timing_flat)
                         dend_timing_std = np.std(dend_timing_flat)
                         dend_timing_sem = stats.sem(dend_timing_flat)
+                        all_timing_mean = np.mean(all_timing_flat)
+                        all_timing_std = np.std(all_timing_flat)
+                        all_timing_sem = stats.sem(all_timing_flat)
 
                         # plot with errorbars
                         plt.figure(plots[freq_key][syn_dist_key].number)
-                        plt.plot(float(syn_num_key), soma_timing_mean, color=color, marker=marker_soma, markersize=size, alpha=opacity)
-                        plt.plot(float(syn_num_key), dend_timing_mean, color=color, marker=marker_dend, markersize=size, alpha=opacity)
+                        soma_plot = plt.plot(float(syn_num_key), soma_timing_mean, color=color, marker=marker_soma, markersize=size, alpha=opacity, label='soma driven')
+                        dend_plot = plt.plot(float(syn_num_key), dend_timing_mean, color=color, marker=marker_dend, markersize=size, alpha=opacity, label='dendrite driven')
+                        all_plot = plt.plot(float(syn_num_key), all_timing_mean, color=color, marker=marker_all, markersize=size, alpha=opacity, label='all')
                         plt.errorbar(float(syn_num_key), soma_timing_mean, yerr=soma_timing_sem, color=color, alpha=opacity)
                         plt.errorbar(float(syn_num_key), dend_timing_mean, yerr=dend_timing_sem, color=color, alpha=opacity)
+                        plt.errorbar(float(syn_num_key), all_timing_mean, yerr=all_timing_sem, color=color, alpha=opacity)
                         plt.xlabel('number of active synapses')
                         plt.ylabel('spike timing after epsp onset (ms)')
                         plt.title(freq_key + ' Hz, ' + syn_dist_key + ' um from soma')
+                        # soma_legend = mpatches.Circle(color='black', label='soma driven')
+                        # plt.legend(loc='upper left')
 
                 # save and close figure
                 plt.figure(plots[freq_key][syn_dist_key].number)
@@ -2058,10 +2113,12 @@ class Experiment:
                         opacity = 0.7
                         marker_soma = '.'
                         marker_dend= 'x'
+                        marker_all= '^'
 
                         # lsit of soma/dend spike fraction for each trial in current set of conditions
                         soma_frac=[]
                         dend_frac=[]
+                        all_frac=[]
                         # iterate through trials
                         for trial_i, trial in enumerate(polarity['spikes_first']):
                             # soma and dendrite spikes
@@ -2071,6 +2128,8 @@ class Experiment:
                             # add to list with dimension [trials]
                             soma_frac.append(float(len(soma_first))/float(len(trial)))
                             dend_frac.append(float(len(dend_first))/float(len(trial)))
+                            all_frac.append(float(len(dend_first)+len(soma_first))/float(len(trial)))
+
                         # group stats
                         soma_frac_mean = np.mean(soma_frac)
                         soma_frac_std = np.std(soma_frac)
@@ -2078,13 +2137,18 @@ class Experiment:
                         dend_frac_mean = np.mean(dend_frac)
                         dend_frac_std = np.std(dend_frac)
                         dend_frac_sem = stats.sem(dend_frac)
+                        all_frac_mean = np.mean(all_frac)
+                        all_frac_std = np.std(all_frac)
+                        all_frac_sem = stats.sem(all_frac)
 
                         # plot with errorbars
                         plt.figure(plots[freq_key][syn_dist_key].number)
                         plt.plot(float(syn_num_key), soma_frac_mean, color=color, marker=marker_soma, markersize=size, alpha=opacity)
                         plt.plot(float(syn_num_key), dend_frac_mean, color=color, marker=marker_dend, markersize=size, alpha=opacity)
+                        plt.plot(float(syn_num_key), all_frac_mean, color=color, marker=marker_all, markersize=size, alpha=opacity)
                         plt.errorbar(float(syn_num_key), soma_frac_mean, yerr=soma_frac_sem, color=color, alpha=opacity)
                         plt.errorbar(float(syn_num_key), dend_frac_mean, yerr=dend_frac_sem, color=color, alpha=opacity)
+                        plt.errorbar(float(syn_num_key), all_frac_mean, yerr=all_frac_sem, color=color, alpha=opacity)
                         plt.xlabel('number of active synapses')
                         plt.ylabel('fraction of spiking synapses')
                         plt.title(freq_key + ' Hz, ' + syn_dist_key + ' um from soma')
@@ -2118,12 +2182,14 @@ class Experiment:
                         opacity = 0.7
                         marker_soma = '.'
                         marker_dend= 'x'
+                        marker_all= '^'
 
                         # lsit of soma/dend spike fraction for each trial in current set of conditions
 
                         # iterate through trials
                         soma_spikes_total=[]
                         dend_spikes_total=[]
+                        all_spikes_total=[]
                         for trial_i, trial in enumerate(polarity['spikes_dend_diff_bin']):
                             # count somatic/dendritic spikes for each trial
                             soma_count =[]
@@ -2146,6 +2212,7 @@ class Experiment:
                             # add to list for all trials
                             soma_spikes_total.append(soma_spikes_norm)
                             dend_spikes_total.append(dend_spikes_norm)
+                            all_spikes_total.append(soma_spikes_norm+dend_spikes_norm)
                             
                             # print 'dend_spikes_total:',dend_spikes_total
                         
@@ -2156,13 +2223,18 @@ class Experiment:
                         dend_total_mean = np.mean(dend_spikes_total)
                         dend_total_std = np.std(dend_spikes_total)
                         dend_total_sem = stats.sem(dend_spikes_total)
+                        all_total_mean = np.mean(all_spikes_total)
+                        all_total_std = np.std(all_spikes_total)
+                        all_total_sem = stats.sem(all_spikes_total)
 
                         # plot with errorbars
                         plt.figure(plots[freq_key][syn_dist_key].number)
                         plt.plot(float(syn_num_key), soma_total_mean, color=color, marker=marker_soma, markersize=size, alpha=opacity)
                         plt.plot(float(syn_num_key), dend_total_mean, color=color, marker=marker_dend, markersize=size, alpha=opacity)
+                        plt.plot(float(syn_num_key), all_total_mean, color=color, marker=marker_all, markersize=size, alpha=opacity)
                         plt.errorbar(float(syn_num_key), soma_total_mean, yerr=soma_total_sem, color=color, alpha=opacity)
                         plt.errorbar(float(syn_num_key), dend_total_mean, yerr=dend_total_sem, color=color, alpha=opacity)
+                        plt.errorbar(float(syn_num_key), all_total_mean, yerr=all_total_sem, color=color, alpha=opacity)
                         plt.xlabel('number of active synapses')
                         plt.ylabel('Number of spikes/synapse')
                         plt.title(freq_key + ' Hz, ' + syn_dist_key + ' um from soma')
@@ -2197,6 +2269,7 @@ class Experiment:
                         opacity = 0.7
                         marker_soma = '.'
                         marker_dend= 'x'
+                        marker_all='^'
 
                         # lsit of soma/dend spike fraction for each trial in current set of conditions
                         soma_frac=[]
@@ -2216,6 +2289,7 @@ class Experiment:
 
                         soma_timing_flat = [time*dt for times in soma_timing for time in times]
                         dend_timing_flat = [time*dt for times in dend_timing for time in times]
+                        all_timing_flat = soma_timing_flat+dend_timing_flat
                         
                         # group stats
                         soma_timing_mean = np.mean(soma_timing_flat)
@@ -2224,13 +2298,18 @@ class Experiment:
                         dend_timing_mean = np.mean(dend_timing_flat)
                         dend_timing_std = np.std(dend_timing_flat)
                         dend_timing_sem = stats.sem(dend_timing_flat)
+                        all_timing_mean = np.mean(all_timing_flat)
+                        all_timing_std = np.std(all_timing_flat)
+                        all_timing_sem = stats.sem(all_timing_flat)
 
                         # plot with errorbars
                         plt.figure(plots[freq_key][syn_dist_key].number)
                         plt.plot(float(syn_num_key), soma_timing_mean, color=color, marker=marker_soma, markersize=size, alpha=opacity)
                         plt.plot(float(syn_num_key), dend_timing_mean, color=color, marker=marker_dend, markersize=size, alpha=opacity)
+                        plt.plot(float(syn_num_key), all_timing_mean, color=color, marker=marker_all, markersize=size, alpha=opacity)
                         plt.errorbar(float(syn_num_key), soma_timing_mean, yerr=soma_timing_sem, color=color, alpha=opacity)
                         plt.errorbar(float(syn_num_key), dend_timing_mean, yerr=dend_timing_sem, color=color, alpha=opacity)
+                        plt.errorbar(float(syn_num_key), all_timing_mean, yerr=all_timing_sem, color=color, alpha=opacity)
                         plt.xlabel('number of active synapses')
                         plt.ylabel('spike timing after epsp onset (ms)')
                         plt.title(freq_key + ' Hz, ' + syn_dist_key + ' um from soma')
@@ -3714,5 +3793,5 @@ if __name__ =="__main__":
     # kwargs = run_control.Arguments('exp_8').kwargs
     # plots = Voltage()
     # plots.plot_all(param.Experiment(**kwargs).p)
-    kwargs = {'experiment':'exp_1c'}
+    kwargs = {'experiment':'exp_1b'}
     Experiment(**kwargs)
