@@ -152,9 +152,26 @@ class Default(object):
             'ghd_grad' : 1.5,#1.,#3.,                # slope of h channel gradient with distance from soma 
             }
 
+    def add_pathway(self, stim_param):
+        """
+        Add pathway to parameter dictionary p
+
+        stim_param is a dictionary of parameters that are specific to the pathway being added
+
+        pathways are organized as p{'p_path'}[path number]{'parameter'}
+        """
+        if 'p_path' not in self.p:
+            self.p['syn_path'] = []
+        
+        self.p['p_path'].append({})
+        for param_key, param in stim_param.iteritems():
+            self.p['p_path'][-1][param_key]=param
+
+
     def set_branch_sequence_ordered(self, seg_idx, delay, direction):
         """
         """
+        dic={}
         delays = {}
         # iterate over trees
         for tree_key, tree in seg_idx.iteritems():
@@ -185,7 +202,8 @@ class Default(object):
                     delays[tree_key][sec_i].append(add_delay)
 
         # store in parameter dictionary
-        self.p['sequence_delays'] = delays
+        dic['sequence_delays']=delays
+        return dic
 
     def choose_branch_manual(self, geo, trees, sec_list, full_path):
         """
@@ -465,10 +483,13 @@ class Default(object):
 
         updates the parameter dictionary according to the chosen synapses
         """
-        self.p['sec_list']={}
-        self.p['seg_list']={}
-        self.p['sec_idx']={}
-        self.p['seg_idx']={}
+        dic = {
+        'sec_list':{},
+        'seg_list': {},
+        'sec_idx': {},
+        'seg_idx': {},
+        }
+        
 
 
         # list all segments as [[section,segment, tree]] 
@@ -585,11 +606,14 @@ class Default(object):
                 seg_idx.append(list(set([seg_list[sec_i] for sec_i,sec_num in enumerate(sec_list) if sec_num==sec])))
 
             # update parameter dictionary
-            self.p['sec_list'][tree_key] = sec_list
-            self.p['seg_list'][tree_key] = seg_list
-            self.p['sec_idx'][tree_key] = sec_idx
-            self.p['seg_idx'][tree_key] = seg_idx
-            self.p['syn_frac'] = syn_frac
+            dic['sec_list'][tree_key] = sec_list
+            dic['seg_list'][tree_key] = seg_list
+            dic['sec_idx'][tree_key] = sec_idx
+            dic['seg_idx'][tree_key] = seg_idx
+            dic['syn_frac'] = syn_frac
+            dic['trees']=trees
+
+        return dic
 
     def choose_seg_manual(self, trees, sec_list, seg_list):
         """ manually choose segments to activate
@@ -631,7 +655,8 @@ class Default(object):
 
         w_rand = choose synaptic weights from normal distibution? (bool)
         """
-        w_list = {}
+        dic = {}
+        w_list={}
 
         # iterate over trees in seg_idx
         for tree_key, tree in seg_idx.iteritems():
@@ -663,8 +688,9 @@ class Default(object):
                     else:
                         w_list[tree_key][sec_i].append(repeats*w_mean)
 
+        dic['w_list']=w_list
         # update parameter dictionary
-        self.p['w_list']=w_list
+        return dic
 
     def seg_distance(self, cell):
         """ calculate distance from soma of each segment and store in parameter dictionary

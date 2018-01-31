@@ -570,20 +570,27 @@ class PlotRangeVar():
                 # update specific experiment parameters
                 p_data = data['p']
                 
-                # plot range variables (automatically saved to same folder)
-                self.plot_trace(data=data, 
-                    trees=p_data['trees'], 
-                    sec_idx=p_data['sec_idx'], 
-                    seg_idx=p_data['seg_idx'],
-                    variables=p_data['plot_variables'],
-                    x_variables=p_data['x_variables'],
-                    file_name=p_data['trial_id'],
-                    group_trees=p_data['group_trees'])
+                for path_key, path in p_data['p_path'].iteritems():
+                    # plot range variables (automatically saved to same folder)
+                    self.plot_trace(data=data, 
+                        trees=path['trees'], 
+                        sec_idx=path['sec_idx'], 
+                        seg_idx=path['seg_idx'],
+                        variables=path['plot_variables'],
+                        x_variables=path['x_variables'],
+                        file_name=path['trial_id'],
+                        group_trees=path['group_trees'])
 
-    def plot_trace(self, data, trees, sec_idx, seg_idx, soma=True, axon=True, group_trees=True, variables=['v'], x_variables='t', xlim=[], ylim=[], file_name=''):
+    def plot_trace(self, data, sec_idx=[], seg_idx=[], soma=True, axon=True, group_trees=True, variables=['v'], x_variables='t', xlim=[], ylim=[], file_name=''):
         """ Create a figure containing a subplot for each segment specified in seg_idx
 
         variable is a list of range variable key words indicating which varaible to plot.  A new figure is created and saved for each variable
+
+        data structure organized as:  data{'polarity'}{'path number'}{'tree'}[section number][segment number][data vector]
+
+        parameters that are specific to a given pathway are stored in data{'p'}{'p_path'}[path number]
+
+
         """
         # load parameters
         p = data['p']
@@ -594,235 +601,241 @@ class PlotRangeVar():
         # dictionary to hold figures
         fig={}  
 
-        # iterate over list of y variables to plot
-        for var in variables:
-
-            fig[var] = {}
-
-            # iterate over list of x variables to plot
-            for x_var in x_variables:
-
-
-                # if data from all subtrees in one plot
-                if group_trees:
-
-                    # create figure
-                    fig[var][x_var] = plt.figure()
-
-                    # number of segments to plot
-                    nseg =  sum([sum(seg_i+1 for seg_i,seg in enumerate(sec)) for tree_key, tree in seg_idx.iteritems() for sec in tree if tree_key in p['trees'] ])+1
-
-                    # print nseg
-                    # plot soma trace?
-                    if soma:
-                        nseg+=1
-                    if axon:
-                        nseg+=1
-
-                    # columns and rows for subplot array    
-                    cols = int(math.ceil(math.sqrt(nseg)))
-                    rows = int(math.ceil(math.sqrt(nseg)))
-
-                
-                # if each subtree to get its own figure
-                elif not group_trees:
-                    
-                    # create another dimension to store each subtree figure separately
-                    fig[var][x_var]={}
+        # iterate over pathways
+        for path_key, path in p['p_path'].iteritems():
+            sec_idx = path['sec_idx']
+            seg_idx = path['seg_idx']
             
-                # count segments
-                cnt=0
+            fig[path_key]={}
+            # iterate over list of y variables to plot
+            for var in variables:
 
-                # iterate over trees
-                for tree_key, tree in seg_idx.iteritems():
+                fig[path_key][var] = {}
 
-                    if not group_trees:
-                        cnt=0
+                # iterate over list of x variables to plot
+                for x_var in x_variables:
 
-                    # check that there are active sections in the tree
-                    if tree:
 
-                        # if each subtree gets its own figure
+                    # if data from all subtrees in one plot
+                    if group_trees:
+
+                        # create figure
+                        fig[path_key][var][x_var] = plt.figure()
+
+                        # number of segments to plot
+                        nseg =  sum([sum(seg_i+1 for seg_i,seg in enumerate(sec)) for tree_key, tree in seg_idx.iteritems() for sec in tree if tree_key in path['trees'] ])+1
+
+                        # print nseg
+                        # plot soma trace?
+                        if soma:
+                            nseg+=1
+                        if axon:
+                            nseg+=1
+
+                        # columns and rows for subplot array    
+                        cols = int(math.ceil(math.sqrt(nseg)))
+                        rows = int(math.ceil(math.sqrt(nseg)))
+
+                    
+                    # if each subtree to get its own figure
+                    elif not group_trees:
+                        
+                        # create another dimension to store each subtree figure separately
+                        fig[path_key][var][x_var]={}
+                
+                    # count segments
+                    cnt=0
+
+                    # iterate over trees
+                    for tree_key, tree in seg_idx.iteritems():
+
                         if not group_trees:
-                            fig[var][x_var][tree_key] = plt.figure()
+                            cnt=0
 
-                            # number of segments to plot
-                            nseg =  sum([sum(seg_i+1 for seg_i,seg in enumerate(sec)) for sec in tree])+1
-                            
-                            # print'nseg:',nseg
-                            # plot soma trace?
+                        # check that there are active sections in the tree
+                        if tree:
+
+                            # if each subtree gets its own figure
+                            if not group_trees:
+                                fig[path_key][var][x_var][tree_key] = plt.figure()
+
+                                # number of segments to plot
+                                nseg =  sum([sum(seg_i+1 for seg_i,seg in enumerate(sec)) for sec in tree])+1
+                                
+                                # print'nseg:',nseg
+                                # plot soma trace?
+                                if soma:
+                                    nseg+=1
+                                if axon:
+                                    nseg+=1
+
+                                # columns and rows for subplot array    
+                                cols = int(math.ceil(math.sqrt(nseg)))
+                                rows = int(math.ceil(math.sqrt(nseg)))
+
+                                # print 'rows,cols:',rows,cols
+
+                            # iterate over sections
+                            for sec_i,sec in enumerate(tree):
+
+                                # derive section number from index
+                                sec_num = sec_idx[tree_key][sec_i]
+                                
+                                # iterate over segments
+                                for seg_i, seg in enumerate(sec):
+                                    
+                                    # count subplots (segments)
+                                    cnt+=1
+                                    
+                                    # create subplot
+                                    plt.subplot(rows, cols, cnt)
+
+                                    # get segment distance from soma
+                                    seg_dist = p['seg_dist'][tree_key][sec_num][seg]
+                                    
+                                    # plot title
+                                    plt.title(tree_key + ('%.2f'%seg_dist) )
+
+                                    # adjust limits
+                                    if var is 'v':
+                                        if xlim:
+                                            plt.xlim(xlim)
+                                        if ylim:
+                                            plt.ylim(ylim)
+                                    
+                                    # iterate over stimulation polarity
+                                    for f_i, f in enumerate(p['field']):
+                                    
+                                        # check if variable exists in the current section
+                                        if data[str(f)][path_key][tree_key+'_'+var][sec_i]:
+
+                                            # if not plotting the soma trace
+                                            if soma and cnt<nseg:
+
+                                                # retrieve time series to plot
+                                                v = data[str(f)][path_key][tree_key+'_'+var][sec_i][seg_i]
+
+                                                # retrieve x variable
+                                                if x_var =='t':
+                                                    # time vector
+                                                    xv = data[str(f)][path_key]['t']
+
+                                                # other variable from arguments
+                                                else:
+                                                    xv = data[str(f)][path_key][tree_key+'_'+x_var][sec_i][seg_i]
+
+
+                                            # set plot color based on stimulation polarity
+                                            color = p['field_color'][f_i]
+                                            
+                                            # add trace to corresponding subplot
+                                            plt.plot(xv, v, color=color)
+                                            plt.xlabel(x_var)
+                                            plt.ylabel(var)
+
                             if soma:
-                                nseg+=1
-                            if axon:
-                                nseg+=1
-
-                            # columns and rows for subplot array    
-                            cols = int(math.ceil(math.sqrt(nseg)))
-                            rows = int(math.ceil(math.sqrt(nseg)))
-
-                            # print 'rows,cols:',rows,cols
-
-                        # iterate over sections
-                        for sec_i,sec in enumerate(tree):
-
-                            # derive section number from index
-                            sec_num = sec_idx[tree_key][sec_i]
-                            
-                            # iterate over segments
-                            for seg_i, seg in enumerate(sec):
-                                
-                                # count subplots (segments)
                                 cnt+=1
-                                
-                                # create subplot
-                                plt.subplot(rows, cols, cnt)
 
-                                # get segment distance from soma
-                                seg_dist = p['seg_dist'][tree_key][sec_num][seg]
-                                
-                                # plot title
-                                plt.title(tree_key + ('%.2f'%seg_dist) )
-
-                                # adjust limits
-                                if var is 'v':
-                                    if xlim:
-                                        plt.xlim(xlim)
-                                    if ylim:
-                                        plt.ylim(ylim)
-                                
-                                # iterate over stimulation polarity
+                                # if plotting soma trace
                                 for f_i, f in enumerate(p['field']):
-                                
-                                    # check if variable exists in the current section
-                                    if data[str(f)][tree_key+'_'+var][sec_i]:
 
-                                        # if not plotting the soma trace
-                                        if soma and cnt<nseg:
+        
+                                    # if variable exists in soma data
+                                    if 'soma_'+var in data[str(f)][path_key].keys():
+                                        if len(data[str(f)][path_key]['soma_'+var][0][0])>0:
+                                        
+                                            # subplot for soma trace
+                                            plt.subplot(rows, cols, cnt)
 
-                                            # retrieve time series to plot
-                                            v = data[str(f)][tree_key+'_'+var][sec_i][seg_i]
+                                            # adjust limits
+                                            if var is 'v':
+                                                if xlim:
+                                                    plt.xlim(xlim)
+                                                if ylim:
+                                                    plt.ylim(ylim)
 
-                                            # retrieve x variable
+                                            # retrieve data to plot
+                                            v = data[str(f)][path_key]['soma_'+var][0][0] 
+
+                                            # determine x variable to plot
                                             if x_var =='t':
                                                 # time vector
-                                                xv = data[str(f)]['t']
-
-                                            # other variable from arguments
+                                                xv = data[str(f)][path_key]['t']
                                             else:
-                                                xv = data[str(f)][tree_key+'_'+x_var][sec_i][seg_i]
+                                                xv = data[str(f)][path_key]['soma_'+x_var][0][0]
+                                            
+                                            # set plot color
+                                            color = p['field_color'][f_i]
+                                            
+                                            plt.plot(xv, v, color=color)
+                                            plt.title('soma')
+                                            plt.xlabel(x_var)
+                                            plt.ylabel(var)
 
+                            if axon:
+                                cnt+=1
 
-                                        # set plot color based on stimulation polarity
-                                        color = p['field_color'][f_i]
+                                # if plotting soma trace
+                                for f_i, f in enumerate(p['field']):
+
+                                    # if variable exists in soma data
+                                    if 'axon_'+var in data[str(f)][path_key].keys():
+                                        if len(data[str(f)][path_key]['axon_'+var][0][0])>0:
                                         
-                                        # add trace to corresponding subplot
-                                        plt.plot(xv, v, color=color)
-                                        plt.xlabel(x_var)
-                                        plt.ylabel(var)
+                                            # subplot for soma trace
+                                            plt.subplot(rows, cols, cnt)
 
-                        if soma:
-                            cnt+=1
+                                            # adjust limits
+                                            if var is 'v':
+                                                if xlim:
+                                                    plt.xlim(xlim)
+                                                if ylim:
+                                                    plt.ylim(ylim)
 
-                            # if plotting soma trace
-                            for f_i, f in enumerate(p['field']):
+                                            # retrieve data to plot
+                                            v = data[str(f)][path_key]['axon_'+var][0][0] 
 
-    
-                                # if variable exists in soma data
-                                if 'soma_'+var in data[str(f)].keys():
-                                    if len(data[str(f)]['soma_'+var][0][0])>0:
-                                    
-                                        # subplot for soma trace
-                                        plt.subplot(rows, cols, cnt)
-
-                                        # adjust limits
-                                        if var is 'v':
-                                            if xlim:
-                                                plt.xlim(xlim)
-                                            if ylim:
-                                                plt.ylim(ylim)
-
-                                        # retrieve data to plot
-                                        v = data[str(f)]['soma_'+var][0][0] 
-
-                                        # determine x variable to plot
-                                        if x_var =='t':
-                                            # time vector
-                                            xv = data[str(f)]['t']
-                                        else:
-                                            xv = data[str(f)]['soma_'+x_var][0][0]
-                                        
-                                        # set plot color
-                                        color = p['field_color'][f_i]
-                                        
-                                        plt.plot(xv, v, color=color)
-                                        plt.title('soma')
-                                        plt.xlabel(x_var)
-                                        plt.ylabel(var)
-
-                        if axon:
-                            cnt+=1
-
-                            # if plotting soma trace
-                            for f_i, f in enumerate(p['field']):
-
-                                # if variable exists in soma data
-                                if 'axon_'+var in data[str(f)].keys():
-                                    if len(data[str(f)]['axon_'+var][0][0])>0:
-                                    
-                                        # subplot for soma trace
-                                        plt.subplot(rows, cols, cnt)
-
-                                        # adjust limits
-                                        if var is 'v':
-                                            if xlim:
-                                                plt.xlim(xlim)
-                                            if ylim:
-                                                plt.ylim(ylim)
-
-                                        # retrieve data to plot
-                                        v = data[str(f)]['axon_'+var][0][0] 
-
-                                        # determine x variable to plot
-                                        if x_var =='t':
-                                            # time vector
-                                            xv = data[str(f)]['t']
-                                        else:
-                                            xv = data[str(f)]['axon_'+x_var][0][0]
-                                        
-                                        # set plot color
-                                        color = p['field_color'][f_i]
-                                        
-                                        plt.plot(xv, v, color=color)
-                                        plt.title('axon')
-                                        plt.xlabel(x_var)
-                                        plt.ylabel(var)
-                        
-                        # save figure
-                        # if each tree has separate figure
-                        if not group_trees:
+                                            # determine x variable to plot
+                                            if x_var =='t':
+                                                # time vector
+                                                xv = data[str(f)][path_key]['t']
+                                            else:
+                                                xv = data[str(f)][path_key]['axon_'+x_var][0][0]
+                                            
+                                            # set plot color
+                                            color = p['field_color'][f_i]
+                                            
+                                            plt.plot(xv, v, color=color)
+                                            plt.title('axon')
+                                            plt.xlabel(x_var)
+                                            plt.ylabel(var)
                             
-                            # info to add to file name
-                            file_name_add = tree_key+'_trace_'+x_var+'_x_'+var
-
                             # save figure
-                            fig[var][x_var][tree_key].savefig(p['data_folder']+file_name_add+file_name+'.png', dpi=300)
+                            # if each tree has separate figure
+                            if not group_trees:
+                                
+                                # info to add to file name
+                                file_name_add = 'path_'+path_key+'_'+tree_key+'_trace_'+x_var+'_x_'+var
 
-                            # close figure
-                            plt.close(fig[var][x_var][tree_key])
+                                # save figure
+                                fig[path_key][var][x_var][tree_key].savefig(p['data_folder']+file_name_add+file_name+'.png', dpi=300)
 
-                    # if all trees are in the same figure
-                    if group_trees:
-                        all_trees =''
-                        for tree_key, tree in seg_idx.iteritems():
-                            all_trees = all_trees+tree_key+'_'
+                                # close figure
+                                plt.close(fig[path_key][var][x_var][tree_key])
 
-                        # info to add to file name
-                        file_name_add = all_trees+'trace_'+x_var+'_x_'+var
+                        # if all trees are in the same figure
+                        if group_trees:
+                            all_trees =''
+                            for tree_key, tree in seg_idx.iteritems():
+                                all_trees = all_trees+tree_key+'_'
 
-                        # save and close figure
-                        fig[var][x_var].savefig(p['data_folder']+file_name_add+file_name+'.png', dpi=300)
+                            # info to add to file name
+                            file_name_add = all_trees+'path_'+path_key+'_''trace_'+x_var+'_x_'+var
 
-                        plt.close(fig[var][x_var])
+                            # save and close figure
+                            fig[path_key][var][x_var].savefig(p['data_folder']+file_name_add+file_name+'.png', dpi=300)
+
+                            plt.close(fig[path_key][var][x_var])
 
 class IO():
     """ create shape plot 

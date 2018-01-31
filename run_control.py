@@ -43,110 +43,6 @@ class Experiment:
             # run experiment
             experiment(**kwargs) 
 
-    # random fraction of all synapses in a given tree
-    def exp_1(self, **kwargs):
-        """ randomly activate subset of synapses
-
-        vary synaptic weights, fraction of activated synapses
-        """
-        weights = [.001]
-        self.kwargs = {
-        'experiment' : 'exp_1', 
-        'trees' : ['apical_tuft'],
-        'trials' : 1,
-        'w_mean' : weights,#[.001],
-        'w_std' : [.002],
-        'w_rand' : False, 
-        'syn_frac' : .1,
-        'field':[-10.,0.,10.],
-        'KMULT':.2*.03,
-        'KMULTP':.2*.03,
-        }
-
-        # instantiate default parameter class
-        self.p_class = param.Default()
-
-        # reference to default parameters
-        self.p = self.p_class.p
-
-        # update parameters
-        for key, val in self.kwargs.iteritems():        # update parameters
-            self.p[key] = val
-
-        # data and figure folder
-        self.p['data_folder'] = 'Data/'+self.p['experiment']+'/'
-        self.p['fig_folder'] =  'png figures/'+self.p['experiment']+'/'
-
-        # load cell and store in parameter dictionary
-        cell1 = cell.CellMigliore2005(self.p)
-        cell1.geometry(self.p)
-        cell1.mechanisms(self.p)
-        # cell1 = cell.PyramidalCylinder(self.p)
-
-        # measure distance of each segment from the soma and store in parameter dictionary
-        self.p_class.seg_distance(cell1)
-
-        # randomly choose active segments 
-        self.p_class.choose_seg_rand(trees=self.p['trees'], syns=cell1.syns, syn_frac=self.p['syn_frac'])
-        
-        
-
-        # loop over trials
-        for tri in range(self.p['trials']):
-            # loop over weights
-            for w_i,w in enumerate(self.p['w_mean']):
-                # choose fraction of synapses to be activated
-                # syn_frac = np.random.normal(loc=.1, scale=.1) # chosen from gaussian
-                
-                # load rest of parameters from parameter module
-                # p = param.Experiment(exp=exp, tree=tree, w_mean=w, w_std=w_std, w_rand=w_rand, syn_frac=syn_frac).p
-                
-                # update weight parameter
-                self.p['w_mean'] = w
-
-                # set weights for active segments
-                self.p_class.set_weights(seg_idx=self.p['seg_idx'], w_mean=self.p['w_mean'], w_std=self.p['w_std'], w_rand=self.p['w_rand'])
-
-                # store trial number
-                self.p['trial']=tri
-                
-                # create unique identifier for each trial
-                self.p['trial_id'] = str(uuid.uuid4())
-                
-                # start timer
-                start = time.time() 
-                
-                # run simulation
-                sim = run.Run(self.p)   
-
-                # end timer
-                end = time.time() 
-
-                # print trial and simulation time
-                print 'trial'+ str(tri) + ' duration:' + str(end -start) 
-                
-                # set file name to save data
-                file_name = str(
-                'data_'+
-                self.p['experiment']+
-                '_weight_'+str(self.p['w_mean'])+
-                '_trial_'+str(self.p['trial'])+
-                '_synfrac_'+str(self.p['syn_frac'])+
-                '_id_'+self.p['trial_id']
-                )
-
-                # save data for eahc trial
-                run.save_data(data=sim.data, file_name=file_name)
-
-                # plot traces
-                analysis.PlotRangeVar().plot_trace(data=sim.data, 
-                    trees=self.p['trees'], 
-                    sec_idx=self.p['sec_idx'], 
-                    seg_idx=self.p['seg_idx'],
-                    variables=self.p['plot_variables'],
-                    x_variables=self.p['x_variables'],
-                    file_name=self.p['trial_id'],
-                    group_trees=self.p['group_trees'])
     """
     EXPERIMENT 1
     Distance dependence of DCS effects
@@ -1099,41 +995,33 @@ class Experiment:
     Pathway specificity, associativity
     """
     def exp_4a(self, **kwargs):
-        """
+        """ Associative plasticity experiment
+
+        Activate a strong (100 Hz burst) and weak (single pulse in the middle of burst) pathway (separately or together).
+        Vary which pathways are active (strong only, weak only, strong+weak)
+        Vary the distance from soma of each pathway (0-200,200-400,400-600 um).
+        Vary the number of synapses in each pathway (10, 20, 40).
+        Synapse locations are generated randomly with param.choose_seg_rand(). Multiple synapses can be placed on the same segment.  The weight is then multiplied by the number of "synapses"
+
+        Keyword Arguments:
+        syn_num= number of synapses for each pathway [iterable conditions][strong path, weak path]
+
+        syn_dist= dist requirement for each path [pathway][min distance, max distance]
+
+        path_combos= list of path combinations, e.g. ['strong', 'weak', 'strong_weak']
+
+        trials= number of trials for each set of conditions
+
+        Conditions that are specific to each path (e.g. stimulation parameters, seg_idx) are set up in the 'paths' dictionary locally.  Each entry in the local paths dictionary is transferred to the global parameter dictionary 'p'. Each path is organized as p{'p_path'}{'path_key'}{'parameters'}, where path_key is the name of the path e.g. 'strong', or '1'
         """
         print 'running', kwargs['experiment'], 'on worker', pc.id()
         print kwargs
-        w_mean = .001 # weight of single synapse uS
-        trees = kwargs['trees']
-        nsyns = kwargs['nsyns']
-        syn_nums = kwargs['syn_num']
-        syn_dist = kwargs['syn_dist']
-        trials = 20
-        # create seg_idx and stim info for 2 pathways
-        self.kwargs = {
-        'experiment' : kwargs['experiment'], 
-        'trees' : trees,
-        'nsyns':nsyns,
-        'syn_dist': syn_dist,
-        'trials' : trials,
-        'pulses':4,
-        'pulse_freq':100,
-        'group_trees':False,
-        'plot_variables':['v','gbar'],
-        'tstop':70,
-        'pathways': [],
-        'branch':False,
-        'full_path':False,
-        'branch_distance':[],
-        'branch_seg_distance':[],
-        'sequence_delay': 0,
-        'sequence_direction':'in',
-        }
 
-        # update kwargs
-        for key, val in kwargs.iteritems():
-            self.kwargs[key]=val
-        
+        # update cell-wide parameters
+        # weight of single synapse uS
+        kwargs['w_mean'] = .001
+        kwargs['plot_variables']=['v','gbar'] 
+
         # instantiate default parameter class
         self.p_class = param.Default()
 
@@ -1141,87 +1029,98 @@ class Experiment:
         self.p = self.p_class.p
 
         # update parameters
-        for key, val in self.kwargs.iteritems():        # update parameters
+        for key, val in kwargs.iteritems():        # update parameters
             self.p[key] = val
-
-        # data and figure folder
-        self.p['data_folder'] = 'Data/'+self.p['experiment']+'/'
-        self.p['fig_folder'] =  'png figures/'+self.p['experiment']+'/'
 
         # load cell and store in parameter dictionary
         cell1 = cell.CellMigliore2005(self.p)
         cell1.geometry(self.p)
         # insert mechanisms
         cell1.mechanisms(self.p)
-        
         # measure distance of each segment from the soma and store in parameter dictionary
         self.p_class.seg_distance(cell1)
-
+        # create morphology structure
         self.p['morpho'] = self.p_class.create_morpho(cell1.geo)
 
-        # create input patterns
-        num_patterns=3
-        num_pathways=2
-        pattern_names = ['strong', 'weak', 'strong+weak']
-        for pat in range(num_patterns):
-            patterns.append({'pathways':[]})
-            for path in range(num_pathways):
-                patterns[-1]['pathways'].append({})
-                # pattern 0, strong only
-            if pat==0:
-                patterns[pat]['pathways'][0]['sequence_delay']=0
-                patterns[pat]['pathways'][0]['sequence_direction']='in'
-                patterns[pat]['pathways'][0]['trees'] = ['apical_tuft','apical_trunk']
-                patterns[pat]['pathways'][0]['syn_num'] = syn_num[0]
-                patterns[pat]['pathways'][0]['syn_dist'] = syn_dist[0]
-                patterns[pat]['pathways'][0]['pulses']=4
-                patterns[pat]['pathways'][0]['pulse_freq']=100
-                patterns[pat]['pathways'][0]['bursts']=1
-                patterns[pat]['pathways'][0]['burst_freq']=5
-                patterns[pat]['pathways'][0]['warmup']= self.p['warmup']
-                patterns[pat]['pathways'][0]['noise']=0
-            # pattern 1, weak only
-            if pat==1:
-                patterns[pat]['pathways'][1]['sequence_delay']=0
-                patterns[pat]['pathways'][1]['sequence_direction']='in'
-                patterns[pat]['pathways'][1]['trees'] = ['apical_tuft','apical_trunk']
-                patterns[pat]['pathways'][1]['syn_num'] = syn_num[1]
-                patterns[pat]['pathways'][1]['syn_dist'] = syn_dist[0]
-                # single pulse
-                patterns[pat]['pathways'][1]['pulses']=1
-                patterns[pat]['pathways'][1]['pulse_freq']=100
-                patterns[pat]['pathways'][1]['bursts']=1
-                patterns[pat]['pathways'][1]['burst_freq']=5
-                # delay input by 1.5 pulses
-                patterns[pat]['pathways'][1]['warmup']= self.p['warmup']  + 15./self.p['dt']
-                patterns[pat]['pathways'][1]['noise']=0
-            # pattern 2, strong and weak together
-            if pat==2:
-                patterns[pat]['pathways'][0]= copy.copy(patterns[0]['pathways'][0])
-                patterns[pat]['pathways'][1]= copy.copy(patterns[1]['pathways'][1])
+        # data and figure folder
+        self.p['data_folder'] = 'Data/'+self.p['experiment']+'/'
+        self.p['fig_folder'] =  'png figures/'+self.p['experiment']+'/'
 
-        for pattern_i, pattern in enumerate(patterns):
-            for syn_num_i, syn_num in enumerate(syn_nums):
-                for trial_i, trial in enumerate(range(self.p['trials'])):
-                    for path_i, path in enumerate(pattern['pathways']):
-                        if path:
-                            path['syn_num'] = syn_num[path_i]
-                            # choose synapses and weights for each path
-                            self.p_class.choose_seg_rand(trees=path['trees'], syns=cell1.syns, syn_frac=0., seg_dist=self.p['seg_dist'], syn_num=path['syn_num'], distance=path['syn_dist'], replace=True)
-                            path['sec_list'] = copy.copy(p['sec_list'])
-                            path['seg_list'] = copy.copy(p['seg_list'])
-                            path['sec_idx'] = copy.copy(p['sec_idx'])
-                            path['seg_idx'] = copy.copy(p['seg_idx'])
+        # set up two pathways
+        paths={}
+        paths['strong']={
+        'sequence_delay':0,
+        'sequence_direction': 'in',
+        'trees': ['apical_tuft','apical_trunk'],
+        'syn_num': [],
+        'syn_dist': kwargs['syn_dist'][0],
+        'pulses': 4.,
+        'pulse_freq': 100.,
+        'bursts': 1,
+        'burst_freq': 5.,
+        'warmup': self.p['warmup'],
+        'noise': 0
+        }
+        paths['weak']={
+        'sequence_delay':0,
+        'sequence_direction': 'in',
+        'trees': ['apical_tuft','apical_trunk'],
+        'syn_num': [],
+        'syn_dist': kwargs['syn_dist'][1],
+        'pulses': 1.,
+        'pulse_freq': 100.,
+        'bursts': 1, 
+        'burst_freq': 5.,
+        'warmup': self.p['warmup'] + 1.5*1000/paths['strong']['pulse_freq'],
+        'noise': 0
+        }
+        # iterate through different numbers of synapses and distance requirements
+        # kwargs{'syn_num'}[condition number][path number (strong, then weak)]
+        # kwargs{'syn_dist'}[condition number][path number (strong, then weak)][min distance, max distance]
+        for syn_num_i, syn_num in enumerate(kwargs['syn_num']):
+                
+            # update parameters for each pathway
+            paths['strong']['syn_num']= syn_num[0]
+            paths['weak']['syn_num']= syn_num[1]
 
-                            self.p_class.set_weights(seg_idx=path['seg_idx'], sec_idx=path['sec_idx'], sec_list=path['sec_list'], seg_list=path['seg_list'], w_mean=self.p['w_mean'], w_std=self.p['w_std'], w_rand=self.p['w_rand'])
+            # iterae over path combinations
+            for combo_i, combo in enumerate(kwargs['path_combos']):
+                
+                # update tstop for each combination
+                tstops=[]
+                for path_key, path in paths.iteritems():
+                    tstops.append((path['pulses']*1000/path['pulse_freq'])+path['warmup'])
+                self.p['tstop'] = max(tstops)
+                self.p['field_off'] = self.p['tstop']
 
-                            path['w_list'] = copy.copy(p['w_list'])
+                # iterate over trials
+                for trial_i, trial in enumerate(range(kwargs['trials'])):
+                    self.p['p_path']={}
+                    
+                    # update pathways and add to global p structure
+                    for path_key, path in paths.iteritems():
 
-                            self.p_class.set_branch_sequence_ordered(seg_idx=path['seg_idx'], delay=path['sequence_delay'], direction=path['sequence_direction'])
+                        print path_key, ' warmup:', path['warmup']
+                        
+                        # if path is included in current combination
+                        if path_key in combo:
+                            
+                            # choose active segments for this pathway
+                            seg_dic = self.p_class.choose_seg_rand(trees=path['trees'], syns=cell1.syns, syn_frac=0., seg_dist=self.p['seg_dist'], syn_num=path['syn_num'], distance=path['syn_dist'], replace=True)
+                            path.update(seg_dic)
+                            
+                            # set weights for each segment in this pathway
+                            w_dic = self.p_class.set_weights(seg_idx=path['seg_idx'], sec_idx=path['sec_idx'], sec_list=path['sec_list'], seg_list=path['seg_list'], w_mean=self.p['w_mean'], w_std=self.p['w_std'], w_rand=self.p['w_rand'])
+                            path.update(w_dic)
 
-                            path['sequence_delays'] = self.p['sequence_delays']
+                            # set delays for branch sequences in this pathway 
+                            delay_dic = self.p_class.set_branch_sequence_ordered(seg_idx=path['seg_idx'], delay=path['sequence_delay'], direction=path['sequence_direction'])
+                            path.update(delay_dic)
 
-                    print pattern_names[pattern_i]
+                            # update p_path dictionary in global p dictionary
+                            self.p['p_path'][path_key]=copy.copy(path)
+
+                    print combo
 
                     # store trial number
                     self.p['trial']=trial
@@ -1245,10 +1144,10 @@ class Experiment:
                     # set file name to save data
                     file_name = str(
                     self.p['experiment']+
-                    '_'+pattern_names[pattern_i]+
-                    '_dist_'+str(self.p['syn_dist'][-1])+
+                    '_'+combo+
+                    '_dist_'+str(self.p['syn_dist'])+
                     '_freq_'+str(self.p['pulse_freq'])+
-                    '_syn_num_'+str(self.p['syn_num'])+
+                    '_syn_num_'+str(syn_num)+
                     '_trial_'+str(self.p['trial'])+
                     '_id_'+self.p['trial_id']
                     )
@@ -1258,9 +1157,6 @@ class Experiment:
 
                     # plot traces
                     analysis.PlotRangeVar().plot_trace(data=sim.data, 
-                        trees=self.p['trees'], 
-                        sec_idx=self.p['sec_idx'], 
-                        seg_idx=self.p['seg_idx'],
                         variables=self.p['plot_variables'],
                         x_variables=self.p['x_variables'],
                         file_name=file_name,
@@ -1269,81 +1165,84 @@ class Experiment:
                         ylim=[])
 
 
+class ExperimentsParallel:
+    """ Organize parameters for distributing to multiple processors
+    
+    Contains a function corresponding to each experiment in Experiments class. 
+
+    Arguments:
+    experiment= experiment number to be run.  should be a string of the form 'exp_num', e.g. 'exp_4a'
+
+    Each function ExperimentsParallel.exp_num() should output a list of parameter dictionaries. Each element (dictionary) in the list will sent to a different worker/processor.  Parameters should be designed so that simulations on each worker take about the same time (ie load balnced). Specific entries in the dictionary will depend on the details of the experiment. The dictionary will be passed to the corresponding Experiments.exp_num() funtion as **kwargs
+
+    Once the list of parameter dictionaries is designed, the experiment can be run from command line with the syntax:
+
+    _run_parallel(ExperimentsParallel('exp_num', **kwargs).parameters)    
+    """
+    def __init__(self, experiment, **kwargs):
+        """ choose experiment to run and pass kwargs
+        """
+        
+        # retrieve which experiment to run
+        experiment_function = getattr(self, experiment)
+
+        if kwargs:
+            kwargs['experiment']=experiment
+            experiment_function(**kwargs)
+
+        else:
+            kwargs={'experiment':experiment}
+            experiment_function(**kwargs)
 
 
+    def exp_4a(self, **kwargs):
+        """ Associative plasticity experiment
 
-            
+        Activate a strong (100 Hz burst) and weak (single pulse in the middle of burst) pathway (separately or together).
+        Vary which pathways are active (strong only, weak only, strong+weak)
+        Vary the distance from soma of each pathway (0-200,200-400,400-600 um).
+        Vary the number of synapses in each pathway (10, 20, 40).
+        Synapse locations are generated randomly with param.choose_seg_rand(). Multiple synapses can be placed on the same segment.  The weight is then multiplied by the number of "synapses"
+        
+        Keyword Arguments:
+        experiment= specifies which experiment to run in Experiments class
 
-        for freq_i, freq in enumerate(kwargs['stim_freqs']):
-            self.p['tstop'] = (self.p['pulses']*1000/freq)+self.p['warmup']
-            self.p['pulse_freq'] = freq
-            self.p['field_off'] = self.p['tstop']
-            for syn_num_i, syn_num in enumerate(syn_nums):
-                for trial_i, trial in enumerate(range(self.p['trials'])):
-                    self.p['syn_num']=syn_num
-                    self.p_class.choose_seg_rand(trees=self.p['trees'], syns=cell1.syns, syn_frac=0., seg_dist=self.p['seg_dist'], syn_num=syn_num, distance=self.p['syn_dist'], replace=True)
+        Return a list of parameter dictionaries.
+        Each dictionary contains a different synapse distance requirement (syn_dist), i.e. synapse distance varies across workers.  All other parameters that vary are passed as a list to each worker and are iteratede within each worker
+        """
+        experiment= kwargs['experiment']
+        syn_num = [[10,10],[20,20],[40,40]]
+        paths = ['strong','weak']
+        path_combos = ['strong','weak','strong_weak']
+        syn_dists_strong = [[0,200],[200,400],[400,600]]
+        syn_dists_weak = [[0,200],[200,400],[400,600]]
+        # syn_dists_strong = [[0,200]]
+        # syn_dists_weak = [[0,200]]
+        trials=10
+        w_mean=.001
+        # distribute parameters
+        self.parameters = []
+        for syn_dist_i, syn_dist_val_strong in enumerate(syn_dists_strong):
+            for syn_dist_i, syn_dist_val_weak in enumerate(syn_dists_weak):
 
-                    self.p['w_mean'] = self.p['nsyns']*w_mean
+                self.parameters.append({
+                    'experiment':experiment,
+                    'syn_num': syn_num,
+                    'paths': paths,
+                    'path_combos': path_combos,
+                    'trials': trials, 
+                    'w_mean': w_mean,
+                    'syn_dist': [syn_dist_val_strong, syn_dist_val_weak]
+                    })
 
-                    self.p_class.set_weights(seg_idx=self.p['seg_idx'], sec_idx=self.p['sec_idx'], sec_list=self.p['sec_list'], seg_list=self.p['seg_list'], w_mean=self.p['w_mean'], w_std=self.p['w_std'], w_rand=self.p['w_rand'])
-
-                    self.p_class.set_branch_sequence_ordered(seg_idx=self.p['seg_idx'], delay=self.p['sequence_delay'], direction=self.p['sequence_direction'])
-
-                    print 'syn_num:', self.p['syn_num']
-                    print 'nsyn:',self.p['nsyns'], 'w (nS):',self.p['w_mean'] 
-                    print 'distance from soma:', self.p['syn_dist']
-
-                    # store trial number
-                    self.p['trial']=trial
-                                    
-                    # create unique identifier for each trial
-                    self.p['trial_id'] = str(uuid.uuid4())
-                                    
-                    # start timer
-                    start = time.time() 
-                    
-                    # print cell1.syns
-                    # run simulation
-                    sim = run.Run(p=self.p, cell=cell1) 
-
-                    # end timer
-                    end = time.time() 
-
-                    # print trial and simulation time
-                    print 'trial'+ str(self.p['trial']) + ' duration:' + str(end -start) 
-                    
-                    # set file name to save data
-                    file_name = str(
-                    self.p['experiment']+
-                    '_dist_'+str(self.p['syn_dist'][-1])+
-                    '_freq_'+str(self.p['pulse_freq'])+
-                    '_syn_num_'+str(self.p['syn_num'])+
-                    '_trial_'+str(self.p['trial'])+
-                    '_id_'+self.p['trial_id']
-                    )
-
-                    # save data for eahc trial
-                    run.save_data(data=sim.data, file_name=file_name)
-
-                    # plot traces
-                    analysis.PlotRangeVar().plot_trace(data=sim.data, 
-                        trees=self.p['trees'], 
-                        sec_idx=self.p['sec_idx'], 
-                        seg_idx=self.p['seg_idx'],
-                        variables=self.p['plot_variables'],
-                        x_variables=self.p['x_variables'],
-                        file_name=file_name,
-                        group_trees=self.p['group_trees'],
-                        xlim=[self.p['warmup']-5,self.p['tstop']],
-                        ylim=[])
-
+        return self.parameters
 
 # function to pass to parallel context message board
 def _f_parallel(parameters):
-    """ wrapper around experiment so that it exists in global namespace and can be accessed by mpi
+    """ Wrap experiment function so it exists in global namespace
 
     Arguments: 
-    parameters - dictionary with entries 'experiment' and parameters to be iterated through.  'experiment specifies which experiment to run'
+    parameters - dictionary with entries 'experiment' and parameters to be passed to Experiment.exp_num.  'experiment' should be of the form 'exp_4a' and specifies which experiment to run
     """
     # get experiment info
     experiment = parameters['experiment']
@@ -1358,39 +1257,27 @@ def _f_parallel(parameters):
     return f(**parameters)
 
 # function for controlling parallel    
-def _run_parallel(experiment):
-    """ set up for running parallel simulations
-    python script must be called from the interpreter using syntax
+def _run_parallel(parameters):
+    """ Standard run procedure for parallel simulations
 
-    mpiexec -n 10 python script.py
+    Arguments:
+    parameters= must be a list of parameter dictionaries.  Each dictionary in the list is passed to a different worker as the arguments for Experiment.exp_num
 
+    Use ExperimentsParallel.exp_num to design parameters list
+
+    To use multiple workers, python script must be called from the interpreter using syntax:
+    'mpiexec -n 10 python script.py'
     the call to mpiexec initializes the mpi with 10 workers
+
+    _run_parallel should be called as:
+    if __name__=="__main__":
+        _run_parallel(ExperimentsParallel('exp_4a').parameters)
     """
 
     # make parallel context global
     global pc
 
-    # choose experiment
-    experiment =experiment
-
-    # divide up parameters
-    # nsyns = np.arange(2.,4.,1.)
-    nsyns = range(1, 2, 1)
-    syn_nums = np.arange(38., 72., 4. )
-    stim_freqs = [100]
-    syn_dists = [[[0, 200],[400,600]],[[0,300],[300,600]]]
-    # syn_dists = [[0,200],[100,300],[200,400],[300,500],[400,600]]
-    # syn_dists = [[0, 50], [50, 100], [100, 150], [150, 200], [200, 250],[250,300],[300, 350], [350,400], [400,450],[450,500],[500,550],[550,600]]
-    trials=10
-    trees=['apical_tuft','apical_trunk']
-    
-    # list of parameter values to be sent to each worker [worker number]{'parameter':[values], 'experiment':exp_number}
-    parameters=[]
-    syns=nsyns
-    for syns in nsyns:
-        for syn_dist in syn_dists:
-            parameters.append({'nsyns':syns, 'experiment':experiment, 'syn_num':syn_nums, 'syn_dist':syn_dist, 'trees':trees, 'stim_freqs':stim_freqs,'trials':trials})
-
+    print parameters
     # create parallel context instance
     pc = h.ParallelContext()
 
@@ -1413,32 +1300,10 @@ def _run_parallel(experiment):
     # # close parallel context 
     pc.done()
 
-class Arguments:
-    """
-    """
-    def __init__(self, exp):
-        experiment = getattr(self, exp)
-
-        experiment() 
-
-    def exp_1(self):
-        """ choose a specific set of synapses, iterate over increasing synaptic weights, measure resulting LTP and dendritic spike initiation
-        """
-        weights = np.arange(.005, .03, .005)
-        # weights = np.arange(.5, 1, .1)
-        weights = [.0015]
-        self.kwargs = {
-        'experiment' : 'exp_1a', 
-        'tree' : ['apical_tuft','apical_trunk'],
-        'trials' : 1,
-        'w_mean' : weights,#[.001],
-        'w_std' : [.002],
-        'w_rand' : False, 
-        'syn_frac' : .2
-        }
 
 if __name__ =="__main__":
-    _run_parallel(experiment='exp_1c')
+    # _run_parallel(experiment='exp_1c')
+    _run_parallel(ExperimentsParallel('exp_4a').parameters)
     # kwargs = {'experiment':'exp_1a'}
     # analysis.Experiment(**kwargs)
     # kwargs = {'experiment':'exp_1c'}
