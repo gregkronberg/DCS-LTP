@@ -431,11 +431,6 @@ class CellMigliore2005:
                             elif syn_key is 'clopath':
                                 # print syn_key
                                 self.syns[tree_key][sec_i][seg_i][syn_key] = h.STDPSynCCNon(sec(seg.x))
-                                # print syn
-                        
-                        # print self.syns[tree_key][sec_i][seg_i]
-
-           
 
                         # distance from soma
                         seg_dist = h.distance(seg.x,sec=sec)
@@ -445,7 +440,6 @@ class CellMigliore2005:
                             seg.gbar_na3 = p['gna'] + p['dgna']*seg_dist
                         else:
                             seg.gbar_na3 = 0.
-                        # print 'segment distance:', seg_dist, 'sodium conductance:', seg.gbar_na3*10000
                         
                         # h current
                         seg.ghdbar_hd = p['ghd']*(1+p['ghd_grad']*seg_dist/100.)
@@ -461,21 +455,6 @@ class CellMigliore2005:
                             seg.vhalfl_kap = p['vhalfl_kap']
                             seg.vhalfn_kap = p['vhalfn_kap']
                             seg.gkabar_kap = p['KMULTP']*(1+p['ka_grad']*seg_dist/100.)
-
-                        # add segment dimesnion to syns structure
-                        
-
-                        # add dictionary entry for each synapse
-                        # self.syns[tree_key][sec_i][seg_i] = {
-                        # 'ampa':[],
-                        # 'nmda':[],
-                        # 'clopath':[]}
-
-                        
-
-                        
-
-                        # print self.syns[tree_key][sec_i][seg_i]
 
     def set_branch_nseg(self, geo, sec_idx, seg_L):
         """ set number of segments for branch that was selected to activate synapses
@@ -549,7 +528,7 @@ class Syn_act:
         # iterate over dendritic subtrees
         for tree_key,tree in syns.iteritems():
 
-            if tree_key in p['trees']:
+            if tree_key in p['seg_idx']:
 
                 self.nc[tree_key] =[]
                 # loop over active sections

@@ -223,7 +223,7 @@ class Uncage:
 
                     self.stim[tree_key][sec_i].append([])
 
-                    for burst in range(bursts):
+                    for burst in range(int(bursts)):
 
                         # create stim object with corresponding delay
                         self.stim[tree_key][sec_i][seg_i].append(h.NetStim())

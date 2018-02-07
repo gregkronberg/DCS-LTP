@@ -123,18 +123,18 @@ class Default(object):
             # conversion 10,000*(pS/um2) = 10*(nS/um2) = (mho/cm2) = .001*(mS/cm2)
             # *** units in paper are a typo, values are already reported in (mho/cm2) ***
             'Vrest' : -65.,             # resting potential (mV)
-            'gna' :  1.*0.025,#.025,                # peak sodium conductance (mho/cm2)
+            'gna' :  1.*0.04,#.025,                # peak sodium conductance (mho/cm2)
             'dgna' : -.000025,          # change in sodium conductance with distance (ohm/cm2/um) from Kim 2015
             'ena' : 55.,                    # sodium reversal potential (mV)
-            'gna_inact': .5, # sodium slow inactivation factor (1=none, 0=max inactivation)
-            'AXONM' : 40.,              # multiplicative factor for axonal conductance to generate axon potentials in AIS
-            'SOMAM':1.,
+            'gna_inact': 0., # sodium slow inactivation factor (1=none, 0=max inactivation)
+            'AXONM' : 50.,              # multiplicative factor for axonal conductance to generate axon potentials in AIS
+            'SOMAM':1.5,
             'gkdr' : 1.*0.01,#0.01,             # delayed rectifier potassium peak conductance (mho/cm2)
             'ek' : -90.,                    # potassium reversal potential
             'celsius' : 35.0,               # temperature (degrees C)
             'KMULT' :  1.*0.03,#0.03,           # multiplicative factor for distal A-type potassium conductances
             'KMULTP' : 1.*.03,#0.03,                # multiplicative factor for proximal A-type potassium conductances
-            'ghd' : 0.5*0.0001,#0.0001,         # peak h-current conductance (mho/cm2)
+            'ghd' : 1.*0.0001,#0.0001,         # peak h-current conductance (mho/cm2)
             'gcalbar': 1.*.00125 ,          # L-type calcium conductance from Kim et al. 2015 (mho/cm2)
             'ehd' : -30.,                   # h-current reversal potential (mV)
             'kl_hd' : -6.,#-8.,
@@ -149,12 +149,29 @@ class Default(object):
             'RmAll' : 28000.,           # specific membrane resistance (ohm/cm2)
             'Cm' : 1.,                  # specific membrane capacitance (uf/cm2)
             'ka_grad' : 1.,#1.,#1.,             # slope of a-type potassium channel gradient with distance from soma 
-            'ghd_grad' : 3.,#1.,#3.,                # slope of h channel gradient with distance from soma 
+            'ghd_grad' : 1.5,#1.,#3.,                # slope of h channel gradient with distance from soma 
             }
+
+    def add_pathway(self, stim_param):
+        """
+        Add pathway to parameter dictionary p
+
+        stim_param is a dictionary of parameters that are specific to the pathway being added
+
+        pathways are organized as p{'p_path'}[path number]{'parameter'}
+        """
+        if 'p_path' not in self.p:
+            self.p['syn_path'] = []
+        
+        self.p['p_path'].append({})
+        for param_key, param in stim_param.iteritems():
+            self.p['p_path'][-1][param_key]=param
+
 
     def set_branch_sequence_ordered(self, seg_idx, delay, direction):
         """
         """
+        dic={}
         delays = {}
         # iterate over trees
         for tree_key, tree in seg_idx.iteritems():
@@ -185,7 +202,8 @@ class Default(object):
                     delays[tree_key][sec_i].append(add_delay)
 
         # store in parameter dictionary
-        self.p['sequence_delays'] = delays
+        dic['sequence_delays']=delays
+        return dic
 
     def choose_branch_manual(self, geo, trees, sec_list, full_path):
         """
@@ -465,42 +483,114 @@ class Default(object):
 
         updates the parameter dictionary according to the chosen synapses
         """
-        self.p['sec_list']={}
-        self.p['seg_list']={}
-        self.p['sec_idx']={}
-        self.p['seg_idx']={}
+        dic = {
+        'sec_list':{},
+        'seg_list': {},
+        'sec_idx': {},
+        'seg_idx': {},
+        }
+        
 
 
-        # list all segments as [[section,segment]] 
+        # list all segments as [[section,segment, tree]] 
         segs_all = [[sec_i,seg_i, tree_key] for tree_key, tree in syns.iteritems() for sec_i,sec in enumerate(tree) for seg_i,seg in enumerate(tree[sec_i]) if tree_key in trees]
 
-        # apply distance criteria
-        if distance:
+        # there are multiple distance requirements
+        if len(distance)>0 and isinstance(distance[0],list):
+            print 'distance:',distance
+            sec_list_all = []
+            seg_list_all = []
+            tree_list_all =[]
+            # for each distance requirement
+            for distance_i, distances in enumerate(distance):
+                # all segments that fit the current distance requirement
+                segs_all_dist = [seg for seg_i, seg in enumerate(segs_all) if seg_dist[seg[2]][seg[0]][seg[1]]>distances[0] and seg_dist[seg[2]][seg[0]][seg[1]]<distances[1]] 
+
+                # print len(segs_all_dist)
+                # segs_all = segs_all_dist
+
+                # if different synapse numbers are provided for each distance bin
+                if isinstance(syn_num,list) and len(syn_num)>0:
+                    
+                    # choose segments to activate
+                    segs_choose = np.random.choice(len(segs_all_dist), int(syn_num[distance_i]), replace=replace)
+
+                # if a single scalar is given
+                elif syn_num:
+                    print 'syn_num:', int(syn_num)
+                    print 'available segments:',len(segs_all_dist)
+                    # choose segments to activate
+                    segs_choose = np.random.choice(len(segs_all_dist), int(syn_num), replace=replace)
+                # if no synapse number is given
+                else:
+                    # choose segments to activate
+                    segs_choose = np.random.choice(len(segs_all_dist), int(syn_frac*len(segs_all)), replace=replace)
+
+                # list of active sections (contains duplicates)
+                sec_list_all_temp = [segs_all_dist[a][0] for a in segs_choose]
+            
+                # list of active segments
+                seg_list_all_temp = [segs_all_dist[a][1] for a in segs_choose]
+
+                # list of trees
+                tree_list_all_temp = [segs_all_dist[a][2] for a in segs_choose]
+
+                # add to total list for distance requirements
+                for i, sec in enumerate(sec_list_all_temp):
+                    sec_list_all.append(sec)
+                    seg_list_all.append(seg_list_all_temp[i])
+                    tree_list_all.append(tree_list_all_temp[i])
+
+        # if only one distacne requirement is given
+        elif len(distance) > 0:
 
             # print 'distance requirement'
             segs_all_dist = [seg for seg_i, seg in enumerate(segs_all) if seg_dist[seg[2]][seg[0]][seg[1]]>distance[0] and seg_dist[seg[2]][seg[0]][seg[1]]<distance[1]] 
 
             # print len(segs_all_dist)
-            segs_all = segs_all_dist
+            # segs_all = segs_all_dist
 
-        if syn_num:
-            print 'syn_num:', int(syn_num)
-            print 'available segments:'
-            # choose segments to activate
-            segs_choose = np.random.choice(len(segs_all), int(syn_num), replace=replace)
+            # if synapse number is given
+            if syn_num:
+                print 'syn_num:', int(syn_num)
+                print 'available segments:'
+                # choose segments to activate
+                segs_choose = np.random.choice(len(segs_all_dist), int(syn_num), replace=replace)
 
+            else:
+                # choose segments to activate
+                segs_choose = np.random.choice(len(segs_all_dist), int(syn_frac*len(segs_all_dist)), replace=replace)
+
+            # list of active sections (contains duplicates)
+            sec_list_all = [segs_all_dist[a][0] for a in segs_choose]
+        
+            # list of active segments
+            seg_list_all = [segs_all_dist[a][1] for a in segs_choose]
+
+            # list of trees
+            tree_list_all = [segs_all_dist[a][2] for a in segs_choose]
+
+        # if no distance requirement given
         else:
-            # choose segments to activate
-            segs_choose = np.random.choice(len(segs_all), int(syn_frac*len(segs_all)), replace=replace)
+            if syn_num:
+                print 'syn_num:', int(syn_num)
+                print 'available segments:'
+                # choose segments to activate
+                segs_choose = np.random.choice(len(segs_all), int(syn_num), replace=replace)
 
-        # list of active sections (contains duplicates)3
-        sec_list_all = [segs_all[a][0] for a in segs_choose]
-    
-        # list of active segments
-        seg_list_all = [segs_all[a][1] for a in segs_choose]
+            else:
+                # choose segments to activate
+                segs_choose = np.random.choice(len(segs_all), int(syn_frac*len(segs_all)), replace=replace)
 
-        # list of trees
-        tree_list_all = [segs_all[a][2] for a in segs_choose]
+            # list of active sections (contains duplicates)
+            sec_list_all = [segs_all[a][0] for a in segs_choose]
+        
+            # list of active segments
+            seg_list_all = [segs_all[a][1] for a in segs_choose]
+
+            # list of trees
+            tree_list_all = [segs_all[a][2] for a in segs_choose]
+
 
         for tree_key in trees:
 
@@ -516,11 +606,14 @@ class Default(object):
                 seg_idx.append(list(set([seg_list[sec_i] for sec_i,sec_num in enumerate(sec_list) if sec_num==sec])))
 
             # update parameter dictionary
-            self.p['sec_list'][tree_key] = sec_list
-            self.p['seg_list'][tree_key] = seg_list
-            self.p['sec_idx'][tree_key] = sec_idx
-            self.p['seg_idx'][tree_key] = seg_idx
-            self.p['syn_frac'] = syn_frac
+            dic['sec_list'][tree_key] = sec_list
+            dic['seg_list'][tree_key] = seg_list
+            dic['sec_idx'][tree_key] = sec_idx
+            dic['seg_idx'][tree_key] = seg_idx
+            dic['syn_frac'] = syn_frac
+            dic['trees']=trees
+
+        return dic
 
     def choose_seg_manual(self, trees, sec_list, seg_list):
         """ manually choose segments to activate
@@ -562,7 +655,8 @@ class Default(object):
 
         w_rand = choose synaptic weights from normal distibution? (bool)
         """
-        w_list = {}
+        dic = {}
+        w_list={}
 
         # iterate over trees in seg_idx
         for tree_key, tree in seg_idx.iteritems():
@@ -583,7 +677,7 @@ class Default(object):
                     sec_num = sec_idx[tree_key][sec_i]
                     seg_num = seg
                     repeats = len([1 for i, section in enumerate(sec_list[tree_key]) if (section==sec_num and seg_list[tree_key][i]==seg_num)])
-                    print 'repeats:',repeats
+                    # print 'repeats:',repeats
 
                     # if weights are randomized
                     if w_rand:
@@ -594,8 +688,9 @@ class Default(object):
                     else:
                         w_list[tree_key][sec_i].append(repeats*w_mean)
 
+        dic['w_list']=w_list
         # update parameter dictionary
-        self.p['w_list']=w_list
+        return dic
 
     def seg_distance(self, cell):
         """ calculate distance from soma of each segment and store in parameter dictionary
