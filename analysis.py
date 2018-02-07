@@ -850,7 +850,7 @@ class Experiment:
 
         experiment(**kwargs) 
 
-    def sigmoid_opt(self, params, *data):
+    def _sigmoid_opt(self, params, *data):
         """
         """
         ymax = params[0]
@@ -862,7 +862,7 @@ class Experiment:
         ssq_error = np.sum(np.square(y-y_fit))
         return ssq_error
 
-    def sigmoid2_opt(self, params, *data):
+    def _sigmoid2_opt(self, params, *data):
         """
         """
         ymax_1 = params[0]
@@ -877,6 +877,403 @@ class Experiment:
         ssq_error = np.sum(np.square(y-y_fit))
         return ssq_error
 
+    def _get_spikes(self, **kwargs):
+        """ Retrieve spike data from individual simulations
+        
+        ==
+        KEYWORD ARGUMENTS:
+        data= structure containing time series voltage data organized as data{'polarity'}{'pathway'}{'tree_variable'}[section number][segment number][time series]
+        data also contains a parameter dictionary in data['p']
+        individual parameter dictionaries are stored for each pathway in data['p']['p_path']
+
+        threshold= threshold for detecting spikes
+
+        ==
+        RETURN:
+        A dictionary containing spike data organized as spike_dictionary{'polarity'}{'pathway'}{'data type'}
+
+        ==
+        DATATYPES:
+        spikes_dend= list of all dendritic spike times
+        
+        spikes_dend_dist= for each dendritic spike in 'spikes_dend', list the distance from the soma, [distances]
+        
+        spikes_first= for each activated segment, whether there was a spike at all, and where it was initiated. 0= no spike, 1=dendrite first, 2=soma first
+
+        spike_times= list spike times for each segment, same organization as 'seg_idx', {tree_key}[sec_num][seg_num][spike_times].  If no spikes are found, returns empty list
+
+        dw= list weight change for each segment, same organization as 'seg_idx', {tree_key}[sec_num][seg_num=dw]
+
+        time_bins= nested list of time bins [bin number][time1, time2], where each bin corresponds to the time between input pulses
+
+        spikes_dend_bin= nested list of dendritic spike times [time bin][spike times]
+
+        spikes_som_bin= nested list of somatic spike times [time bin][spike times]
+
+        spikes_dend_bin_norm= nested list of dendritic spike times normalized to input pulse onset time [time bin][normalzied spike times]
+
+        spikes_soma_bin_norm= nested list of somatic spike times normalized to input pulse onset time [time bin][normalized spike times]
+
+        spikes_dend_dist_bin= nested list of dendritic spike distances [time bin][distances]
+
+        spikes_dend_diff_bin= nested list of timing difference between dendrite and soma [time bin][spike time differences], soma first=negative, dendrite first=positive, if no soma spike=no subtraction(positive)
+
+        syn_frac_bin= fraction of synapses with a spike in each bin, [time bin][fraction]
+        """
+        data = kwargs['data']
+        threshold = kwargs['threshold']
+
+        # parameter dictionary
+        p = data['p']
+
+        # load spike analysis functions
+        spike_analysis = Spikes()
+
+        # temporary store for current trial data. all dictionary entries will be transferred to full data structure (all trials)
+        spike_dic = {}
+
+        # print trial
+        # parameter dictionary
+        spike_dic['p'] = copy.copy(p)
+
+        # iterate over polarity
+        for polarity_key, polarity in data.iteritems():
+
+            # exclude parameter dictionary
+            if polarity_key != 'p':
+
+                spike_dic[polarity_key]={}
+                # iterate over pathways
+                for path_key, path in polarity.iteritems():
+
+                    # exclude time vectors
+                    if path_key!='t':
+
+                        spike_dic[polarity_key][path_key]={}
+                        p_path = p['p_path'][path_key]
+
+                        # temporary dictionary
+                        dtemp={}
+
+                        dtemp['p_path']=copy.copy(p_path)
+
+                        # list all dendritic spikes [spike times]
+                        dtemp['spikes_dend']=[] 
+                        # for each dendritic spike in 'spikes_dend', list the distance from the soma, [distances]
+                        dtemp['spikes_dend_dist']=[]
+                        # for each activated segment, whether there was a spike at all, and where it was initiated
+                        # 0= no spike, 1=dendrite first, 2=soma first
+                        dtemp['spikes_first'] = []
+                        # list spike times for each segment, same organization as 'seg_idx', {tree_key}[sec_num][seg_num][spike_times]
+                        dtemp['spike_times'] ={}
+                        # list weight change for each segment, same organization as 'seg_idx', {tree_key}[sec_num][seg_num=dw]
+                        dtemp['dw']={}
+
+                        # add soma data
+                        dtemp['spike_times']['soma'] = [[]]
+                        spike_times = spike_analysis.detect_spikes(data[polarity_key][path_key]['soma_v'][0][0], threshold=threshold)['times'][0]
+                        dtemp['spike_times']['soma'][0].append(spike_times)
+                        dtemp['spikes_soma'] = spike_times
+
+                        # iterate over trees
+                        for tree_key, tree in p_path['seg_idx'].iteritems():
+                            # add dimension
+                            dtemp['spike_times'][tree_key] =[]
+                            dtemp['dw'][tree_key] =[]
+                            # iterate over sections
+                            for sec_i, sec in enumerate(tree):
+                                # add dimensions
+                                dtemp['spike_times'][tree_key].append([])
+                                dtemp['dw'][tree_key].append([])
+                                sec_num = p['p_path'][path_key]['sec_idx'][sec_i]
+                                # iterate over segments
+                                for seg_i, seg in enumerate(sec):
+                                    seg_num=seg
+                                    distance = p['seg_dist'][tree_key][sec_num][seg_num]
+
+                                    # list of spike times [spike_times]
+                                    spike_times = spike_analysis.detect_spikes(data[polarity_key][path_key][tree_key+'_v'][sec_i][seg_i], threshold=threshold)['times'][0]
+
+                                    # scalar weight change
+                                    dw = data[polarity_key][path_key][tree_key+'_gbar'][sec_i][seg_i][-1]/data[polarity_key][path_key][tree_key+'_gbar'][sec_i][seg_i][0]
+
+                                    # add to dtemp structure, each segment contains a list of spike times
+                                    dtemp['spike_times'][tree_key][sec_i].append(spike_times)
+                                    # each segment is a scalar weight change
+                                    dtemp['dw'][tree_key][sec_i].append(dw)
+
+                                    # record whether there was a spike in soma or dendrite first [all segments]
+                                    # no spike=0, dend first=1, soma first=2
+                                    # if there are dendritic spikes
+                                    if len(spike_times)>0:
+                                        
+                                        # iterate through spike times
+                                        for spike_i, spike_time in enumerate(spike_times):
+
+                                            # add to list of all dendritic spike times for this trial/cell
+                                            # [all dendritic spike times]
+                                            dtemp['spikes_dend'].append(spike_time)
+                                            # [all dendritic spike distances]
+                                            dtemp['spikes_dend_dist'].append(distance)
+
+                                            # if this is the first spike
+                                            if spike_i==0:
+                                                
+                                                # if there is also a somatic spike
+                                                if len(dtemp['spikes_soma'])>0:
+                                                    
+                                                    # if the somatic spike occurs first
+                                                    if spike_time > dtemp['spikes_soma'][0]:
+
+                                                        # store as soma first
+                                                        dtemp['spikes_first'].append(2)
+                                                    
+                                                    # otherwise the spike is dend first
+                                                    else:
+                                                        dtemp['spikes_first'].append(1)
+                                                
+                                                # if there is a dendritic but no somatic spike, it is dend first
+                                                else:
+                                                    dtemp['spikes_first'].append(1)
+                                    
+                                    # otherwise no spike at all
+                                    else:
+                                        dtemp['spikes_first'].append(0)
+
+                        # create nested list of spike times with dimensions [pulse time bin][spike times]
+                        # nested list of time bins [bin number][time1, time2]
+                        dtemp['time_bins'] = []
+                        # nested list of dendritic spike times [time bin][spike times]
+                        dtemp['spikes_dend_bin'] = []
+                        # nested list of somatic spike times [time bin][spike times]
+                        dtemp['spikes_soma_bin'] = []
+                        # nested list of dendritic spike times normalized to input pulse onset time [time bin][spike times]
+                        dtemp['spikes_dend_bin_norm'] = []
+                        # nested list of somatic spike times normalized to input pulse onset time [time bin][spike times]
+                        dtemp['spikes_soma_bin_norm'] = []
+                        # nested list of dendritic spike distances [time bin][distances]
+                        dtemp['spikes_dend_dist_bin'] = []
+                        # nested list of timing difference between dendrite and soma [time bin][spike time differences], soma first=negative, dendrite first=positive, if no soma spike=no subtraction(positive)
+                        dtemp['spikes_dend_diff_bin'] = []
+                        # fraction of synapses with a spike in each bin, [time bin][fraction]
+                        dtemp['syn_frac_bin'] = []
+
+                        # iterate through pulses in the current pathway
+                        for pulse_i, pulse in enumerate(range(p_path['pulses'])):
+
+                            # determine time bins
+                            dtemp['time_bins'].append([])
+                            time1 = (p['warmup'] + 1000/p['pulse_freq']*pulse_i)/p['dt'] +1 
+                            time2 = (p['warmup'] + 1000/p['pulse_freq']*(pulse_i+1))/p['dt']
+                            dtemp['time_bins'][pulse_i].append(time1)
+                            dtemp['time_bins'][pulse_i].append(time2)
+
+                            # get spike times that fall within the current bin 
+                            binned_spikes_dist = []
+                            binned_spikes_dend =[]
+                            binned_spikes_soma = []
+                            
+                            # if there are any somatic spikes
+                            if len(dtemp['spikes_soma'])>0:
+                                # list spikes in current bin, return empty list if no spikes
+                                binned_spikes_soma = [spike for spike_i, spike in enumerate(dtemp['spikes_soma']) if (spike > time1 and spike <= time2)]
+                                # if there are spikes in the current bin, normalized to the pulse onset
+                                if len(binned_spikes_soma)>0:
+                                    binned_spike_soma_norm = [spike-time1 for spike in binned_spikes_soma]
+                            
+                            # if there are any dendritic spikes
+                            if len(dtemp['spikes_dend'])>0:
+                                # list spikes in current bin, return empty list if no spikes
+                                binned_spikes_dend = [spike for spike_i, spike in enumerate(dtemp['spikes_dend']) if (spike > time1 and spike <= time2)]
+
+                                binned_spikes_dist = [dtemp['spikes_dend_dist'][spike_i] for spike_i, spike in enumerate(dtemp['spikes_dend']) if (spike > time1 and spike <= time2)]
+
+                                # if there are spikes in the current bin, normalized to the pulse onset
+                                if len(binned_spikes_dend)>0:
+                                    binned_spike_dend_norm = [spike-time1 for spike in binned_spikes_dend]
+                                
+                            
+                            # difference between dendritic and somatic spike times (dendrite first is positive, soma first is negative)
+                            # if there are somatic and dendritic spikes in the current bin
+                            if len(binned_spikes_soma)>0 and len(binned_spikes_dend)>0:
+                                # list of time differences
+                                binned_spikes_dend_diff = [binned_spikes_soma[0]-spike for spike_i, spike in enumerate(binned_spikes_dend)]
+                            else: 
+                                # otherwise dendritic spiek list remains unchanged (positive)
+                                binned_spikes_dend_diff = binned_spikes_dend_norm
+
+                            # fraction of synapses that spike in current bin
+                            binned_distances =  list(set(binned_spikes_dist))
+                            binned_syn_frac = float(len(binned_distances))/float(syn_num_key)
+                            
+
+                            # add spike times for current bin to list of all bins
+                            # [bin number][list of spike times]
+                            dtemp['spikes_dend_bin'].append(binned_spikes_dend)
+                            dtemp['spikes_soma_bin'].append(binned_spikes_soma)
+                            dtemp['spikes_dend_bin_norm'].append(binned_spikes_dend_norm)
+                            dtemp['spikes_soma_bin_norm'].append(binned_spikes_soma_norm)
+                            dtemp['spikes_dend_dist_bin'].append(binned_spikes_dist)
+                            dtemp['spikes_dend_diff_bin'].append(binned_spikes_dend_diff)
+                            dtemp['syn_frac_bin'].append(binned_syn_frac)
+
+                         # fraction of synapses that spike at all during simulation
+                        distances = list(set(dtemp['spikes_dend_dist']))
+                        dtemp['syn_frac'] = float(len(distances))/float(syn_num_key)
+
+                        # update main data structure
+                        # for each data type
+                        for dtype_key, dtype in dtemp.iteritems():
+
+                            spike_dic[polarity_key][path_key][dtype_key]=dtype
+
+        return spike_dic
+
+
+
+        # retrieve experiment conditions
+        freq = p['pulse_freq']
+        syn_num = p['syn_num']
+        syn_dist = p['syn_dist'][1] 
+        freq_key = str(freq)
+        syn_num_key =str(syn_num)
+        syn_dist_key = str(syn_dist)
+
+        # update data structure dimensions
+        if str(freq) not in spike_data:
+            spike_data[str(freq)]={}
+
+        if str(syn_dist) not in spike_data[str(freq)]:
+            spike_data[str(freq)][str(syn_dist)]={}
+
+        if str(syn_num) not in spike_data[str(freq)][str(syn_dist)]:
+            spike_data[str(freq)][str(syn_dist)][str(syn_num)]={}
+            for polarity_i, polarity in enumerate(p['field']):
+                spike_data[str(freq)][str(syn_dist)][str(syn_num)][str(polarity)]={}
+
+        # iterate through polarities
+        for polarity_i, polarity in enumerate(p['field']):
+            polarity_key =str(polarity)
+
+
+
+            # for each trial get a list of dendritic spike times and a corresponding list with the location (distance from soma) they occured
+            dtemp['spikes_dend']=[] 
+            dtemp['spikes_dend_dist']=[]
+            dtemp['spikes_first'] = []
+            dtemp['spike_times'] ={}
+            dtemp['dw']={}
+
+            # add soma data
+            dtemp['spike_times']['soma'] = [[]]
+            spike_times = spike_analysis.detect_spikes(data[str(polarity)]['soma_v'][0][0], threshold=threshold)['times'][0]
+            dtemp['spike_times']['soma'][0].append(spike_times)
+            dtemp['spikes_soma'] = spike_times
+            # print spike_times
+
+
+            # iterate through tree, section, segment
+            for tree_key, tree in p['sec_idx'].iteritems():
+                dtemp['spike_times'][tree_key] =[]
+                dtemp['dw'][tree_key] =[]
+            
+                for sec_i, sec in enumerate(tree):
+
+                    dtemp['spike_times'][tree_key].append([])
+                    dtemp['dw'][tree_key].append([])
+
+                    for seg_i, seg in enumerate(p['seg_idx'][tree_key][sec_i]):
+
+                        sec_num = sec
+                        seg_num = p['seg_idx'][tree_key][sec_i][seg_i]
+                        distance = p['seg_dist'][tree_key][sec_num][seg_num]
+
+                        # list of spike times [spike_times]
+                        spike_times = spike_analysis.detect_spikes(data[str(polarity)][tree_key+'_v'][sec_i][seg_i], threshold=threshold)['times'][0]
+
+                        # scalar weight change
+                        dw = data[str(polarity)][tree_key+'_gbar'][sec_i][seg_i][-1]/data[str(polarity)][tree_key+'_gbar'][sec_i][seg_i][0]
+
+                        # add to dtemp structure
+                        dtemp['spike_times'][tree_key][sec_i].append(spike_times)
+                        dtemp['dw'][tree_key][sec_i].append(dw)
+
+                        # record whether whether there was a spike in soma or dendrite first [all dendritic spike]
+                        # no spike=0, dend first=1, soma first=2
+                        # if there are dendritic spikes
+                        if len(spike_times)>0:
+                            # iterate through spike times
+                            for spike_i, spike_time in enumerate(spike_times):
+
+                                # add to list of all dendritic spike times for this trial/cell
+                                dtemp['spikes_dend'].append(spike_time)
+                                dtemp['spikes_dend_dist'].append(distance)
+
+                                # if this is the first spike
+                                if spike_i==0:
+                                    # if there is also a somatic spike
+                                    if len(dtemp['spikes_soma'])>0:
+                                        # if the somatic spike occurs first
+                                        if spike_time > dtemp['spikes_soma'][0]:
+
+                                            # store as soma first
+                                            dtemp['spikes_first'].append(2)
+                                        # otherwise the spike is dend first
+                                        else:
+                                            dtemp['spikes_first'].append(1)
+                                    # if there is a dendritic but no somatic spike, it is dend first
+                                    else:
+                                        dtemp['spikes_first'].append(1)
+                        # otherwise no spike at all
+                        else:
+                            dtemp['spikes_first'].append(0)
+
+            # create nested list of spike times with dimensions [pulse time bins][spike times]
+            dtemp['time_bins'] = []
+            dtemp['spikes_dend_bin'] = []
+            dtemp['spikes_soma_bin'] = []
+            dtemp['spikes_dend_dist_bin'] = []
+            dtemp['spikes_dend_diff_bin'] = []
+            dtemp['syn_frac_bin'] = []
+            for pulse_i, pulse in enumerate(range(p['pulses'])):
+                # determine time bins
+                dtemp['time_bins'].append([])
+                time1 = (p['warmup'] + 1000/p['pulse_freq']*pulse_i)/p['dt'] +1 
+                time2 = (p['warmup'] + 1000/p['pulse_freq']*(pulse_i+1))/p['dt']
+                dtemp['time_bins'][pulse_i].append(time1)
+                dtemp['time_bins'][pulse_i].append(time2)
+
+                # get spike times that fall within the current bin 
+                binned_spikes_dist = []
+                binned_spikes_dend =[]
+                binned_spikes_soma = []
+                if len(dtemp['spikes_soma'])>0:
+                    # print dtemp['spikes_soma']
+                    binned_spikes_soma = [spike for spike_i, spike in enumerate(dtemp['spikes_soma']) if (spike > time1 and spike <= time2)]
+                if len(dtemp['spikes_dend'])>0:
+                    binned_spikes_dend = [spike for spike_i, spike in enumerate(dtemp['spikes_dend']) if (spike > time1 and spike <= time2)]
+                    binned_spikes_dist = [dtemp['spikes_dend_dist'][spike_i] for spike_i, spike in enumerate(dtemp['spikes_dend']) if (spike > time1 and spike <= time2)]
+                # difference between dendritic and somatic spike times (dendrite first is positive, soma first is negative)
+                if len(binned_spikes_soma)>0 and len(binned_spikes_dend)>0:
+                    binned_spikes_dend_diff = [binned_spikes_soma[0]-spike for spike_i, spike in enumerate(binned_spikes_dend)]
+                else: #len(binned_spikes_dend)>0:
+                    binned_spikes_dend_diff = binned_spikes_dend
+
+                # fraction of synapses that spike in current bin
+                binned_distances =  list(set(binned_spikes_dist))
+                binned_syn_frac = float(len(binned_distances))/float(syn_num_key)
+                
+
+                # add spike times for current bin to list of all bins
+                dtemp['spikes_dend_bin'].append(binned_spikes_dend)
+                dtemp['spikes_soma_bin'].append(binned_spikes_soma)
+                dtemp['spikes_dend_dist_bin'].append(binned_spikes_dist)
+                dtemp['spikes_dend_diff_bin'].append(binned_spikes_dend_diff)
+                dtemp['syn_frac_bin'].append(binned_syn_frac)
+
+             # fraction of synapses that spike at all during simulation
+            distances = list(set(dtemp['spikes_dend_dist']))
+            dtemp['syn_frac'] = float(len(distances))/float(syn_num_key)
 
     def exp_1a(self, **kwargs):
         """ 
@@ -2338,43 +2735,6 @@ class Experiment:
 
         #%%
         # create least squares fit for syn_num vs spike_num curves
-    
-    def exp_2(self, **kwargs):
-        pass
-        # npol = 3 
-        # data_folder = 'Data/'+kwargs['exp']+'/'
-        # files = os.listdir(data_folder)
-        # dw = np.zeros([npol, len(files)])
-        # syn_weight = np.zeros([1,len(files)])
-        # for data_file_i, data_file in enumerate(files):
-        #   # check for proper data file format
-        #   if 'data' in data_file:
-
-        #       with open(data_folder+data_file, 'rb') as pkl_file:
-        #           data = pickle.load(pkl_file)
-        #       p = data['p']
-
-        #       for field_i, field in enumerate(p['field']):
-        #           for sec_i,sec in enumerate(p['sec_idx']):
-        #               for seg_i,seg in enumerate(p['seg_idx'][sec_i]):
-        #                   w_end = data[p['tree']+'_w'][field_i][sec][seg][-1]
-        #                   w_start = data[p['tree']+'_w'][field_i][sec][seg][0]
-        #                   dw[field_i,data_file_i] = w_end/w_start
-        #                   syn_weight[0,data_file_i] = p['w_list'][sec_i][seg]
-
-
-        # fig = plt.figure()
-        # for pol in range(npol):
-        #       plt.plot(syn_weight[0,:], dw[pol, :], '.', color=p['field_color'][pol])
-        # plt.xlabel('peak conductance (uS)')
-        # plt.ylabel('weight change')
-        # fig.savefig(data_folder+'fig_dw'+'.png', dpi=250)
-        # plt.close(fig)
-
-    def exp_2b(self, **kwargs):
-        """ activate groups of synapses at varying distance from soma until dendritic or somatic spikes are observed
-        """
-        pass
 
     def exp_2c(self, **kwargs):
         """ activate synapse in each segment until a spike either occurs in the soma or dendrite.  Plot the number of synapses(weight) required at each segment as a function of distance from soma
@@ -3174,28 +3534,21 @@ class Experiment:
 
         fig.savefig(file_name, dpi=250)
 
-    def exp_2e(self, **kwargs):
-        """ Apply a single theta burst to synapses with varying mean distance from soma 
+    def exp_4a(self, **kwargs):
         """
-        # number of stimulation polarities tested
-        n_pol =3
-        # spike threshold
-        threshold = -30
+        activate a varying number of synapses with varying distance from the soma.  Synapses are chosen from a window of 200 um, with the window moving along the apical dendrite.  As number of synapses is increased, multiple synapses may impinge on the same compartment/segment, effectively increasing the weight in that segment.  The threshold for generating a somatic or dendritic spike (in number of synapses) is measured as a function of mean distance from the soma and frequency of synaptic activity.  
 
-        # instantiate default parameter class
-        p_class = param.Default()
-        p_temp = p_class.p
+        Similar to 1a, with larger distance window for synapses to be activated
 
-        # load cell and store in parameter dictionary
-        cell1 = cell.CellMigliore2005(p_temp)
-        cell1.geometry(p_temp)
-        
-        # insert mechanisms
-        cell1.mechanisms(p_temp)
-        # measure distance of each segment from the soma and store in parameter dictionary
-        p_class.seg_distance(cell1)
+        Plots: 
+        number of active synapse x fraction of synapses with at least one spike (somatically and dendritically driven spikes are separated)
 
-        p_temp['morpho'] = p_class.create_morpho(cell1.geo)
+        number of active synapses x total number of spikes (normalized to number of active synapses, somatic and dendritic spikes are separated)
+
+        number of active synapses x mean spike timing for each spike
+        """
+        # spike threshold 
+        threshold =-30
 
         # identify data folder
         data_folder = 'Data/'+kwargs['experiment']+'/'
@@ -3211,8 +3564,8 @@ class Experiment:
         data_files_id= [file[-36:-1] for file in files if 'data' in file]
         plot_files_id = [file[-36:-1] for file in files if 'trace' in file]
 
-        id_list_string_spike_times = 'id_list_spike_times.pkl'
         # if list of processed files in folder, load list
+        id_list_string_spike_times = 'id_list_spike_times.pkl'
         if id_list_string_spike_times in files:
             print 'id_list found'
             
@@ -3236,565 +3589,68 @@ class Experiment:
             print 'raw spike data loaded'
         # otherwise create data structure
         else:
-            # data organized as {location}{data_type}[trials][polarity]
-            spike_data= []
+            # data organized as {frequency}{syn distance}{number of synapses}{polarity}[trial]{data type}{tree}[section][segment][spikes]
+            spike_data= {}
 
-        # string to save group data
-        save_string_group_data_proc = 'spikes_grouped_proc'+'.pkl'
-        # if data file already exists
-        if save_string_group_data_proc in files:
-            # load data
-            print 'processed spike data found'
-            with open(data_folder+save_string_group_data_proc, 'rb') as pkl_file:
-                spike_data= pickle.load(pkl_file)
-            print 'processed spike data loaded'
-        # otherwise create data structure
-        else:
-            # data organized as {location}{data_type}[trials][polarity]
-            spike_data_group = {}
-
-        variables = ['spikes', 'peak', 'distance', 'weight', 'seg_idx']
-        
-        # load spike analysis functions
-        spike_analysis = Spikes()
-
+        #%%
         # iterate over data files
         for data_file_i, data_file in enumerate(data_files):
 
-            if data_file_i >=0:
+            if data_file_i >=0:# and data_file_i <=1000:
 
                 # check if data has been processed already
                 if data_file not in id_list_spike_times:
 
+                    print data_file
                     # open unprocessed data
-                    with open(data_folder+data_file, 'rb') as pkl_file:
-                        data = pickle.load(pkl_file)
 
-                    print 'data_file: ', data_file_i, ' out of ', len(data_files), ' opened'
+                    try:
+                        with open(data_folder+data_file, 'rb') as pkl_file:
+                            data = pickle.load(pkl_file)
 
-                    # parameter dictionary
-                    p = data['p']
-
-                    spike_data.append({})
+                        print 'data_file: ', data_file_i, ' out of ', len(data_files), ' opened'
+                    except EOFError:
+                        'EOF error, file not opened'
+                        continue
 
                     # add to processed list
                     id_list_spike_times.append(data_file)
 
-                    spike_data[-1]['spikes'] = {'soma':[],'dend':{}, 'dw':{}}
-
-                    for tree_key, tree in p['sec_idx'].iteritems():
-
-                        spike_data[-1]['spikes']['dend'][tree_key]=[]
-                        spike_data[-1]['spikes']['dw'][tree_key]=[]
-                        
-                        for sec_i, sec in enumerate(tree):
-
-                            spike_data[-1]['spikes']['dend'][tree_key].append([])
-                            spike_data[-1]['spikes']['dw'][tree_key].append([])
-
-                            for seg_i, seg in enumerate(p['seg_idx'][tree_key][sec_i]):
-
-                                spike_data[-1]['spikes']['dend'][tree_key][-1].append([])
-                                spike_data[-1]['spikes']['dw'][tree_key][-1].append([])
-                                                    # iterate over field polarities
-                                for f_i, f in enumerate(p['field']):
-
-                                    # detect spikes in dendrite
-                                    spike_data[-1]['spikes']['dend'][tree_key][-1][-1].append(spike_analysis.detect_spikes(data[str(f)][tree_key+'_v'][sec_i][seg_i], threshold=threshold)['times'][0])
-
-                                    # detect spikes in dendrite
-                                    spike_data[-1]['spikes']['dw'][tree_key][-1][-1].append(data[str(f)][tree_key+'_gbar'][sec_i][seg_i][-1]/data[str(f)][tree_key+'_gbar'][sec_i][seg_i][0])
-
-                    for f_i, f in enumerate(p['field']):
-                                    # detect spikes in soma
-                        spike_data[-1]['spikes']['soma'].append(spike_analysis.detect_spikes(data[str(f)]['soma_v'][0][0], threshold=threshold)['times'][0])
-
-                    spike_data[-1]['p']=p
-
-        # save processed file list
-        with open(data_folder+id_list_string_spike_times, 'wb') as output:pickle.dump(id_list_spike_times, output,protocol=pickle.HIGHEST_PROTOCOL)
-        print 'id list saved'
-        
-        # save structure of all spike data
-        save_group_data = spike_data
-        with open(data_folder+save_string_group_data_raw, 'wb') as output:
-            pickle.dump(save_group_data, output,protocol=pickle.HIGHEST_PROTOCOL)
-        print 'spike data saved'
-
-        # spike data organized as {syn_num}{w_mean}[trials]{variable}[polarity]
-        spike_data_group ={}
-        spike_data_dist_bin = {}
-        plots_spikes={} 
-        plots_weights ={}
-        plots_weights_mean = {}
-        time_bins = [[1200, 1600],[1600, 2000],[2000, 2400],[2400, 2800]]
-        dist_bins = [[0., 100.],[100., 200.],[200., 300.],[300.,400.],[400., 600.]]
-        for trial_i, trial in enumerate(spike_data):
-            p = spike_data[trial_i]['p']
-            syn_num = p['syn_num']
-            w_mean = p['w_mean']
-            # print syn_num, w_mean
-            if str(syn_num) not in spike_data_group:
-                spike_data_group[str(syn_num)]={}
-                spike_data_dist_bin[str(syn_num)]={}
-                plots_spikes[str(syn_num)]={}
-                plots_weights[str(syn_num)]={}
-                plots_weights_mean[str(syn_num)]={}
-            if str(w_mean) not in spike_data_group[str(syn_num)]:
-                spike_data_group[str(syn_num)][str(w_mean)]=[]
-                spike_data_dist_bin[str(syn_num)][str(w_mean)]=[]
-                for f_i, f in enumerate(p['field']):
-                    spike_data_group[str(syn_num)][str(w_mean)].append({'dw':[],'dw_mean':[],'dist':[],'dist_spikes':[],'dist_mean':[],'spikes_dend':[],'spikes_soma':[], 'dist_spikes_binned':[],'spikes_dend_binned':[],'spikes_soma_binned':[], 'spikes_dend_diff_binned':[],'dist_bin_i':[]})
-                    spike_data_dist_bin[str(syn_num)][str(w_mean)].append([])
-                    for dist_bin_i, dist_bin in enumerate(dist_bins):
-                        spike_data_dist_bin[str(syn_num)][str(w_mean)][f_i].append({'pre':[],'post':[]})
-                plots_spikes[str(syn_num)][str(w_mean)]=plt.figure()
-                plots_weights[str(syn_num)][str(w_mean)]=plt.figure()
-                plots_weights_mean[str(syn_num)][str(w_mean)]=plt.figure()
-            
-            for f_i, f in enumerate(p['field']):
-                # spike_data_group[str(syn_num)][str(w_mean)].append({'dw':[],'dw_mean':[],'dist':[],'dist_spikes':[],'dist_mean':[],'spikes_dend':[],'spikes_soma':[], 'dist_spikes_binned':[],'spikes_dend_binned':[],'spikes_soma_binned':[], 'spikes_dend_diff_binned':[],'dist_bin_i':[]})
-                # spike_data_dist_bin[str(syn_num)][str(w_mean)].append([])
-                color=p['field_color'][f_i]
-                marker='.'
-                spikes_soma = trial['spikes']['soma'][f_i]
-                spikes_dend = []
-                dist=[]
-                dw_list=[]
-                dist_spikes=[]
-                for tree_key, tree in p['sec_idx'].iteritems():
-                    for sec_i, sec in enumerate(tree):
-                        for seg_i, seg in enumerate(p['seg_idx'][tree_key][sec_i]):
-                            distance = p['seg_dist'][tree_key][sec][seg]
-                            spikes_dend_temp = trial['spikes']['dend'][tree_key][sec_i][seg_i][f_i]
-                            dw = trial['spikes']['dw'][tree_key][sec_i][seg_i][f_i]
-                            for spike_i, spike in enumerate(spikes_dend_temp):
-                                spikes_dend.append(spike)
-                                dist_spikes.append(distance)
-                            dist.append(distance)
-                            dw_list.append(dw)
-
-                dist_mean  = np.mean(dist)
-                
-
-                dist_bin_i = [dist_bin_i for dist_bin_i, dist_bin in enumerate(dist_bins) if (dist_mean > dist_bin[0] and dist_mean <= dist_bin[1])][0]
-                dw_mean = np.mean(dw_list)
-
-                # divide spikes in into bins 
-                spikes_soma_binned =[]
-                spikes_dend_binned=[]
-                spikes_dist_binned=[]
-                spikes_dend_diff_binned=[]
-                for time_bin_i, time_bin in enumerate(time_bins):
-                    # find spikes within current time bin
-                    binned_spikes_soma = [spike for spike_i, spike in enumerate(spikes_soma) if (spike > time_bin[0] and spike <= time_bin[1])]
-                    binned_spikes_dend = [spike for spike_i, spike in enumerate(spikes_dend) if (spike > time_bin[0] and spike <= time_bin[1])]
-                    binned_spikes_dist = [dist_spikes[spike_i] for spike_i, spike in enumerate(spikes_dend) if (spike > time_bin[0] and spike <= time_bin[1])]
-
-                    # count dendritic spikes
-                    spike_frac_dend = len(binned_spikes_dend)/len(dist)
-                    spike_time_diff=[]
-                    if len(binned_spikes_soma)==0:
-                        spike_time_diff = binned_spikes_dend
-                    elif len(binned_spikes_dend)>0:
-                        spike_time_diff = [binned_spikes_soma[0]-t for t in binned_spikes_dend]
-                    spikes_soma_binned.append(binned_spikes_soma) 
-                    spikes_dend_binned.append(binned_spikes_dend)
-                    spikes_dist_binned.append(binned_spikes_dist)
-                    spikes_dend_diff_binned.append(spike_time_diff)
-
-                spike_data_group[str(syn_num)][str(w_mean)][f_i]['dw'].append(dw_list)
-                spike_data_group[str(syn_num)][str(w_mean)][f_i]['dw_mean'].append(dw_mean)
-                spike_data_group[str(syn_num)][str(w_mean)][f_i]['dist_spikes'].append(dist_spikes)
-                spike_data_group[str(syn_num)][str(w_mean)][f_i]['dist_spikes_binned'].append(spikes_dist_binned)
-                spike_data_group[str(syn_num)][str(w_mean)][f_i]['dist'].append(dist)
-                spike_data_group[str(syn_num)][str(w_mean)][f_i]['dist_mean'].append(dist_mean)
-                spike_data_group[str(syn_num)][str(w_mean)][f_i]['dist_bin_i'].append(dist_bin_i)
-                spike_data_group[str(syn_num)][str(w_mean)][f_i]['spikes_dend'].append(spikes_dend)
-                spike_data_group[str(syn_num)][str(w_mean)][f_i]['spikes_soma_binned'].append(spikes_soma_binned)
-                spike_data_group[str(syn_num)][str(w_mean)][f_i]['spikes_dend_binned'].append(spikes_dend_binned)
-                spike_data_group[str(syn_num)][str(w_mean)][f_i]['spikes_dend_diff_binned'].append(spikes_dend_diff_binned)
-
-
-
-                # print plots[str(syn_num)][str(w_mean)].number
-                plt.figure(plots_spikes[str(syn_num)][str(w_mean)].number)
-                plt.plot(dist_mean, len(dist_spikes), color+marker)
-                plt.figure(plots_weights[str(syn_num)][str(w_mean)].number)
-                plt.plot(dist, dw_list, color+marker)
-                plt.figure(plots_weights_mean[str(syn_num)][str(w_mean)].number)
-                plt.plot(dist_mean, dw_mean, color+marker)
-
-        # group simulations into distance bins and pre/post spikes
-        plots = {}
-        for syn_num_key, syn_num in spike_data_group.iteritems():
-            plots[syn_num_key]={}
-            for w_mean_key, w_mean in syn_num.iteritems():
-                plots[syn_num_key][w_mean_key] = plt.figure()
-                plot_file_name = 'distance_x_prepost_spikes_'+'syn_num_'+syn_num_key+ '_w_'+w_mean_key
-                for f_i, f in enumerate(w_mean):
-                    print p['field_color'], f_i
-                    color = p['field_color'][f_i]
-                    pre_marker = 'x'
-                    post_marker = '.'
-                    for trial_i, trial in enumerate(f['dist_bin_i']):
-                        syn_tot = 4.*float(syn_num_key)
-                        dist_bin_i = trial
-                        pre = [time_diff for time_bin_i, time_bin in enumerate(f['spikes_dend_diff_binned'][trial_i]) for time_diff in time_bin if time_diff >0 ]
-                        post = [time_diff for time_bin_i, time_bin in enumerate(f['spikes_dend_diff_binned'][trial_i]) for time_diff in time_bin if time_diff <0 ]
-                        pre_norm = float(len(pre))/syn_tot
-                        post_norm = float(len(post))/syn_tot
-                        spike_data_dist_bin[syn_num_key][w_mean_key][f_i][dist_bin_i]['pre'].append(pre_norm)
-                        spike_data_dist_bin[syn_num_key][w_mean_key][f_i][dist_bin_i]['post'].append(post_norm)
-
-                    for dist_bin_i, dist_bin in enumerate(spike_data_dist_bin[syn_num_key][w_mean_key][f_i]):
-                        print dist_bin_i, len(spike_data_dist_bin[syn_num_key][w_mean_key][f_i])
-                        distance = np.mean(dist_bins[dist_bin_i])
-                        pre_mean = np.mean(dist_bin['pre'])
-                        post_mean = np.mean(dist_bin['post'])
-                        pre_std = np.std(dist_bin['pre'])
-                        post_std = np.std(dist_bin['post'])
-                        pre_sem = stats.sem(dist_bin['pre'])
-                        post_sem = stats.sem(dist_bin['post'])
-                        plt.plot(distance, pre_mean, color+pre_marker)
-                        plt.plot(distance, post_mean, color+post_marker)
-                        plt.errorbar(distance, pre_mean, yerr=pre_sem, ecolor=color)
-                        plt.errorbar(distance, post_mean, yerr=post_sem, ecolor=color)
-                        plt.xlabel('distance from soma (um)')
-                        plt.ylabel('fraction of synapses that spike')
-
-                plots[syn_num_key][w_mean_key].savefig(data_folder+plot_file_name+'.png', dpi=250)
-                plt.close(plots[syn_num_key][w_mean_key])
-
-        # save and close figure
-        for plot_key1, plot1 in plots_spikes.iteritems():
-            for plot_key2, plot2 in plot1.iteritems():
-                plot_file_name = 'distance_x_spikes_'+'syn_num_'+plot_key1+ '_w_'+plot_key2
-                plot2.savefig(data_folder+plot_file_name+'.png', dpi=250)
-                plt.close(plot2)
-
-        for plot_key1, plot1 in plots_weights.iteritems():
-            for plot_key2, plot2 in plot1.iteritems():
-                plot_file_name = 'distance_x_weights_'+'syn_num_'+plot_key1+ '_w_'+plot_key2
-                plot2.savefig(data_folder+plot_file_name+'.png', dpi=250)
-                plt.close(plot2)
-
-        for plot_key1, plot1 in plots_weights_mean.iteritems():
-            for plot_key2, plot2 in plot1.iteritems():
-                plot_file_name = 'distance_x_weights_mean_'+'syn_num_'+plot_key1+ '_w_'+plot_key2
-                plot2.savefig(data_folder+plot_file_name+'.png', dpi=250)
-                plt.close(plot2)
-
-    def exp_2g(self, **kwargs):
-        """ Apply a single theta burst to synapses with varying mean distance from soma 
-        """
-        # number of stimulation polarities tested
-        n_pol =3
-        # spike threshold
-        threshold = -30
-
-        # instantiate default parameter class
-        p_class = param.Default()
-        p_temp = p_class.p
-
-        # load cell and store in parameter dictionary
-        cell1 = cell.CellMigliore2005(p_temp)
-        cell1.geometry(p_temp)
-        
-        # insert mechanisms
-        cell1.mechanisms(p_temp)
-        # measure distance of each segment from the soma and store in parameter dictionary
-        p_class.seg_distance(cell1)
-
-        p_temp['morpho'] = p_class.create_morpho(cell1.geo)
-
-        # identify data folder
-        data_folder = 'Data/'+kwargs['experiment']+'/'
-        
-        # all files in directory
-        files = os.listdir(data_folder)
-        
-        # data files
-        data_files = [file for file in files if 'data' in file]
-        plot_files = [file for file in files if 'trace' in file]
-        
-        # unique identifiers for each file type
-        data_files_id= [file[-36:-1] for file in files if 'data' in file]
-        plot_files_id = [file[-36:-1] for file in files if 'trace' in file]
-
-        id_list_string_spike_times = 'id_list_spike_times.pkl'
-        # if list of processed files in folder, load list
-        if id_list_string_spike_times in files:
-            print 'id_list found'
-            
-            with open(data_folder+id_list_string_spike_times, 'rb') as pkl_file:
-                id_list_spike_times = pickle.load(pkl_file)
-
-            print 'id list loaded'
-        
-        # otherwise create empty list
-        else:
-            id_list_spike_times = []
-
-        # string to save group data
-        save_string_group_data_raw = 'spikes_grouped_raw'+'.pkl'
-        # if data file already exists
-        if save_string_group_data_raw in files:
-            # load data
-            print 'raw spike data found'
-            with open(data_folder+save_string_group_data_raw, 'rb') as pkl_file:
-                spike_data= pickle.load(pkl_file)
-            print 'raw spike data loaded'
-        # otherwise create data structure
-        else:
-            # data organized as {location}{data_type}[trials][polarity]
-            spike_data= []
-
-        # string to save group data
-        save_string_group_data_proc = 'spikes_grouped_proc'+'.pkl'
-        # if data file already exists
-        if save_string_group_data_proc in files:
-            # load data
-            print 'processed spike data found'
-            with open(data_folder+save_string_group_data_proc, 'rb') as pkl_file:
-                spike_data= pickle.load(pkl_file)
-            print 'processed spike data loaded'
-        # otherwise create data structure
-        else:
-            # data organized as {location}{data_type}[trials][polarity]
-            spike_data_group = {}
-
-        variables = ['spikes', 'peak', 'distance', 'weight', 'seg_idx']
-        
-        # load spike analysis functions
-        spike_analysis = Spikes()
-
-        # iterate over data files
-        for data_file_i, data_file in enumerate(data_files):
-
-            if data_file_i >=0:
-
-                # check if data has been processed already
-                if data_file not in id_list_spike_times:
-
-                    # open unprocessed data
-                    with open(data_folder+data_file, 'rb') as pkl_file:
-                        data = pickle.load(pkl_file)
-
-                    print 'data_file: ', data_file_i, ' out of ', len(data_files), ' opened'
-
                     # parameter dictionary
                     p = data['p']
 
-                    spike_data.append({})
+                    dtemp = self._get_spikes(data=data, threshold=threshold)
 
-                    # add to processed list
-                    id_list_spike_times.append(data_file)
+                    # temporary store for current trial data. all dictionary entries will be transferred to full data structure (all trials)
+                    dtemp = {}
 
-                    spike_data[-1]['spikes'] = {'soma':[],'dend':{}, 'dw':{}}
+                    # print trial
+                    # parameter dictionary
+                    dtemp['p'] = copy.copy(p)
 
-                    for tree_key, tree in p['sec_idx'].iteritems():
+                    # retrieve experiment conditions
+                    freq = p['pulse_freq']
+                    syn_num = p['syn_num']
+                    syn_dist = p['syn_dist'][1] 
+                    freq_key = str(freq)
+                    syn_num_key =str(syn_num)
+                    syn_dist_key = str(syn_dist)
 
-                        spike_data[-1]['spikes']['dend'][tree_key]=[]
-                        spike_data[-1]['spikes']['dw'][tree_key]=[]
-                        
-                        for sec_i, sec in enumerate(tree):
+                    # update data structure dimensions
+                    if str(freq) not in spike_data:
+                        spike_data[str(freq)]={}
 
-                            spike_data[-1]['spikes']['dend'][tree_key].append([])
-                            spike_data[-1]['spikes']['dw'][tree_key].append([])
+                    if str(syn_dist) not in spike_data[str(freq)]:
+                        spike_data[str(freq)][str(syn_dist)]={}
 
-                            for seg_i, seg in enumerate(p['seg_idx'][tree_key][sec_i]):
+                    if str(syn_num) not in spike_data[str(freq)][str(syn_dist)]:
+                        spike_data[str(freq)][str(syn_dist)][str(syn_num)]={}
+                        for polarity_i, polarity in enumerate(p['field']):
+                            spike_data[str(freq)][str(syn_dist)][str(syn_num)][str(polarity)]={}
 
-                                spike_data[-1]['spikes']['dend'][tree_key][-1].append([])
-                                spike_data[-1]['spikes']['dw'][tree_key][-1].append([])
-                                                    # iterate over field polarities
-                                for f_i, f in enumerate(p['field']):
-
-                                    # detect spikes in dendrite
-                                    spike_data[-1]['spikes']['dend'][tree_key][-1][-1].append(spike_analysis.detect_spikes(data[str(f)][tree_key+'_v'][sec_i][seg_i], threshold=threshold)['times'][0])
-
-                                    # detect spikes in dendrite
-                                    spike_data[-1]['spikes']['dw'][tree_key][-1][-1].append(data[str(f)][tree_key+'_gbar'][sec_i][seg_i][-1]/data[str(f)][tree_key+'_gbar'][sec_i][seg_i][0])
-
-                    for f_i, f in enumerate(p['field']):
-                                    # detect spikes in soma
-                        spike_data[-1]['spikes']['soma'].append(spike_analysis.detect_spikes(data[str(f)]['soma_v'][0][0], threshold=threshold)['times'][0])
-
-                    spike_data[-1]['p']=p
-
-        # save processed file list
-        with open(data_folder+id_list_string_spike_times, 'wb') as output:pickle.dump(id_list_spike_times, output,protocol=pickle.HIGHEST_PROTOCOL)
-        print 'id list saved'
-        
-        # save structure of all spike data
-        save_group_data = spike_data
-        with open(data_folder+save_string_group_data_raw, 'wb') as output:
-            pickle.dump(save_group_data, output,protocol=pickle.HIGHEST_PROTOCOL)
-        print 'spike data saved'
-
-        # spike data organized as {syn_num}{w_mean}[trials]{variable}[polarity]
-        spike_data_group ={}
-        spike_data_dist_bin = {}
-        plots_spikes={} 
-        plots_weights ={}
-        plots_weights_mean = {}
-        time_bins = [[1200, 1600],[1600, 2000],[2000, 2400],[2400, 2800]]
-        dist_bins = [[0., 250.],[100., 350.],[200., 450.],[300.,550.],[400., 650.]]
-        for trial_i, trial in enumerate(spike_data):
-            p = spike_data[trial_i]['p']
-            syn_num = p['syn_num']
-            w_mean = p['w_mean']
-            # print syn_num, w_mean
-            if str(syn_num) not in spike_data_group:
-                spike_data_group[str(syn_num)]={}
-                spike_data_dist_bin[str(syn_num)]={}
-                plots_spikes[str(syn_num)]={}
-                plots_weights[str(syn_num)]={}
-                plots_weights_mean[str(syn_num)]={}
-            if str(w_mean) not in spike_data_group[str(syn_num)]:
-                spike_data_group[str(syn_num)][str(w_mean)]=[]
-                spike_data_dist_bin[str(syn_num)][str(w_mean)]=[]
-                for f_i, f in enumerate(p['field']):
-                    spike_data_group[str(syn_num)][str(w_mean)].append({'dw':[],'dw_mean':[],'dist':[],'dist_spikes':[],'dist_mean':[],'spikes_dend':[],'spikes_soma':[], 'dist_spikes_binned':[],'spikes_dend_binned':[],'spikes_soma_binned':[], 'spikes_dend_diff_binned':[],'dist_bin_i':[]})
-                    spike_data_dist_bin[str(syn_num)][str(w_mean)].append([])
-                    for dist_bin_i, dist_bin in enumerate(dist_bins):
-                        spike_data_dist_bin[str(syn_num)][str(w_mean)][f_i].append({'pre':[],'post':[]})
-                plots_spikes[str(syn_num)][str(w_mean)]=plt.figure()
-                plots_weights[str(syn_num)][str(w_mean)]=plt.figure()
-                plots_weights_mean[str(syn_num)][str(w_mean)]=plt.figure()
-            
-            for f_i, f in enumerate(p['field']):
-                # spike_data_group[str(syn_num)][str(w_mean)].append({'dw':[],'dw_mean':[],'dist':[],'dist_spikes':[],'dist_mean':[],'spikes_dend':[],'spikes_soma':[], 'dist_spikes_binned':[],'spikes_dend_binned':[],'spikes_soma_binned':[], 'spikes_dend_diff_binned':[],'dist_bin_i':[]})
-                # spike_data_dist_bin[str(syn_num)][str(w_mean)].append([])
-                color=p['field_color'][f_i]
-                marker='.'
-                spikes_soma = trial['spikes']['soma'][f_i]
-                spikes_dend = []
-                dist=[]
-                dw_list=[]
-                dist_spikes=[]
-                for tree_key, tree in p['sec_idx'].iteritems():
-                    for sec_i, sec in enumerate(tree):
-                        for seg_i, seg in enumerate(p['seg_idx'][tree_key][sec_i]):
-                            distance = p['seg_dist'][tree_key][sec][seg]
-                            spikes_dend_temp = trial['spikes']['dend'][tree_key][sec_i][seg_i][f_i]
-                            dw = trial['spikes']['dw'][tree_key][sec_i][seg_i][f_i]
-                            for spike_i, spike in enumerate(spikes_dend_temp):
-                                spikes_dend.append(spike)
-                                dist_spikes.append(distance)
-                            dist.append(distance)
-                            dw_list.append(dw)
-
-                dist_mean  = np.mean(dist)
-                
-
-                dist_bin_i = [dist_bin_i for dist_bin_i, dist_bin in enumerate(dist_bins) if (dist_mean > dist_bin[0] and dist_mean <= dist_bin[1])][0]
-                dw_mean = np.mean(dw_list)
-
-                # divide spikes in into bins 
-                spikes_soma_binned =[]
-                spikes_dend_binned=[]
-                spikes_dist_binned=[]
-                spikes_dend_diff_binned=[]
-                for time_bin_i, time_bin in enumerate(time_bins):
-                    # find spikes within current time bin
-                    binned_spikes_soma = [spike for spike_i, spike in enumerate(spikes_soma) if (spike > time_bin[0] and spike <= time_bin[1])]
-                    binned_spikes_dend = [spike for spike_i, spike in enumerate(spikes_dend) if (spike > time_bin[0] and spike <= time_bin[1])]
-                    binned_spikes_dist = [dist_spikes[spike_i] for spike_i, spike in enumerate(spikes_dend) if (spike > time_bin[0] and spike <= time_bin[1])]
-
-                    # count dendritic spikes
-                    spike_frac_dend = len(binned_spikes_dend)/len(dist)
-                    spike_time_diff=[]
-                    if len(binned_spikes_soma)==0:
-                        spike_time_diff = binned_spikes_dend
-                    elif len(binned_spikes_dend)>0:
-                        spike_time_diff = [binned_spikes_soma[0]-t for t in binned_spikes_dend]
-                    spikes_soma_binned.append(binned_spikes_soma) 
-                    spikes_dend_binned.append(binned_spikes_dend)
-                    spikes_dist_binned.append(binned_spikes_dist)
-                    spikes_dend_diff_binned.append(spike_time_diff)
-
-                spike_data_group[str(syn_num)][str(w_mean)][f_i]['dw'].append(dw_list)
-                spike_data_group[str(syn_num)][str(w_mean)][f_i]['dw_mean'].append(dw_mean)
-                spike_data_group[str(syn_num)][str(w_mean)][f_i]['dist_spikes'].append(dist_spikes)
-                spike_data_group[str(syn_num)][str(w_mean)][f_i]['dist_spikes_binned'].append(spikes_dist_binned)
-                spike_data_group[str(syn_num)][str(w_mean)][f_i]['dist'].append(dist)
-                spike_data_group[str(syn_num)][str(w_mean)][f_i]['dist_mean'].append(dist_mean)
-                spike_data_group[str(syn_num)][str(w_mean)][f_i]['dist_bin_i'].append(dist_bin_i)
-                spike_data_group[str(syn_num)][str(w_mean)][f_i]['spikes_dend'].append(spikes_dend)
-                spike_data_group[str(syn_num)][str(w_mean)][f_i]['spikes_soma_binned'].append(spikes_soma_binned)
-                spike_data_group[str(syn_num)][str(w_mean)][f_i]['spikes_dend_binned'].append(spikes_dend_binned)
-                spike_data_group[str(syn_num)][str(w_mean)][f_i]['spikes_dend_diff_binned'].append(spikes_dend_diff_binned)
-
-
-
-                # print plots[str(syn_num)][str(w_mean)].number
-                plt.figure(plots_spikes[str(syn_num)][str(w_mean)].number)
-                plt.plot(dist_mean, len(dist_spikes), color+marker)
-                plt.figure(plots_weights[str(syn_num)][str(w_mean)].number)
-                plt.plot(dist, dw_list, color+marker)
-                plt.figure(plots_weights_mean[str(syn_num)][str(w_mean)].number)
-                plt.plot(dist_mean, dw_mean, color+marker)
-
-        # group simulations into distance bins and pre/post spikes
-        plots = {}
-        for syn_num_key, syn_num in spike_data_group.iteritems():
-            plots[syn_num_key]={}
-            for w_mean_key, w_mean in syn_num.iteritems():
-                plots[syn_num_key][w_mean_key] = plt.figure()
-                plot_file_name = 'distance_x_prepost_spikes_'+'syn_num_'+syn_num_key+ '_w_'+w_mean_key
-                for f_i, f in enumerate(w_mean):
-                    print p['field_color'], f_i
-                    color = p['field_color'][f_i]
-                    pre_marker = 'x'
-                    post_marker = '.'
-                    for trial_i, trial in enumerate(f['dist_bin_i']):
-                        syn_tot = 4.*float(syn_num_key)
-                        dist_bin_i = trial
-                        pre = [time_diff for time_bin_i, time_bin in enumerate(f['spikes_dend_diff_binned'][trial_i]) for time_diff in time_bin if time_diff >0 ]
-                        post = [time_diff for time_bin_i, time_bin in enumerate(f['spikes_dend_diff_binned'][trial_i]) for time_diff in time_bin if time_diff <0 ]
-                        pre_norm = float(len(pre))/syn_tot
-                        post_norm = float(len(post))/syn_tot
-                        spike_data_dist_bin[syn_num_key][w_mean_key][f_i][dist_bin_i]['pre'].append(pre_norm)
-                        spike_data_dist_bin[syn_num_key][w_mean_key][f_i][dist_bin_i]['post'].append(post_norm)
-
-                    for dist_bin_i, dist_bin in enumerate(spike_data_dist_bin[syn_num_key][w_mean_key][f_i]):
-                        print dist_bin_i, len(spike_data_dist_bin[syn_num_key][w_mean_key][f_i])
-                        distance = np.mean(dist_bins[dist_bin_i])
-                        pre_mean = np.mean(dist_bin['pre'])
-                        post_mean = np.mean(dist_bin['post'])
-                        pre_std = np.std(dist_bin['pre'])
-                        post_std = np.std(dist_bin['post'])
-                        pre_sem = stats.sem(dist_bin['pre'])
-                        post_sem = stats.sem(dist_bin['post'])
-                        plt.plot(distance, pre_mean, color+pre_marker)
-                        plt.plot(distance, post_mean, color+post_marker)
-                        plt.errorbar(distance, pre_mean, yerr=pre_sem, ecolor=color)
-                        plt.errorbar(distance, post_mean, yerr=post_sem, ecolor=color)
-                        plt.xlabel('distance from soma (um)')
-                        plt.ylabel('fraction of synapses that spike')
-
-                plots[syn_num_key][w_mean_key].savefig(data_folder+plot_file_name+'.png', dpi=250)
-                plt.close(plots[syn_num_key][w_mean_key])
-
-        # save and close figure
-        for plot_key1, plot1 in plots_spikes.iteritems():
-            for plot_key2, plot2 in plot1.iteritems():
-                plot_file_name = 'distance_x_spikes_'+'syn_num_'+plot_key1+ '_w_'+plot_key2
-                plot2.savefig(data_folder+plot_file_name+'.png', dpi=250)
-                plt.close(plot2)
-
-        for plot_key1, plot1 in plots_weights.iteritems():
-            for plot_key2, plot2 in plot1.iteritems():
-                plot_file_name = 'distance_x_weights_'+'syn_num_'+plot_key1+ '_w_'+plot_key2
-                plot2.savefig(data_folder+plot_file_name+'.png', dpi=250)
-                plt.close(plot2)
-
-        for plot_key1, plot1 in plots_weights_mean.iteritems():
-            for plot_key2, plot2 in plot1.iteritems():
-                plot_file_name = 'distance_x_weights_mean_'+'syn_num_'+plot_key1+ '_w_'+plot_key2
-                plot2.savefig(data_folder+plot_file_name+'.png', dpi=250)
-                plt.close(plot2)
+                    # iterate through polarities
+                    for polarity_i, polarity in enumerate(p['field']):
+                        polarity_key =str(polarity)
 
 
 

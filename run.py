@@ -69,6 +69,7 @@ class Run():
         # bipolar = stims.Bipolar()
         # bipolar.tbs(bursts=p['bursts'], warmup=p['warmup'], pulses=p['pulses'], pulse_freq=p['pulse_freq'])
         # self.stim = bipolar.stim
+
         if 'p_path' in p:
             self.nc={}
             self.stim={}
@@ -195,7 +196,7 @@ class Run():
             self.rec[path_key]['t'].record(h._ref_t)
 
     def run_sims(self,p):
-        # data organized as {'polarity'}{'path number'}{'tree'}[section][segment][data vector]
+        # data organized as {'polarity'}{'path number'}{'tree_variable'}[section][segment][data vector]
         
         # loop over dcs fields
         self.data={'p':p}

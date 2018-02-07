@@ -1085,7 +1085,7 @@ class Experiment:
 
             # iterae over path combinations
             for combo_i, combo in enumerate(kwargs['path_combos']):
-                
+                self.p['path_combo']=combo
                 # update tstop for each combination
                 tstops=[]
                 for path_key, path in paths.iteritems():
@@ -1144,7 +1144,7 @@ class Experiment:
                     # set file name to save data
                     file_name = str(
                     self.p['experiment']+
-                    '_'+combo+
+                    '_'+self.p['path_combo']+
                     '_dist_'+str(self.p['syn_dist'])+
                     '_freq_'+str(self.p['pulse_freq'])+
                     '_syn_num_'+str(syn_num)+
