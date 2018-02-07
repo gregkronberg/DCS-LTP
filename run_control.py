@@ -1265,6 +1265,11 @@ def _run_parallel(parameters):
 
     Use ExperimentsParallel.exp_num to design parameters list
 
+    Arguments:
+    parameters= must be a list of parameter dictionaries.  Each dictionary in the list is passed to a different worker as the arguments for Experiment.exp_num
+
+    Use ExperimentsParallel.exp_num to design parameters list
+
     To use multiple workers, python script must be called from the interpreter using syntax:
     'mpiexec -n 10 python script.py'
     the call to mpiexec initializes the mpi with 10 workers
