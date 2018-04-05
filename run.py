@@ -3,8 +3,8 @@ docstring
 """
 # imports
 from neuron import h
-from mpi4py import MPI
-import multiprocessing 
+# from mpi4py import MPI
+# import multiprocessing 
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec

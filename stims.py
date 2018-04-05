@@ -7,8 +7,8 @@ Created on Wed Jun 28 03:06:39 2017
 """
 import numpy as np
 from neuron import h
-from mpi4py import MPI
-import multiprocessing 
+# from mpi4py import MPI
+# import multiprocessing 
 
 # extracellular field
 class DCS:

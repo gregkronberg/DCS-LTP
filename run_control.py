@@ -4,8 +4,8 @@
 run control
 """
 # imports
-from mpi4py import MPI
-import multiprocessing 
+# from mpi4py import MPI
+# import multiprocessing 
 from neuron import h
 import numpy as np
 # import matplotlib.pyplot as plt
@@ -22,12 +22,13 @@ import uuid
 import analysis
 import sys
 import copy
+import pickle
 
 h.load_file("stdrun.hoc")
 
 # 
 class Experiment:
-    """ Impliment experimental procedures.  Paramters/arguments can be set using the Arguments class
+    """ Impliment experimental procedures.  
     """
     def __init__(self, **kwargs):
         """ choose experiment to run
@@ -42,6 +43,186 @@ class Experiment:
 
             # run experiment
             experiment(**kwargs) 
+    #%%
+    def quick_run(self, **kwargs):
+        """ single simulation to test facilitatio/depression parameters
+        """
+        w_mean = .001 # weight of single synapse uS
+        trees = ['apical_tuft']
+        nsyns = 2.
+        syn_nums = [2.]
+        syn_dist = [0., 200.]
+        trials = 1
+        stim_freqs=[100.]
+        paths = {'1':{}}
+        param_file='fd_parameters.pkl'
+        self.kwargs = {
+        'experiment' : kwargs['experiment'], 
+        'trees' : trees,
+        'nsyns':nsyns,
+        'syn_num':[],
+        'syn_dist': syn_dist,
+        'f_ampa':1.,
+        'tau_F_ampa':94.,
+        'd1_ampa':1.,
+        'tau_D1_ampa':380.,
+        'd2_ampa':.5,
+        'tau_D2_ampa':9200.,
+        'num_sec':1,
+        'seg_L' : 4.,
+        'seg_spacing':20,
+        'max_seg':[],
+        'branch':False,
+        'full_path':False,
+        'branch_distance':[],
+        'branch_seg_distance':[],
+        'sequence_delay': 0,
+        'sequence_direction':'in',
+        'trials' : trials,
+        'w_mean' : [],
+        'w_std' : [.002],
+        'w_rand' : False, 
+        'syn_frac' : .2,
+        'field':[-20.,0.,20.],
+        'KMULT':1.*.03,
+        'KMULTP':1.*.03,
+        'ka_grad':1.,
+        'SOMAM': 1.5,
+        'AXONM': 50.,
+        'gna':.04,
+        'dgna':1.*-.000025,
+        'pulses':5,
+        'pulse_freq':100,
+        'group_trees':False,
+        'plot_variables':['v','gbar'],
+        'cell':[],
+        'tstop':70,
+        'clopath_tau_r':8,
+        'gna_inact': 0.
+        }
+
+        if 'load_fd' in kwargs:
+            # load parameters
+            #````````````````
+            with open('Data/'+param_file, 'rb') as pkl_file:
+                param_obj = pickle.load(pkl_file)
+
+            params = param_obj.x
+
+            self.kwargs['f_ampa'] = params[0]
+            self.kwargs['tau_F_ampa'] = params[1]
+            self.kwargs['d1_ampa'] = params[2]
+            self.kwargs['tau_D1_ampa'] = params[3]
+            self.kwargs['d2_ampa'] = params[4]
+            self.kwargs['tau_D2_ampa'] = params[5]
+            self.kwargs['d3_ampa'] = params[6]
+            self.kwargs['tau_D3_ampa'] = params[7]
+
+
+        # update kwargs
+        for key, val in kwargs.iteritems():
+            self.kwargs[key]=val
+        
+        # instantiate default parameter class
+        self.p_class = param.Default()
+
+        # reference to default parameters
+        self.p = self.p_class.p
+
+        # update parameters
+        for key, val in self.kwargs.iteritems():        # update parameters
+            self.p[key] = val
+
+        # data and figure folder
+        self.p['data_folder'] = 'Data/'+self.p['experiment']+'/'
+        self.p['fig_folder'] =  'png figures/'+self.p['experiment']+'/'
+
+        # load cell and store in parameter dictionary
+        cell1 = cell.CellMigliore2005(self.p)
+        cell1.geometry(self.p)
+        # insert mechanisms
+        cell1.mechanisms(self.p)
+        
+        # measure distance of each segment from the soma and store in parameter dictionary
+        self.p_class.seg_distance(cell1)
+
+        self.p['morpho'] = self.p_class.create_morpho(cell1.geo)
+
+        threshold=-30
+
+        # iterate over frequency
+        # iterate over synapse number
+        # iterate over trials
+        # iterate over all segments in tree
+        for freq_i, freq in enumerate(stim_freqs):
+            self.p['tstop'] = (self.p['pulses']*1000/freq)+self.p['warmup']
+            self.p['pulse_freq'] = freq
+            self.p['field_off'] = self.p['tstop']
+            for syn_num_i, syn_num in enumerate(syn_nums):
+                for trial_i, trial in enumerate(range(self.p['trials'])):
+                    self.p['syn_num']=syn_num
+                    self.p['p_path']={}
+                    
+                    idx = self.p_class.choose_seg_rand(trees=self.p['trees'], syns=cell1.syns, syn_frac=0., seg_dist=self.p['seg_dist'], syn_num=syn_num, distance=self.p['syn_dist'], replace=True)
+
+                    for key, val in idx.iteritems():
+                        self.p[key]=val
+
+                    self.p['w_mean'] = self.p['nsyns']*w_mean
+
+                    self.p['w_list'] = self.p_class.set_weights(seg_idx=self.p['seg_idx'], sec_idx=self.p['sec_idx'], sec_list=self.p['sec_list'], seg_list=self.p['seg_list'], w_mean=self.p['w_mean'], w_std=self.p['w_std'], w_rand=self.p['w_rand'])['w_list']
+
+                    self.p['sequence_delays'] = self.p_class.set_branch_sequence_ordered(seg_idx=self.p['seg_idx'], delay=self.p['sequence_delay'], direction=self.p['sequence_direction'])['sequence_delays']
+
+                    print 'syn_num:', self.p['syn_num']
+                    print 'nsyn:',self.p['nsyns'], 'w (nS):',self.p['w_mean'] 
+                    print 'distance from soma:', self.p['syn_dist']
+
+                    # store trial number
+                    self.p['trial']=trial
+                                    
+                    # create unique identifier for each trial
+                    self.p['trial_id'] = str(uuid.uuid4())
+
+                    for path_key, path in paths.iteritems():
+                        self.p['p_path'][path_key]=copy.copy(self.p)
+                                    
+                    # start timer
+                    start = time.time() 
+                    
+                    # print cell1.syns
+                    # run simulation
+                    sim = run.Run(p=self.p, cell=cell1) 
+
+                    # end timer
+                    end = time.time() 
+
+                    # print trial and simulation time
+                    print 'trial'+ str(self.p['trial']) + ' duration:' + str(end -start) 
+                    
+                    # set file name to save data
+                    file_name = str(
+                    self.p['experiment']+
+                    '_dist_'+str(self.p['syn_dist'][-1])+
+                    '_freq_'+str(self.p['pulse_freq'])+
+                    '_syn_num_'+str(self.p['syn_num'])+
+                    '_trial_'+str(self.p['trial'])+
+                    '_id_'+self.p['trial_id']
+                    )
+
+                    # save data for eahc trial
+                    run.save_data(data=sim.data, file_name=file_name)
+
+                    # plot traces
+                    analysis.PlotRangeVar().plot_trace(data=sim.data, 
+                        sec_idx=self.p['sec_idx'], 
+                        seg_idx=self.p['seg_idx'],
+                        variables=self.p['plot_variables'],
+                        x_variables=self.p['x_variables'],
+                        file_name=file_name,
+                        group_trees=self.p['group_trees'],
+                        xlim=[self.p['warmup']-5,self.p['tstop']],
+                        ylim=[])
 
     """
     EXPERIMENT 1
@@ -446,12 +627,15 @@ class Experiment:
                     # update synapse number in parameter dictionary
                     self.p['syn_num']=syn_num
                     # choose random segments based on distance requirement
-                    self.p_class.choose_seg_rand(trees=self.p['trees'], syns=cell1.syns, syn_frac=0., seg_dist=self.p['seg_dist'], syn_num=syn_num, distance=self.p['syn_dist'], replace=True)
+                    idx = self.p_class.choose_seg_rand(trees=self.p['trees'], syns=cell1.syns, syn_frac=0., seg_dist=self.p['seg_dist'], syn_num=syn_num, distance=self.p['syn_dist'], replace=True)
+                    for key, val in idx.iteritems():
+                        self.p[key]=val
+
                     # update weight based on number of synapses per segment (always 1 in this experiment)
                     self.p['w_mean'] = self.p['nsyns']*w_mean
 
                     # create nested list of weights to match seg_idx structure
-                    self.p_class.set_weights(seg_idx=self.p['seg_idx'], sec_idx=self.p['sec_idx'], sec_list=self.p['sec_list'], seg_list=self.p['seg_list'], w_mean=self.p['w_mean'], w_std=self.p['w_std'], w_rand=self.p['w_rand'])
+                    self.p['w_list'] = self.p_class.set_weights(seg_idx=self.p['seg_idx'], sec_idx=self.p['sec_idx'], sec_list=self.p['sec_list'], seg_list=self.p['seg_list'], w_mean=self.p['w_mean'], w_std=self.p['w_std'], w_rand=self.p['w_rand'])['w_list']
 
                     # create a list of time delays for each synapse, same organization as seg_idx 
                     self.p_class.set_branch_sequence_ordered(seg_idx=self.p['seg_idx'], delay=self.p['sequence_delay'], direction=self.p['sequence_direction'])
@@ -1078,10 +1262,11 @@ class Experiment:
         # kwargs{'syn_num'}[condition number][path number (strong, then weak)]
         # kwargs{'syn_dist'}[condition number][path number (strong, then weak)][min distance, max distance]
         for syn_num_i, syn_num in enumerate(kwargs['syn_num']):
-                
+            # FIXME update self.p['syn_num']
             # update parameters for each pathway
             paths['strong']['syn_num']= syn_num[0]
             paths['weak']['syn_num']= syn_num[1]
+            self.p['syn_num']=syn_num
 
             # iterae over path combinations
             for combo_i, combo in enumerate(kwargs['path_combos']):
@@ -1120,7 +1305,7 @@ class Experiment:
                             # update p_path dictionary in global p dictionary
                             self.p['p_path'][path_key]=copy.copy(path)
 
-                    print combo
+                    print combo, self.p['syn_num']
 
                     # store trial number
                     self.p['trial']=trial
@@ -1201,7 +1386,7 @@ class ExperimentsParallel:
         Activate a strong (100 Hz burst) and weak (single pulse in the middle of burst) pathway (separately or together).
         Vary which pathways are active (strong only, weak only, strong+weak)
         Vary the distance from soma of each pathway (0-200,200-400,400-600 um).
-        Vary the number of synapses in each pathway (10, 20, 40).
+        Vary the number of synapses in each pathway (10, 20, 30, 40, 50).
         Synapse locations are generated randomly with param.choose_seg_rand(). Multiple synapses can be placed on the same segment.  The weight is then multiplied by the number of "synapses"
         
         Keyword Arguments:
@@ -1211,7 +1396,7 @@ class ExperimentsParallel:
         Each dictionary contains a different synapse distance requirement (syn_dist), i.e. synapse distance varies across workers.  All other parameters that vary are passed as a list to each worker and are iteratede within each worker
         """
         experiment= kwargs['experiment']
-        syn_num = [[10,10],[20,20],[40,40]]
+        syn_num = [[12, 12],]
         paths = ['strong','weak']
         path_combos = ['strong','weak','strong_weak']
         syn_dists_strong = [[0,200],[200,400],[400,600]]
@@ -1309,8 +1494,9 @@ def _run_parallel(parameters):
 
 
 if __name__ =="__main__":
+    Experiment(experiment='quick_run', load_fd=True)
     # _run_parallel(experiment='exp_1c')
-    _run_parallel(ExperimentsParallel('exp_4a').parameters)
+    # _run_parallel(ExperimentsParallel('exp_4a').parameters)
     # kwargs = {'experiment':'exp_1a'}
     # analysis.Experiment(**kwargs)
     # kwargs = {'experiment':'exp_1c'}

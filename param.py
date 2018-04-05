@@ -72,7 +72,7 @@ class Default(object):
             'trial_id':0,       # a unique identifier for each trial using uuid64
             'w_rand':[],        # choose synapse weights from a random distribution (Bool)
             'w_std' : [],       # standard deviation of weights distribution, if w_rand is True
-            'w_mean': [], # mean synaptic weight (microsiemens or micro-ohms)
+            'w_mean': [], 		# mean synaptic weight (microsiemens or micro-ohms)
             'trees': [],        # list of subtrees with active synapses [trees]
             'w_list':[],        # nested list of weights, determined by set_weights().  Weights correspond to segments indexed in seg_idx.  Organized as [tree][section][segment]
             'sec_list':[],      # list of active sections with repeats, each entry corresponds to the section for a given segment in seg_list.  [tree][section number]
@@ -112,6 +112,16 @@ class Default(object):
             'tau1_ampa' : 0.2,  # rise time constant (ms)
             'tau2_ampa' : 2,    # decay time constant   (ms)
             'i_ampa' : 0.18,    # default peak ampa current in uS
+
+            # facilitation depression parameters for AMPA from Varela et al. 1997
+            'f_ampa':5.,
+            'tau_F_ampa':94.,
+            'd1_ampa':.45,
+            'tau_D1_ampa':540.,
+            'd2_ampa':.12,
+            'tau_D2_ampa':45.,
+            'd3_ampa':.98,
+            'tau_D3_ampa':120000.,
 
             # nmda synapse parameters
             'tau1_nmda' : 1,    # rise time constant (ms)
@@ -161,21 +171,40 @@ class Default(object):
         pathways are organized as p{'p_path'}[path number]{'parameter'}
         """
         if 'p_path' not in self.p:
-            self.p['syn_path'] = []
+            self.p['p_path'] = {}
         
         self.p['p_path'].append({})
         for param_key, param in stim_param.iteritems():
             self.p['p_path'][-1][param_key]=param
 
 
-    def set_branch_sequence_ordered(self, seg_idx, delay, direction):
+    def set_branch_sequence_ordered(self, **kwargs):
+        """ set delays for sequence of inputs on dendritic branch
+
+		---
+        Keyword Arguments
+        ---
+        seg_idx = segment index structure of active segments as ['tree'][section index][segment number]
+        	where section index is the index of active sections listed in sec_idx
+        delay = fixed delay between each segment active segment (ms)
+        direction = 'in' (towards soma) or 'out' (away from soma)
+
+        ---
+        Return
+        ---
+        dic['sequence delays'] = time delays from start of simulation for each active segment.  Same organization as seg_idx: ['tree'][section index][segment number]
         """
-        """
+
+        seg_idx = kwargs['seg_idx']
+        delay = kwargs['delay']
+        direction = kwargs['direction']
+
         dic={}
         delays = {}
         # iterate over trees
         for tree_key, tree in seg_idx.iteritems():
             delays[tree_key] = []
+            
             # iterate over sections
             for sec_i, sec in enumerate(tree):
                 
@@ -205,10 +234,35 @@ class Default(object):
         dic['sequence_delays']=delays
         return dic
 
-    def choose_branch_manual(self, geo, trees, sec_list, full_path):
-        """
+    def choose_branch_manual(self, **kwargs):
+        """ manually choose a dendritic branch to activate based on section number
+
+        ---
+        Keyword Arguments
+        ---
+        geo = geometry structure containing hoc section and segment objects
+        	['tree'][secction number][segment number]
+
+    	trees = list of trees containing branches to activate
+
+    	sec_list = list of sections to activate [section number]
+
+    	full_path = True/False
+    		if True: activate all sections from the given section to the soma
+    		if False: only activate the given sections in sec_list
+
+		---
+		Return
+		---
+		dic['sec_idx'] = section index structure for indeces of active sections
+			['tree'][section number]
         """
 
+        geo = kwargs['geo']
+        trees = kwargs['trees']
+        sec_list = kwargs['sec_list']
+        full_path = kwargs['full_path']
+        dic = {}
         sec_idx = {}
         parent_idx={}
         for tree_key, tree in geo.iteritems():
@@ -236,16 +290,44 @@ class Default(object):
                             parent_idx[tree_key][sec_i].append(parent_sec_i)
                             # update current section ref
                             sref_current = h.SectionRef(sec=parent)
-
-        self.p['sec_idx'] = sec_idx
+        dic['sec_idx'] = sec_idx
+        return dic
 
     # choose dendritic branch to activate synapses
     
     def choose_branch_rand(self, trees, geo, num_sec=1, distance=[], branch=True, full_path=True):
         """ choose random dendritic branch to activate synapses on and store in sec_idx.  option to store list of sections that lead from branch terminal to soma.
 
-        arguments:
+        ---
+        Arguments
+        ---
+        geo = geometry structure containing hoc section and segment objects
+        	['tree'][secction number][segment number]
+
+    	trees = list of trees containing branches to activate
+
+    	num_sec = number of sections to choose
+
+    	distance = [minimum distance, maximum distance]
+    		if empty list, no distance requirement will be enforced
+
+		branch = True/False
+			if True: sections must be branch terminals
+			if False: sections can be any section
+
+		full_path = True/False
+			if True: keep track of all sections along path from soma to chosen section
+			if False: only include chosen section
+
+		---
+		Return
+		---
+		dic['sec_idx'] = section numbers to activate ['tree'][section number]
+
+		dic['parent_idx'] = parent sections along path from soma to section in sec_idx as ['tree'][section index from sec_idx][parent section numbers]
         """
+
+        dic = {}
         # structure to store section list
         sec_idx = {}
         # store list of parent sections for chosen section
@@ -363,8 +445,10 @@ class Default(object):
                     sec_idx[tree_key].append(sec)
 
         # store section list in parameter dictionary
-        self.p['sec_idx'] = sec_idx
-        self.p['parent_idx'] = parent_idx
+        dic['sec_idx'] = sec_idx
+        dic['parent_idx'] = parent_idx
+
+        return dic
 
     def choose_seg_branch(self, geo, sec_idx, seg_dist, max_seg=[], spacing=0, distance=[]):
         """ choose active segments on branch based on spacing between segments

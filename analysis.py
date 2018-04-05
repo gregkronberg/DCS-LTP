@@ -1,36 +1,749 @@
 """
 analysis
 
-data structure for each trial is organized as ['tree'][polarity][section][segment]
+data structure for each trial is organized as []['tree'][polarity][section][segment]
 """
+
 from __future__ import division
 import numpy as np
+import scipy
+import scipy.io
 from scipy import stats
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import itertools as it
 import os
+import glob
 import cPickle as pickle
 import param
 import cell
 import math
 import run_control
 import copy
+import matplotlib.patches as patches
+import matplotlib.lines as mlines
 from matplotlib.patches import Polygon
 from matplotlib.collections import PatchCollection
 from matplotlib import cm as colormap
+
+
+def _param2times(p_path, tree_key, sec_i, seg_i, t):
+        """ Get synaptic input times from parameter dictionary for a given segment
+        
+        ===Args===
+        -p_path     :   parameter dictionary for a given pathway
+            -must contain the following entries
+                -pulses : number of pulses per burst
+                -pulse_freq : frequency of inputs within a burst (Hz)
+                -bursts : number of bursts
+                -burst_freq : frequency of bursts (Hz)
+                -warmup : simulation warmup time to allow steady state (ms)
+                -delay : delay (after warmup) for current segment to allow sequences (ms). 
+                -delay of 0 corresponds to all input patterns starting after warmup 
+        -tree_key   : tree containing the desired segment
+        -sec_i      : section index containing the desired segment (matching indexing in p_path['seg_idx'])
+        -sec_i      : index of desired segment (matching indexing in p_path['seg_idx'])
+        -t          : time vector for the simulation
+        
+        ===Out===
+        -input_times : list of input times in ms, length (dim: number of input pulses)
+        -x           : boolean vector of input times with same length as t (dim: samples)
+        
+        ===Comments===
+        
+        """
+        # get parameters from dictionary
+        #```````````````````````````````````````````````````````````````
+        pulses = p_path['pulses']
+        pulse_freq = p_path['pulse_freq']/1000
+        burst_freq = p_path['burst_freq']/1000
+        bursts  =p_path['bursts']
+        warmup = p_path['warmup']
+        delay = p_path['sequence_delays'][tree_key][sec_i][seg_i]
+        
+        # array for storing input times
+        input_times = np.zeros((1, bursts*pulses))
+        
+        # define a single burst 
+        burst1 = np.arange(0., pulses/pulse_freq, 1./pulse_freq)
+        
+        # iterate through bursts
+        for burst_i in range(bursts):
+            
+            # add times to array
+            input_times[0,burst_i:burst_i+pulses] = warmup + delay + burst_i/burst_freq + burst1
+            
+        # convert to boolean vector (dim: samples)
+        x = np.zeros(t.shape)
+        # cut off number of decimals to prevent rounding error
+        t = np.around(t, 4)
+        # find input times and to boolean vector
+        for t_i, t_t in enumerate(input_times[0,:]):
+            
+            # store input times
+            x[np.where(t==t_t)]=1
+                
+        return input_times, x
+    
+# get total number of segments (determines size of data marix)
+def seg_zip(data):
+    """ From nested data structure, get list of all segments and corresponding conditions
+    
+    ===Args===
+    -data : data structure organized as data{'polarity'}{'pathway'}{'tree_variable'}[section number][segment number][time series]
+    
+    ===Out===
+    -seg_list : list of tuples.  each tuple contains (polarity_key, path_key, tree_key, sec_i, seg_i).  list has length equal to the total number of recorded segments in the data structure
+    
+    ===Comments===
+    """
+    # parameter structure
+    p = data['p']
+    # for storing list of all recorded segments
+    seg_list = []
+    for polarity_key, polarity in data.iteritems():
+        # exclude parameter dictionary
+        if polarity_key != 'p':        
+            # iterate over pathways
+            for path_key, path in polarity.iteritems():
+                # get path-specific parameters
+                p_path = p['p_path'][path_key]  
+                # iterate over trees
+                for tree_key, tree in p_path['seg_idx'].iteritems():                
+                    # exclude time vectors
+                    if tree_key!='t':                       
+                        # iterate over sections in tree
+                        for sec_i, sec in enumerate(tree):                        
+                            # iterate over segments in section
+                            for seg_i, seg in enumerate(sec):
+                                # add tuple to segment list
+                                seg_list.append((polarity_key, path_key, tree_key, sec_i, seg_i))
+    return seg_list
+    
+    
+def _data2mat(data, variable):
+    """ Convert data structure to single matrix
+    
+    ===Args===
+    -data : data structure organized as data{'polarity'}{'pathway'}{'tree_variable'}[section number][segment number][time series]
+    -variable : string naming a variable to enter in matrix (eg 'v' for membrane voltage)
+    
+    ===Out===
+    -data_mat : matrix of time series data for specified variable (segments x samples)
+    -input_mat : boolean matrix with ones for input times (segments x samples)
+    -conditions  : dictionary of condition types ('polarity', 'path' etc). each dictionary entry is a list with indices matching the fist dimension of mat
+    -p : parameter dictionary for the simulations in data
+    -t : single time vector for all data (ms), all simulations in a given data file have the same time vector
+    
+    ===Comments===
+    -This is very sensitive to the organizaiton of the input data structure
+    
+    """
+    # get parameter dictionary
+    p = data['p']
+    # get time vector (all time vectors are the same within a given data file, same simulation)
+    t = data[data.keys()[0]].values()[0]['t']
+    # get total number of recorded segments
+    nsegs = len(seg_zip(data))
+    # preallocate output arrays (segments x samples)
+    data_mat = np.zeros((nsegs, len(t)))
+    input_mat = np.zeros((nsegs, len(t)))
+    # dictionary to store conditions for each segment ['condition type'][segment number]
+    conditions = {'polarity':[],
+                  'path':[],
+                  'tree':[],
+                  'sec_i':[],
+                  'sec_num':[],
+                  'seg_i':[],
+                  'seg_num':[],
+                  'input_times':[],
+                  }
+    
+    # get data for each segment
+    #`````````````````````````````````````````````````````````````````````
+    # data = {'polarity'}{'pathway'}{'tree_variable'}[section number][segment number][time series]
+    # iterate over polarities
+    seg_cnt=-1
+    for polarity_key, polarity in data.iteritems():
+
+        # exclude parameter dictionary
+        if polarity_key != 'p':
+            
+            # iterate over pathways
+            for path_key, path in polarity.iteritems():
+                        
+                # get path-specific parameters
+                p_path = p['p_path'][path_key]
+                
+                # iterate over trees
+                for tree_key, tree in p_path['seg_idx'].iteritems():
+                    
+                    # exclude time vectors
+                    if tree_key!='t':   
+                        
+                        # iterate over sections in tree
+                        for sec_i, sec in enumerate(tree):
+                            
+                            # get section number
+                            sec_num = p['sec_idx'][tree_key][sec_i]
+                            
+                            # iterate over segments in section
+                            for seg_i, seg in enumerate(sec):
+                                
+                                seg_cnt += 1
+                                # segment number
+                                seg_num = seg
+                                
+                                # get input times from parameter dictionary
+                                # input_times: list of all input times in ms
+                                # x: boolean vector. Same dimensions as t. 1=input, 0=no input
+                                input_times, x = _param2times(p_path, tree_key, sec_i, seg_i, t)
+                                
+                                # reshape x to 2D row vector
+                                x = x.reshape(1, x.shape[0])
+                                
+                                # add x to input matrix (boolean, dim: segments x samples)
+                                input_mat[seg_cnt,:] = x
+                                
+                                # get time series data for current segment
+                                vec =  path[tree_key+'_'+variable][sec_i][seg_i]
+                                # reshape to 2D row vector
+                                vec = vec.reshape(1, vec.shape[0])
+                                # add to data matrix (dim: segments x samples)
+                                data_mat[seg_cnt,:] = vec
+                                
+                                # update conditions matrix ['condition type'][segment number]
+                                conditions['polarity'].append(polarity_key)
+                                conditions['path'].append(path_key)
+                                conditions['tree'].append(tree_key)
+                                conditions['sec_i'].append(sec_i)
+                                conditions['sec_num'].append(sec_num)
+                                conditions['seg_i'].append(seg_i)
+                                conditions['seg_num'].append(seg_num)
+                                conditions['input_times'].append(input_times)
+    
+    # FIXME first row in matrix initializes it, but not used
+    return data_mat, input_mat, conditions, p, t
+    
+
+class Clopath():
+    
+    """ Apply Clopath learning rule to membrane voltage data
+    
+    ===Methods===
+    
+    ===Variables===
+    """
+    
+    def __init__(self):
+        """
+        """
+        pass
+        
+    def _run_clopath_individual(self,
+                                directory='Data/quick_run/',
+                                search_string='data*syn_num_2*',):
+        """ Load data from a single simulation and apply learning rule
+        
+        ===Args===
+        
+        ===Out===
+        
+        ===Comments===
+        """
+        data_files = glob.glob(directory+search_string)
+        data_file = data_files[0]
+        print data_file
+        self.data_mat, self.input_mat, self.conditions, self.p, self.t = self._load_data(directory='', data_file=data_file)
+        self.w = self._clopath(x=self.input_mat, u=self.data_mat, )
+        self._plot_clopath(self.w, self.conditions)
+        
+        return self.w
+    
+    def _plot_clopath(self, w, conditions):
+        """ Plot weight changes
+        """
+        pols = ['-20.0','0.0','20.0']
+        colors = ['blue','black','red']
+        plt.figure()
+        nsyns = w.shape[0]
+        for syn in range(nsyns):
+            polarity = conditions['polarity'][syn]
+            color = colors[pols.index(polarity)]
+            plt.plot(w[syn,:],color=color)
+        
+    def _load_data(self, 
+                   directory='Data/', 
+                   param_file='fd_parameters.pkl', 
+                   data_file='induction_slopes_all.mat', ):
+        """
+        
+        ===Args===
+        
+        ===Out===
+        """
+        
+        with open(directory+data_file, 'rb') as pkl_file:
+            data = pickle.load(pkl_file)
+            
+        data_mat, input_mat, conditions, p, t = _data2mat(data, 'v')
+        
+        return data_mat, input_mat, conditions, p, t
+            
+    def _clopath(self, x, u, fs=40, w0=0.5, homeostatic=False, param={}):
+        """ Determine weights from voltage traces and input times with Clopath rule
+        
+        ===Args===
+        -x      :   input vector of spike times (1 for spike, 0 for no spike)
+        -u      :   voltage vector
+        -fs     :   sampling rate
+        -w0     :   initial weight 
+        -param  :   dictionary of clopath parameters
+        -homeostatic : if True, homeostatic term is included in LTD equation
+        
+        ===Out===
+        -w  :    vector of weights
+        
+        ===Comments===
+        -see Clopath et al. 2010 Nature Neuroscience for details of learning rule
+        """
+        
+        # preallocate parameter dictionary
+        p = {}
+        
+        # get number of synapses (to determine shape of preallocated arrays)
+        n_syn   = u.shape[0]
+        
+        # create time vector
+        #`````````````````````````````
+        dt      = 1./fs
+        T       = u.shape[1]/fs
+        dur_samples = int(T*fs)
+        time    = np.arange(0., T, dt)
+        
+        # plasticity parameters
+        #```````````````````````````````````````````````````````````````````
+        p['u_ref']      = 9         # reference value for homeostatic process mV
+        p['adapt_t']    = 1000*fs   # time to integrate over for homeostatic process (samples)
+        p['A_m0']       = 2E-5      # A_m: amplitude for the depression
+        p['A_p']        = 38E-5     # A_p: amplitude for the potentiation
+        p['tau_p']      = 5         # tau_p: time constant for voltage trace in the potentiation term [ms]
+        p['tau_x']      = 10       # tau_x: time constant for presynaptic trace [ms]
+        p['tau_m']      = 6         # tau_m: time constant for voltage trace in the depression term [ms]
+        p['tetam']      = -60       # tetam: low threshold
+        p['tetap']      = -53       # tetap: high threshold in the potentiation term
+        p['E_L']        = -70.6     # resting potential [mV], used for LTD adaptation
+        p['delay']      = 0         # conduction delay after action potential (ms)
+        
+        
+        # update with parameters passed as arguments
+        for key, val in param:
+            p[key] = val
+        
+        # preallocate learning rule variables
+        #``````````````````````````````````````````````````````````````````````
+        self.w           = w0*np.ones((n_syn,dur_samples))       # weights
+        self.u_md        = p['E_L']*np.ones((n_syn,dur_samples)) # membrane potential for the depression
+        self.u_mdbar     = np.zeros((n_syn,dur_samples))         # homeostatic membrane potential parameter
+        self.u_mp        = p['E_L']*np.ones((n_syn,dur_samples)) # membrane potential for the potentiation
+        self.u_sig       = p['E_L']*np.ones((n_syn,dur_samples)) # thresholded membrane potential
+        self.u_md_sig    = np.zeros((n_syn,dur_samples))         # filtered and thresholded (thetam) membrane potential
+        self.u_mp_sig    = np.zeros((n_syn,dur_samples))         # filtered and thresholded (thetap) membrane potential
+        self.x_m0        = np.zeros((n_syn,dur_samples))         # presynaptic trace
+        self.A_m         = p['A_m0']*np.ones((n_syn,dur_samples))# homeostatic LTD parameter
+
+        # apply learning rule
+        
+        #`````````````````````````````````````````````````````````````````````` 
+        # main loop
+        for i, t in enumerate(time):
+            
+            # start simulation after specified delay
+            if t>p['delay']:
+                
+                # trace of membrane potential (u) with time constant tau_d
+                self.u_md[:,i]  = self.u_md[ :, i-1] + dt* ( u[ :, i-1]-self.u_md[ :, i-1])/p['tau_m']
+                             
+                # if include homeostatic LTD mechanism
+                if homeostatic:
+                    
+                    # adaptation voltage
+                    if t <= p['adapt_t']:
+                        self.u_mdbar[:,i]   = np.mean(self.u_md[:,1:i]-p['E_L'],axis=1)
+                    else:
+                        self.u_mdbar[:,i]   = np.mean(self.u_md[:,i-p['adapt_t']:i-1]-p['E_L'],axis=1)
+                
+                    # homeostatic modulation of LTD rate based on adaptation voltage
+                    self.A_m[:,i]   = p['A_m0']*( self.u_mdbar[:, i-1] **2) /( p['u_ref']**2)   
+    
+                else:
+                    # constant LTD rate
+                    self.A_m[:,i]   = p['A_m0']
+                      
+                # trace of membrane potential (u) with time constant tau_p
+                self.u_mp[:,i]  = self.u_mp[:, i-1]  +dt*( u[:,i-1]-self.u_mp[:, i-1]) /p['tau_p']
+                 
+                # trace of input spike train (spikes0)
+                self.x_m0[:,i]  = self.x_m0[:,i-1]  +dt*(x[:,i-1]-self.x_m0[:,i-1]) /p['tau_x']
+                
+                # membrane potential (u) thresholded by thetap
+                self.u_sig[:,i] = (u[:,i-1] > p['tetap']) *( u[:,i-1] -p['tetap'])
+                
+                # membrane potential trace (u_md) thresholded by thetam (taken 3ms before since time of a spike is 2ms)
+                self.u_md_sig[:,i]  = ( ( self.u_md[:, i-p['delay']*fs] -p['tetam']) > 0) *( self.u_md[:, i-p['delay']*fs] -p['tetam'])                  
+                
+                # membrane potential trace (u_md) thresholded by thetam (taken 3ms before since time of a spike is 2ms)
+                self.u_mp_sig[:,i]  = ( (self.u_mp[:,i-p['delay']*fs] -p['tetam']) > 0) *(self.u_mp[:,i-p['delay']*fs] -p['tetam'])
+                
+                # update weights
+                self.w[:,i] = self.w[:,i-1] - self.A_m[:,i-1] *self.u_md_sig[:,i-1] *x[:,i-1] + p['A_p']*self.u_sig[:,i-1] *self.u_mp_sig[:,i-1] *self.x_m0[:,i-1]
+        
+        self.p=p
+        # output weight matrix (synapses x time)
+        return self.w
+
+
+class FitFD():
+    """ Functions for fitting facillitation and depression parameters to train of synaptic inputs
+    
+    Based on FD model in Varela et al. 1997 Journal of Neuroscience
+    """
+    
+    #__________________________________________________________________________
+    def __init__(self, run_opt=False, ):
+        """ Define optimization parameters here
+        
+        ---
+        Args
+        ---
+        run_opt = if True, parameter optimization will be called on class instantiation
+        """
+        
+        # run optimization
+        #``````````````````````````````````````````````
+        if run_opt:
+            
+            param0 = [.8,.1,
+                      .999,.2,
+                      .999,100,]
+            bounds = [(0, 20), (0,.5), 
+                     (0,1), (0,1),
+                     (0, 1), (0, 100),
+                     (.9, 1), (1, 2000),]
+            self._fd_opt(param0=param0, 
+                        bounds=bounds)
+            
+        else:
+            pass
+
+    #__________________________________________________________________________
+    def _plot_fd_fromfile(self, 
+                          directory='Data/', 
+                          param_file='fd_parameters.pkl', 
+                          data_file='induction_slopes_all.mat', 
+                          plot_file='fd_fitted_traces.png',
+                          fit_color='red', 
+                          data_color='black'):
+        
+        """ Plot data and fd fit from saved files
+        ---
+        Args
+        ---
+        directory = folder for parameters and data
+        param_file =  file name for fd parameter list
+        data_file = file name for data to be fit
+            -matlab file with a matrix for tetanus at different frequencies, x_tet = [input times x tetanus frequency]
+            and a vector for tbs called x_tbs = [input times]
+        
+        ---
+        Out
+        ---
+        fig = plot with data and fd fit
+        
+        -saved
+            fig
+        """
+        
+        # load parameters
+        #`````````````````
+        with open(directory+param_file, 'rb') as pkl_file:
+            param_obj = pickle.load(pkl_file)
+            
+        params = param_obj.x
+        
+        print params
+        
+        # load data
+        #````````````````
+        self.data = scipy.io.loadmat(directory+data_file)
+        
+        t_data_list = [self.data['t_tbs'], self.data['t_tet'][:,-1]]
+        y_data_list = [self.data['x_tbs'], self.data['x_tet'][:,-1]]
+
+        # plot data and fit
+        #`````````````````````
+        fig = plt.figure()
+        
+        # iterate through input streams
+        for i, t_data in enumerate(t_data_list):
+            
+            # get time series of amplitudes from FD parameters
+            fit_opt = self._fd(params, t_data,)
+            
+            # plot data and fit
+            plt.plot(t_data, y_data_list[i], color=data_color)
+            plt.plot(t_data, fit_opt, color=fit_color)
+            
+        # format and save figure
+        #``````````````````````
+        plt.xlabel('time (s)')
+        plt.ylabel('Normalized slope')
+        plt.show()
+            
+        fig.savefig(directory+plot_file, dpi=250)
+        
+        # output figure
+        return fig
+    
+    #__________________________________________________________________________
+    def _fd_opt(self, 
+                param0, 
+                bounds, 
+                directory='Data/', 
+                param_file='fd_parameters.pkl', 
+                data_file='induction_slopes_all.mat', 
+                plot_file='fd_fitted_traces.png',
+                method='differential_evolution'):
+        
+        """ optimize fd parameters
+        
+        ---Args---
+        param0 = list of initial parameter guesses ordered as [f,tF, d1,tD1, d2,tD2, d3,tD3,...]
+        bounds = list of tuples with bounds for each parameter as [(min,max), (min,max)...] with a tuple for each parameter in param0
+        directory = string for directory containing data and optimized parameters
+        param_file = file name string for storing optimized parameters (including file type extension)
+        data_file = file name string for storing data to fit parameters to
+        plot_file = file name string for saving plot
+        method = optimization algorithm
+        
+        ---Out---
+        param_opt_obj = output object from parameter optimization algorithm (parameters stored as param_opt_obj.x)
+        
+        ---Write---
+            -param_opt_obj = optimized parameters
+            -plot of data and fitted fd curves as directory+plot_file
+        """
+        
+        # load data
+        #`````````````````````````
+        self.data = scipy.io.loadmat(directory+data_file)
+        
+        t_data_list = [self.data['t_tbs'], self.data['t_tet'][:,-1]]
+        y_data_list = [self.data['x_tbs'], self.data['x_tet'][:,-1]]
+        
+        # run optimization
+        #```````````````````````````````
+        if method == 'differential_evolution':
+            param_opt_obj = scipy.optimize.differential_evolution(self._fd_err_mult, bounds=bounds, args=(t_data_list, y_data_list))
+            
+        else:
+            param_opt_obj = scipy.optimize.minimize(self._fd_err_mult, param0, (t_data_list, y_data_list), bounds=bounds)
+
+        # save optimization parameters
+        with open(directory+param_file, 'wb') as output:
+            pickle.dump(param_opt_obj, output,protocol=pickle.HIGHEST_PROTOCOL)
+        print 'saved optimized parameters'
+        
+        self._plot_fd_fromfile(directory=directory, param_file=param_file, plot_file=plot_file)
+        
+        return param_opt_obj
+        
+    #__________________________________________________________________________
+    def _fd_loop(self, params, t_data,):
+        """ Iterate through times steps to get FD curves
+
+        ---
+        Arguments
+        ---
+        t_data = 1D array of times at which inputs arrive (s) 
+        params = list of parameters, first two parameters are for facilitation 
+        (f increment and time constant respectively), remaining parameters for depression
+
+        ---
+        Output
+        ---
+        fit = dictionary of 1D facilitation and depression values at each input time in t_data
+            ---
+            Keys
+            ---
+            params = list of parameters, first two parameters are for facilitation, remaining parameters for depression
+            F = facilitation
+            DN = depression, N is the Nth depression term, e.g. D1, D2, D3 etc 
+
+        """
+        fit = {'params':params}
+        f = params[0]
+        tF = params[1]
+        fit['F'] = np.ones(t_data.shape)
+        
+        d1 = params[2]
+        tD1 = params[3]
+        fit['D1'] =np.ones(t_data.shape)
+        
+        if len(params)>4:
+            d2 = params[4]
+            tD2 = params[5]
+            fit['D2'] = np.ones(t_data.shape)
+            
+            if len(params)>6:
+                d3 = params[6]
+                tD3 = params[7]
+                fit['D3'] = np.ones(t_data.shape)
+        
+        # FIXME set up to receive variable number of FD parameters
+        # iterate over input times
+        for i, t in enumerate(t_data):
+
+            # start from seccond input
+            if i>0:
+
+                # add increment f to previous pulse, then calculate exponential decay based on time interval
+                fit['F'][i] = 1 + (fit['F'][i-1]+f-1.)*np.exp(-(t-t_data[i-1])/tF)
+                
+                # add decrement d to previous pulse, then calculate exponential decay based on time interval
+                fit['D1'][i] = 1 - (1-fit['D1'][i-1]*d1)*np.exp(-(t-t_data[i-1])/tD1)
+                
+                if 'D2' in fit:
+                    fit['D2'][i] = 1- ( 1- fit['D2'][ i-1]*d2)* np.exp( -( t -t_data[ i-1])/ tD2)
+                
+                if 'D3' in fit:
+                    fit['D3'][i] =  1- ( 1- fit['D3'][ i-1]*d3)* np.exp( -( t -t_data[ i-1])/ tD3)
+
+        return fit 
+    
+    #__________________________________________________________________________
+    def _fd(self, params, t_data,):
+        """ fit FD parameters and return amplitude vectors
+        
+        ---
+        Arguments
+        ---
+        t_data = 1D array of times at which inputs arrive (s) 
+        params = list of parameters, first two parameters are for facilitation 
+        (f increment and time constant respectively), remaining parameters for depression
+        
+        ---
+        Output
+        ---
+        A = 1D array of amplitude values at each input time in t_data
+        """
+
+        # get time series for each F and D variable
+        #`````````````````````````````````````````
+        fit = self._fd_loop(params, t_data)
+        
+        # Combine all F and D variables to get amplitude time series A
+        #````````````````````````````````````````````
+        # temporary array for storing amplitudes
+        A = np.ones(fit[fit.keys()[0]].shape)
+        
+        # iterate through F and D variables in fit
+        for key, var in fit.iteritems():
+            
+            # if variable is an F or D variable (parameters are also stored in this dictionary)
+            if 'F' in key or 'D' in key:
+                
+                # multiply all F and D terms 
+                A = A*var
+                
+        # output 1D array of amplitudes at input times in t_data        
+        return A    
+    
+    #__________________________________________________________________________
+    def _fd_err(self, params, t_data, y_data, discount_slope=False):
+        """ Given FD parameters and data calculate error for single time series
+        
+        ---
+        Arguments
+        ---
+        t_data = 1D array of times at which inputs arrive (s) 
+        y_data = 1D array of measured amplitude values at input times in t_data
+        params = list of parameters, first two parameters are for facilitation 
+        (f increment and time constant respectively), remaining parameters for depression
+        
+        ---
+        Output
+        ---
+        ssq_error = sum of squares error between data in y_data and fd model with parameters in params
+        
+        """
+        
+        # get amplitudes from FD model with params
+        #````````````````````````````````````````
+        A = self._fd(params, t_data,)
+        
+        sq_error = (A-y_data)**2
+        
+        # add discount factor so that earlier values are weighted more
+        #````````````````````````````````````````````````````````````
+        if discount_slope:
+            discount = np.exp(-t_data/discount_slope)
+        else:
+            discount = np.ones(t_data.shape)
+        
+        # determine error
+        #````````````````
+        ssq_error = np.sum(discount*sq_error)
+
+        # output sum of squared error
+        return ssq_error
+    
+    #__________________________________________________________________________
+    def _fd_err_mult(self, params, t_data_list, y_data_list, ):
+        """Given FD parameters and data calculate error for list of time series, where each list entry is a different input stream
+        
+        ---
+        Arguments
+        ---
+        t_data_list = list of 1D arrays of times at which inputs arrive (s) [input stream][input times]
+        y_data_list = list of 1D arrays of measured amplitude values at input times in t_data [input stream][input times]
+        params = list of parameters, first two parameters are for facilitation 
+        (f increment and time constant respectively), remaining parameters for depression
+        
+        ---
+        Output
+        ---
+        ssq_error = total sum of squares error between data in y_data_list and corresponding fd model with parameters in params
+        """
+        
+        # list to store error for each input stream
+        ssq_error=[]
+        
+        # iterate over input streams
+        for i, input_stream in enumerate(t_data_list):
+            
+            # add error for each stream to list
+            ssq_error.append(self._fd_err(params, t_data_list[i], y_data_list[i]))
+            
+        print 'error:', ssq_error
+
+        # output total error summed over all streams
+        return sum(ssq_error)
+
 
 class ShapePlot():
     """ create plot of neuron morphology with data as a colormap
 
     similar to ShapePlot in neuron
     """
+    
     def __init__(self):
         """
         """
         pass
 
-    def basic(self, morpho, data, axes, colormap=colormap.jet):
+    #__________________________________________________________________________
+    def basic(self, morpho, data, axes, width_scale=1, colormap=colormap.jet):
         """ creates a shapeplot of a given neuron morphology with the given data
 
         Arguments:
@@ -80,8 +793,8 @@ class ShapePlot():
             mid_point = self.interpolate_3d(point1=parent_point, point2=child_point, t=0.5)
 
             # get diameter of parent and child 
-            parent_diam = parent[5]
-            child_diam = child[5]
+            parent_diam = width_scale*parent[5]
+            child_diam = width_scale*child[5]
             mid_diam = (parent_diam+child_diam)/2.
 
             # get data values for parent and child
@@ -103,12 +816,12 @@ class ShapePlot():
         # set colors
         p.set_array(np.array(colors))
         # plot collection
-        axes.add_collection(p)
+        # axes.add_collection(p)
         # show colorbar
         # plt.colorbar(p)
         # autoscale axes
-        axes.autoscale()
-        return axes
+        # axes.autoscale()
+        return p
 
     # create 3d interpolation function
     def interpolate_3d(self, point1, point2, t):
@@ -861,7 +1574,16 @@ class Experiment:
         experiment(**kwargs) 
 
     def _sigmoid_opt(self, params, *data):
-        """
+        """ function for fitting a sigmoid to data
+
+        Positional Arguments
+        params = list with 3 entries corresponding to parameters ymax, x50, and s respectively
+
+        data[0] = input data values
+        data[1] = output data values
+
+        Return
+        ssq_error = sum of squares error between sigmoid with parameters in param and output values in data[1]
         """
         ymax = params[0]
         x50 = params[1]
@@ -897,6 +1619,8 @@ class Experiment:
         individual parameter dictionaries are stored for each pathway in data['p']['p_path']
 
         threshold= threshold for detecting spikes
+
+        weakpath_bins=whether to include strong path time bins in weak path spike detection
 
         ==
         RETURN:
@@ -936,6 +1660,8 @@ class Experiment:
         # parameter dictionary
         p = data['p']
 
+        print p['path_combos']
+
         # load spike analysis functions
         spike_analysis = Spikes()
 
@@ -964,6 +1690,8 @@ class Experiment:
 
                         # temporary dictionary
                         dtemp={}
+
+                        dtemp['p'] = copy.copy(p)
 
                         dtemp['p_path']=copy.copy(p_path)
 
@@ -995,7 +1723,7 @@ class Experiment:
                                 # add dimensions
                                 dtemp['spike_times'][tree_key].append([])
                                 dtemp['dw'][tree_key].append([])
-                                sec_num = p['p_path'][path_key]['sec_idx'][sec_i]
+                                sec_num = p['p_path'][path_key]['sec_idx'][tree_key][sec_i]
                                 # iterate over segments
                                 for seg_i, seg in enumerate(sec):
                                     seg_num=seg
@@ -1068,20 +1796,35 @@ class Experiment:
                         # fraction of synapses with a spike in each bin, [time bin][fraction]
                         dtemp['syn_frac_bin'] = []
 
+                        if kwargs['weakpath_bins']:
+                            pulses = p['pulses']
+                        else:
+                            pulses = p['p_path'][path_key]['pulses']
                         # iterate through pulses in the current pathway
-                        for pulse_i, pulse in enumerate(range(p_path['pulses'])):
+                        for pulse_i, pulse in enumerate(range(int(pulses))):
 
-                            # determine time bins
-                            dtemp['time_bins'].append([])
-                            time1 = (p['warmup'] + 1000/p['pulse_freq']*pulse_i)/p['dt'] +1 
-                            time2 = (p['warmup'] + 1000/p['pulse_freq']*(pulse_i+1))/p['dt']
-                            dtemp['time_bins'][pulse_i].append(time1)
-                            dtemp['time_bins'][pulse_i].append(time2)
+                            if kwargs['weakpath_bins'] and path_key=='weak':
+                                # determine time bins
+                                dtemp['time_bins'].append([])
+                                time1 = (p['warmup'] + 1000/p['pulse_freq']*pulse_i)/p['dt'] +1 
+                                time2 = (p['warmup'] + 1000/p['pulse_freq']*(pulse_i+1))/p['dt']
+                                dtemp['time_bins'][pulse_i].append(time1)
+                                dtemp['time_bins'][pulse_i].append(time2)
+                            else:
+                                 # determine time bins
+                                dtemp['time_bins'].append([])
+                                time1 = (p_path['warmup'] + 1000/p_path['pulse_freq']*pulse_i)/p['dt'] +1 
+                                time2 = (p_path['warmup'] + 1000/p_path['pulse_freq']*(pulse_i+1))/p['dt']
+                                dtemp['time_bins'][pulse_i].append(time1)
+                                dtemp['time_bins'][pulse_i].append(time2)
+
 
                             # get spike times that fall within the current bin 
                             binned_spikes_dist = []
                             binned_spikes_dend =[]
+                            binned_spikes_dend_norm =[]
                             binned_spikes_soma = []
+                            binned_spikes_soma_norm = []
                             
                             # if there are any somatic spikes
                             if len(dtemp['spikes_soma'])>0:
@@ -1089,7 +1832,7 @@ class Experiment:
                                 binned_spikes_soma = [spike for spike_i, spike in enumerate(dtemp['spikes_soma']) if (spike > time1 and spike <= time2)]
                                 # if there are spikes in the current bin, normalized to the pulse onset
                                 if len(binned_spikes_soma)>0:
-                                    binned_spike_soma_norm = [spike-time1 for spike in binned_spikes_soma]
+                                    binned_spikes_soma_norm = [spike-time1 for spike in binned_spikes_soma]
                             
                             # if there are any dendritic spikes
                             if len(dtemp['spikes_dend'])>0:
@@ -1100,7 +1843,7 @@ class Experiment:
 
                                 # if there are spikes in the current bin, normalized to the pulse onset
                                 if len(binned_spikes_dend)>0:
-                                    binned_spike_dend_norm = [spike-time1 for spike in binned_spikes_dend]
+                                    binned_spikes_dend_norm = [spike-time1 for spike in binned_spikes_dend]
                                 
                             
                             # difference between dendritic and somatic spike times (dendrite first is positive, soma first is negative)
@@ -1114,7 +1857,7 @@ class Experiment:
 
                             # fraction of synapses that spike in current bin
                             binned_distances =  list(set(binned_spikes_dist))
-                            binned_syn_frac = float(len(binned_distances))/float(syn_num_key)
+                            binned_syn_frac = float(len(binned_distances))/float(p_path['syn_num'])
                             
 
                             # add spike times for current bin to list of all bins
@@ -1129,7 +1872,7 @@ class Experiment:
 
                          # fraction of synapses that spike at all during simulation
                         distances = list(set(dtemp['spikes_dend_dist']))
-                        dtemp['syn_frac'] = float(len(distances))/float(syn_num_key)
+                        dtemp['syn_frac'] = float(len(distances))/float(p_path['syn_num'])
 
                         # update main data structure
                         # for each data type
@@ -1139,151 +1882,42 @@ class Experiment:
 
         return spike_dic
 
+    def _load_group_data(self, **kwargs):
+        """ Load group data from folder
+        
+        ==
+        Keyword Arguments:
+        experiment: experiment name, typically a string of the form 'exp_4a'
 
+        save_string: string for saving pickled group data, must include .pkl suffix
+        
+        ==
+        Return:
+        group data, typically a dictionary.  If no file is found with the specified string, an empty dictionary is returned
 
-        # retrieve experiment conditions
-        freq = p['pulse_freq']
-        syn_num = p['syn_num']
-        syn_dist = p['syn_dist'][1] 
-        freq_key = str(freq)
-        syn_num_key =str(syn_num)
-        syn_dist_key = str(syn_dist)
+        """
 
-        # update data structure dimensions
-        if str(freq) not in spike_data:
-            spike_data[str(freq)]={}
+        # identify data folder
+        data_folder = 'Data/'+kwargs['experiment']+'/'
+        
+        # all files in directory
+        files = os.listdir(data_folder)
 
-        if str(syn_dist) not in spike_data[str(freq)]:
-            spike_data[str(freq)][str(syn_dist)]={}
+        save_string = kwargs['save_string']
+        # if data file already exists
+        if save_string in files:
+            # load data
+            print 'group data found:', save_string
+            with open(data_folder+save_string, 'rb') as pkl_file:
+                group_data= pickle.load(pkl_file)
+            print 'group data loaded'
+        # otherwise create data structure
+        else:
+            # data organized as {frequency}{syn distance}{number of synapses}{polarity}[trial]{data type}{tree}[section][segment][spikes]
+            print 'no group data found'
+            group_data= {}
 
-        if str(syn_num) not in spike_data[str(freq)][str(syn_dist)]:
-            spike_data[str(freq)][str(syn_dist)][str(syn_num)]={}
-            for polarity_i, polarity in enumerate(p['field']):
-                spike_data[str(freq)][str(syn_dist)][str(syn_num)][str(polarity)]={}
-
-        # iterate through polarities
-        for polarity_i, polarity in enumerate(p['field']):
-            polarity_key =str(polarity)
-
-
-
-            # for each trial get a list of dendritic spike times and a corresponding list with the location (distance from soma) they occured
-            dtemp['spikes_dend']=[] 
-            dtemp['spikes_dend_dist']=[]
-            dtemp['spikes_first'] = []
-            dtemp['spike_times'] ={}
-            dtemp['dw']={}
-
-            # add soma data
-            dtemp['spike_times']['soma'] = [[]]
-            spike_times = spike_analysis.detect_spikes(data[str(polarity)]['soma_v'][0][0], threshold=threshold)['times'][0]
-            dtemp['spike_times']['soma'][0].append(spike_times)
-            dtemp['spikes_soma'] = spike_times
-            # print spike_times
-
-
-            # iterate through tree, section, segment
-            for tree_key, tree in p['sec_idx'].iteritems():
-                dtemp['spike_times'][tree_key] =[]
-                dtemp['dw'][tree_key] =[]
-            
-                for sec_i, sec in enumerate(tree):
-
-                    dtemp['spike_times'][tree_key].append([])
-                    dtemp['dw'][tree_key].append([])
-
-                    for seg_i, seg in enumerate(p['seg_idx'][tree_key][sec_i]):
-
-                        sec_num = sec
-                        seg_num = p['seg_idx'][tree_key][sec_i][seg_i]
-                        distance = p['seg_dist'][tree_key][sec_num][seg_num]
-
-                        # list of spike times [spike_times]
-                        spike_times = spike_analysis.detect_spikes(data[str(polarity)][tree_key+'_v'][sec_i][seg_i], threshold=threshold)['times'][0]
-
-                        # scalar weight change
-                        dw = data[str(polarity)][tree_key+'_gbar'][sec_i][seg_i][-1]/data[str(polarity)][tree_key+'_gbar'][sec_i][seg_i][0]
-
-                        # add to dtemp structure
-                        dtemp['spike_times'][tree_key][sec_i].append(spike_times)
-                        dtemp['dw'][tree_key][sec_i].append(dw)
-
-                        # record whether whether there was a spike in soma or dendrite first [all dendritic spike]
-                        # no spike=0, dend first=1, soma first=2
-                        # if there are dendritic spikes
-                        if len(spike_times)>0:
-                            # iterate through spike times
-                            for spike_i, spike_time in enumerate(spike_times):
-
-                                # add to list of all dendritic spike times for this trial/cell
-                                dtemp['spikes_dend'].append(spike_time)
-                                dtemp['spikes_dend_dist'].append(distance)
-
-                                # if this is the first spike
-                                if spike_i==0:
-                                    # if there is also a somatic spike
-                                    if len(dtemp['spikes_soma'])>0:
-                                        # if the somatic spike occurs first
-                                        if spike_time > dtemp['spikes_soma'][0]:
-
-                                            # store as soma first
-                                            dtemp['spikes_first'].append(2)
-                                        # otherwise the spike is dend first
-                                        else:
-                                            dtemp['spikes_first'].append(1)
-                                    # if there is a dendritic but no somatic spike, it is dend first
-                                    else:
-                                        dtemp['spikes_first'].append(1)
-                        # otherwise no spike at all
-                        else:
-                            dtemp['spikes_first'].append(0)
-
-            # create nested list of spike times with dimensions [pulse time bins][spike times]
-            dtemp['time_bins'] = []
-            dtemp['spikes_dend_bin'] = []
-            dtemp['spikes_soma_bin'] = []
-            dtemp['spikes_dend_dist_bin'] = []
-            dtemp['spikes_dend_diff_bin'] = []
-            dtemp['syn_frac_bin'] = []
-            for pulse_i, pulse in enumerate(range(p['pulses'])):
-                # determine time bins
-                dtemp['time_bins'].append([])
-                time1 = (p['warmup'] + 1000/p['pulse_freq']*pulse_i)/p['dt'] +1 
-                time2 = (p['warmup'] + 1000/p['pulse_freq']*(pulse_i+1))/p['dt']
-                dtemp['time_bins'][pulse_i].append(time1)
-                dtemp['time_bins'][pulse_i].append(time2)
-
-                # get spike times that fall within the current bin 
-                binned_spikes_dist = []
-                binned_spikes_dend =[]
-                binned_spikes_soma = []
-                if len(dtemp['spikes_soma'])>0:
-                    # print dtemp['spikes_soma']
-                    binned_spikes_soma = [spike for spike_i, spike in enumerate(dtemp['spikes_soma']) if (spike > time1 and spike <= time2)]
-                if len(dtemp['spikes_dend'])>0:
-                    binned_spikes_dend = [spike for spike_i, spike in enumerate(dtemp['spikes_dend']) if (spike > time1 and spike <= time2)]
-                    binned_spikes_dist = [dtemp['spikes_dend_dist'][spike_i] for spike_i, spike in enumerate(dtemp['spikes_dend']) if (spike > time1 and spike <= time2)]
-                # difference between dendritic and somatic spike times (dendrite first is positive, soma first is negative)
-                if len(binned_spikes_soma)>0 and len(binned_spikes_dend)>0:
-                    binned_spikes_dend_diff = [binned_spikes_soma[0]-spike for spike_i, spike in enumerate(binned_spikes_dend)]
-                else: #len(binned_spikes_dend)>0:
-                    binned_spikes_dend_diff = binned_spikes_dend
-
-                # fraction of synapses that spike in current bin
-                binned_distances =  list(set(binned_spikes_dist))
-                binned_syn_frac = float(len(binned_distances))/float(syn_num_key)
-                
-
-                # add spike times for current bin to list of all bins
-                dtemp['spikes_dend_bin'].append(binned_spikes_dend)
-                dtemp['spikes_soma_bin'].append(binned_spikes_soma)
-                dtemp['spikes_dend_dist_bin'].append(binned_spikes_dist)
-                dtemp['spikes_dend_diff_bin'].append(binned_spikes_dend_diff)
-                dtemp['syn_frac_bin'].append(binned_syn_frac)
-
-             # fraction of synapses that spike at all during simulation
-            distances = list(set(dtemp['spikes_dend_dist']))
-            dtemp['syn_frac'] = float(len(distances))/float(syn_num_key)
+        return group_data
 
     def exp_1a(self, **kwargs):
         """ 
@@ -1347,7 +1981,7 @@ class Experiment:
 
         # data types to be stored
         dtypes = ['spike_times','dw','p']
-        #%%
+
         # iterate over data files
         for data_file_i, data_file in enumerate(data_files):
 
@@ -1517,8 +2151,7 @@ class Experiment:
                             # fraction of synapses that spike in current bin
                             binned_distances =  list(set(binned_spikes_dist))
                             binned_syn_frac = float(len(binned_distances))/float(syn_num_key)
-                            
-<<<<<<< HEAD
+
 
                             # add spike times for current bin to list of all bins for current trial
                             dtemp['spikes_dend_bin'].append(binned_spikes_dend)
@@ -1553,7 +2186,7 @@ class Experiment:
             pickle.dump(save_group_data, output,protocol=pickle.HIGHEST_PROTOCOL)
         print 'spike data saved'
 
-        #%%
+        
         # plot number of activated synapses vs. mean fraction of synapses with at least one soma/dendrite driven spike
         plots={}
         for freq_key, freq in spike_data.iteritems():
@@ -1573,972 +2206,27 @@ class Experiment:
                         opacity = 0.7
                         marker_soma = '.'
                         marker_dend= 'x'
+                        marker_all='^'
 
                         # lsit of soma/dend spike fraction for each trial in current set of conditions, i.e. number of spikes/number of active synapses [trials]
-                        soma_frac=[]
-                        dend_frac=[]
-                        # iterate through trials
-                        for trial_i, trial in enumerate(polarity['spikes_first']):
-                            # soma and dendrite spikes
-                            # soma=2, dendrite=1
-                            # note that trial contains an entry for all activated synapses, a place is held for none spiking synapses by a 0
-                            soma_first = [spike_i for spike_i, spike_loc in enumerate(trial) if spike_loc==2]
-                            dend_first = [spike_i for spike_i, spike_loc in enumerate(trial) if spike_loc==1]
-                            # add to list with dimension [trials]
-                            soma_frac.append(float(len(soma_first))/float(len(trial)))
-                            dend_frac.append(float(len(dend_first))/float(len(trial)))
-                        
-                        # group stats
-                        soma_frac_mean = np.mean(soma_frac)
-                        soma_frac_std = np.std(soma_frac)
-                        soma_frac_sem = stats.sem(soma_frac)
-                        dend_frac_mean = np.mean(dend_frac)
-                        dend_frac_std = np.std(dend_frac)
-                        dend_frac_sem = stats.sem(dend_frac)
-
-                        # plot with errorbars
-                        plt.figure(plots[freq_key][syn_dist_key].number)
-                        plt.plot(float(syn_num_key), soma_frac_mean, color=color, marker=marker_soma, markersize=size, alpha=opacity)
-                        plt.plot(float(syn_num_key), dend_frac_mean, color=color, marker=marker_dend, markersize=size, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), soma_frac_mean, yerr=soma_frac_sem, color=color, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), dend_frac_mean, yerr=dend_frac_sem, color=color, alpha=opacity)
-                        plt.xlabel('number of active synapses')
-                        plt.ylabel('fraction of spiking synapses')
-                        plt.title(freq_key + ' Hz, ' + syn_dist_key + ' um from soma')
-
-                # save and close figure
-                plt.figure(plots[freq_key][syn_dist_key].number)
-                plot_file_name = 'syn_num_x_spike_prob_location_'+freq_key+'Hz_' + syn_dist_key +'_um'
-                plots[freq_key][syn_dist_key].savefig(data_folder+plot_file_name+'.png', dpi=250)
-                with open(data_folder+plot_file_name+'.pkl', 'wb') as output:
-                    pickle.dump(plots[freq_key][syn_dist_key], output,protocol=pickle.HIGHEST_PROTOCOL)
-                print 'figure: ', plot_file_name, ' saved'
-                plt.close(plots[freq_key][syn_dist_key])
-        
-        #%%
-        # plot number of synapses vs. total number of soma/dendritic spikes normalized to total number of synapses
-        plots={}
-        for freq_key, freq in spike_data.iteritems():
-            plots[freq_key] = {}
-            for syn_dist_key, syn_dist in freq.iteritems():
-                plots[freq_key][syn_dist_key] = plt.figure()
-                for syn_num_key, syn_num in syn_dist.iteritems():
-                    for polarity_key, polarity in syn_num.iteritems():
-
-                        # get polarity index
-                        polarity_i = [f_i for f_i, f in enumerate(polarity['p'][0]['field']) if str(f)==polarity_key][0]
-
-                        # plot color and marker
-                        color = polarity['p'][0]['field_color'][polarity_i]
-                        # size = 20.*float(syn_dist_key)/600.
-                        size = 10.
-                        opacity = 0.7
-                        marker_soma = '.'
-                        marker_dend= 'x'
-
-                        # lsit of soma/dend spike fraction for each trial in current set of conditions
-
-                        # iterate through trials
-                        soma_spikes_total=[]
-                        dend_spikes_total=[]
-                        for trial_i, trial in enumerate(polarity['spikes_dend_diff_bin']):
-                            # count somatic/dendritic spikes for each trial
-                            soma_count =[]
-                            dend_count=[]
-                            for time_bin_i, time_bin in enumerate(trial):
-                                # list of spike indeces with soma/dend spikes
-                                soma_first = [spike_i for spike_i, spike_diff in enumerate(time_bin) if spike_diff<0.]
-                                dend_first = [spike_i for spike_i, spike_diff in enumerate(time_bin) if spike_diff>=0.]
-                                # count total spieks per time bin
-                                soma_count.append(float(len(soma_first)))
-                                dend_count.append(float(len(dend_first)))
-                            
-                            syn_num_unique = float(len([seg_i for tree_key, tree in polarity['p'][trial_i]['seg_idx'].iteritems() for sec_i, sec in enumerate(tree) for seg_i, seg in enumerate(sec)]))
-                            # syn_num_unique = len(polarity['p']['seg_list'])
-                            # number of unique synaptic locations
-                            # syn_num_unique = float(len(list(set(polarity['spikes_dend_dist'][trial_i]))))
-                            # total spikes per trial, normalized
-                            soma_spikes_norm = np.sum(soma_count)/syn_num_unique
-                            dend_spikes_norm = np.sum(dend_count)/syn_num_unique
-                            # add to list for all trials
-                            soma_spikes_total.append(soma_spikes_norm)
-                            dend_spikes_total.append(dend_spikes_norm)
-                            
-                            # print 'dend_spikes_total:',dend_spikes_total
-                        
-                        # group stats
-                        soma_total_mean = np.mean(soma_spikes_total)
-                        soma_total_std = np.std(soma_spikes_total)
-                        soma_total_sem = stats.sem(soma_spikes_total)
-                        dend_total_mean = np.mean(dend_spikes_total)
-                        dend_total_std = np.std(dend_spikes_total)
-                        dend_total_sem = stats.sem(dend_spikes_total)
-
-                        # plot with errorbars
-                        plt.figure(plots[freq_key][syn_dist_key].number)
-                        plt.plot(float(syn_num_key), soma_total_mean, color=color, marker=marker_soma, markersize=size, alpha=opacity)
-                        plt.plot(float(syn_num_key), dend_total_mean, color=color, marker=marker_dend, markersize=size, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), soma_total_mean, yerr=soma_total_sem, color=color, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), dend_total_mean, yerr=dend_total_sem, color=color, alpha=opacity)
-                        plt.xlabel('number of active synapses')
-                        plt.ylabel('Number of spikes/synapse')
-                        plt.title(freq_key + ' Hz, ' + syn_dist_key + ' um from soma')
-
-                # save and close figure
-                plt.figure(plots[freq_key][syn_dist_key].number)
-                plot_file_name = 'syn_num_x_spikes_total_'+freq_key+'Hz_' + syn_dist_key +'_um'
-                plots[freq_key][syn_dist_key].savefig(data_folder+plot_file_name+'.png', dpi=250)
-                with open(data_folder+plot_file_name+'.pkl', 'wb') as output:
-                    pickle.dump(plots[freq_key][syn_dist_key], output,protocol=pickle.HIGHEST_PROTOCOL)
-                print 'figure: ', plot_file_name, ' saved'
-                plt.close(plots[freq_key][syn_dist_key])
-        
-        #%%
-        # plot number of synapses vs. mean spike timing
-        plots={}
-        for freq_key, freq in spike_data.iteritems():
-            plots[freq_key] = {}
-            for syn_dist_key, syn_dist in freq.iteritems():
-                plots[freq_key][syn_dist_key] = plt.figure()
-                for syn_num_key, syn_num in syn_dist.iteritems():
-                    for polarity_key, polarity in syn_num.iteritems():
-
-                        dt = polarity['p'][0]['dt']
-                        # get polarity index
-                        polarity_i = [f_i for f_i, f in enumerate(polarity['p'][0]['field']) if str(f)==polarity_key][0]
-
-                        # plot color and marker
-                        color = polarity['p'][0]['field_color'][polarity_i]
-                        # size = 20.*float(syn_dist_key)/600.
-                        size = 10.
-                        opacity = 0.7
-                        marker_soma = '.'
-                        marker_dend= 'x'
-
-                        # lsit of soma/dend spike fraction for each trial in current set of conditions
-                        soma_frac=[]
-                        dend_frac=[]
-                        # iterate through trials
-                        soma_timing=[]
-                        dend_timing=[]
-                        for trial_i, trial in enumerate(polarity['spikes_dend_diff_bin']):
-                            for time_bin_i, time_bin in enumerate(trial):
-                                onset = polarity['time_bins'][trial_i][time_bin_i][0]
-                                soma_first = [spike_i for spike_i, spike_diff in enumerate(time_bin) if spike_diff<0.]
-                                dend_first = [spike_i for spike_i, spike_diff in enumerate(time_bin) if spike_diff>=0.]
-                                soma_time = [polarity['spikes_dend_bin'][trial_i][time_bin_i][spike_i]-onset for spike_i in soma_first]
-                                dend_time = [polarity['spikes_dend_bin'][trial_i][time_bin_i][spike_i]-onset for spike_i in dend_first]
-                                soma_timing.append(soma_time)
-                                dend_timing.append(dend_time)
-
-                        soma_timing_flat = [time*dt for times in soma_timing for time in times]
-                        dend_timing_flat = [time*dt for times in dend_timing for time in times]
-                        
-                        # group stats
-                        soma_timing_mean = np.mean(soma_timing_flat)
-                        soma_timing_std = np.std(soma_timing_flat)
-                        soma_timing_sem = stats.sem(soma_timing_flat)
-                        dend_timing_mean = np.mean(dend_timing_flat)
-                        dend_timing_std = np.std(dend_timing_flat)
-                        dend_timing_sem = stats.sem(dend_timing_flat)
-
-                        # plot with errorbars
-                        plt.figure(plots[freq_key][syn_dist_key].number)
-                        plt.plot(float(syn_num_key), soma_timing_mean, color=color, marker=marker_soma, markersize=size, alpha=opacity)
-                        plt.plot(float(syn_num_key), dend_timing_mean, color=color, marker=marker_dend, markersize=size, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), soma_timing_mean, yerr=soma_timing_sem, color=color, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), dend_timing_mean, yerr=dend_timing_sem, color=color, alpha=opacity)
-                        plt.xlabel('number of active synapses')
-                        plt.ylabel('spike timing after epsp onset (ms)')
-                        plt.title(freq_key + ' Hz, ' + syn_dist_key + ' um from soma')
-
-                # save and close figure
-                plt.figure(plots[freq_key][syn_dist_key].number)
-                plot_file_name = 'syn_num_x_spikes_timing_'+freq_key+'Hz_' + syn_dist_key +'_um'
-                plots[freq_key][syn_dist_key].savefig(data_folder+plot_file_name+'.png', dpi=250)
-                with open(data_folder+plot_file_name+'.pkl', 'wb') as output:
-                    pickle.dump(plots[freq_key][syn_dist_key], output,protocol=pickle.HIGHEST_PROTOCOL)
-                print 'figure: ', plot_file_name, ' saved'
-                plt.close(plots[freq_key][syn_dist_key])
-
-    def exp_1b(self, **kwargs):
-        """
-        activate a varying number of synapses with varying distance from the soma.  Synapses are chosen from a window of 200 um, with the window moving along the apical dendrite.  As number of synapses is increased, multiple synapses may impinge on the same compartment/segment, effectively increasing the weight in that segment.  The threshold for generating a somatic or dendritic spike (in number of synapses) is measured as a function of mean distance from the soma and frequency of synaptic activity.  
-
-        Similar to 1a, with larger distance window for synapses to be activated
-
-        Plots: 
-        number of active synapse x fraction of synapses with at least one spike (somatically and dendritically driven spikes are separated)
-
-        number of active synapses x total number of spikes (normalized to number of active synapses, somatic and dendritic spikes are separated)
-
-        number of active synapses x mean spike timing for each spike
-        """
-        # spike threshold 
-        threshold =-30
-
-        # identify data folder
-        data_folder = 'Data/'+kwargs['experiment']+'/'
-        
-        # all files in directory
-        files = os.listdir(data_folder)
-        
-        # data files
-        data_files = [file for file in files if 'data' in file]
-        plot_files = [file for file in files if 'trace' in file]
-        
-        # unique identifiers for each file type
-        data_files_id= [file[-36:-1] for file in files if 'data' in file]
-        plot_files_id = [file[-36:-1] for file in files if 'trace' in file]
-
-        # if list of processed files in folder, load list
-        id_list_string_spike_times = 'id_list_spike_times.pkl'
-        if id_list_string_spike_times in files:
-            print 'id_list found'
-            
-            with open(data_folder+id_list_string_spike_times, 'rb') as pkl_file:
-                id_list_spike_times = pickle.load(pkl_file)
-
-            print 'id list loaded'
-        
-        # otherwise create empty list
-        else:
-            id_list_spike_times = []
-
-        # string to save group data
-        save_string_group_data_raw = 'spikes_grouped_raw'+'.pkl'
-        # if data file already exists
-        if save_string_group_data_raw in files:
-            # load data
-            print 'raw spike data found'
-            with open(data_folder+save_string_group_data_raw, 'rb') as pkl_file:
-                spike_data= pickle.load(pkl_file)
-            print 'raw spike data loaded'
-        # otherwise create data structure
-        else:
-            # data organized as {frequency}{syn distance}{number of synapses}{polarity}[trial]{data type}{tree}[section][segment][spikes]
-            spike_data= {}
-
-
-        # load spike analysis functions
-        spike_analysis = Spikes()
-
-        dtypes = ['spike_times','dw','p']
-        #%%
-        # iterate over data files
-        for data_file_i, data_file in enumerate(data_files):
-
-            if data_file_i >=0:# and data_file_i <=1000:
-
-                # check if data has been processed already
-                if data_file not in id_list_spike_times:
-
-                    print data_file
-                    # open unprocessed data
-
-                    try:
-                        with open(data_folder+data_file, 'rb') as pkl_file:
-                            data = pickle.load(pkl_file)
-
-                        print 'data_file: ', data_file_i, ' out of ', len(data_files), ' opened'
-                    except EOFError:
-                        'EOF error, file not opened'
-                        continue
-
-                    # add to processed list
-                    id_list_spike_times.append(data_file)
-
-                    # parameter dictionary
-                    p = data['p']
-
-                    # temporary store for current trial data. all dictionary entries will be transferred to full data structure (all trials)
-                    dtemp = {}
-
-                    # print trial
-                    # parameter dictionary
-                    dtemp['p'] = copy.copy(p)
-
-                    # retrieve experiment conditions
-                    freq = p['pulse_freq']
-                    syn_num = p['syn_num']
-                    syn_dist = p['syn_dist'][1] 
-                    freq_key = str(freq)
-                    syn_num_key =str(syn_num)
-                    syn_dist_key = str(syn_dist)
-
-                    # update data structure dimensions
-                    if str(freq) not in spike_data:
-                        spike_data[str(freq)]={}
-
-                    if str(syn_dist) not in spike_data[str(freq)]:
-                        spike_data[str(freq)][str(syn_dist)]={}
-
-                    if str(syn_num) not in spike_data[str(freq)][str(syn_dist)]:
-                        spike_data[str(freq)][str(syn_dist)][str(syn_num)]={}
-                        for polarity_i, polarity in enumerate(p['field']):
-                            spike_data[str(freq)][str(syn_dist)][str(syn_num)][str(polarity)]={}
-
-                    # iterate through polarities
-                    for polarity_i, polarity in enumerate(p['field']):
-                        polarity_key =str(polarity)
-
-
-
-                        # for each trial get a list of dendritic spike times and a corresponding list with the location (distance from soma) they occured
-                        dtemp['spikes_dend']=[] 
-                        dtemp['spikes_dend_dist']=[]
-                        dtemp['spikes_first'] = []
-                        dtemp['spike_times'] ={}
-                        dtemp['dw']={}
-
-                        # add soma data
-                        dtemp['spike_times']['soma'] = [[]]
-                        spike_times = spike_analysis.detect_spikes(data[str(polarity)]['soma_v'][0][0], threshold=threshold)['times'][0]
-                        dtemp['spike_times']['soma'][0].append(spike_times)
-                        dtemp['spikes_soma'] = spike_times
-                        # print spike_times
-
-
-                        # iterate through tree, section, segment
-                        for tree_key, tree in p['sec_idx'].iteritems():
-                            dtemp['spike_times'][tree_key] =[]
-                            dtemp['dw'][tree_key] =[]
-                        
-                            for sec_i, sec in enumerate(tree):
-
-                                dtemp['spike_times'][tree_key].append([])
-                                dtemp['dw'][tree_key].append([])
-
-                                for seg_i, seg in enumerate(p['seg_idx'][tree_key][sec_i]):
-
-                                    sec_num = sec
-                                    seg_num = p['seg_idx'][tree_key][sec_i][seg_i]
-                                    distance = p['seg_dist'][tree_key][sec_num][seg_num]
-
-                                    # list of spike times [spike_times]
-                                    spike_times = spike_analysis.detect_spikes(data[str(polarity)][tree_key+'_v'][sec_i][seg_i], threshold=threshold)['times'][0]
-
-                                    # scalar weight change
-                                    dw = data[str(polarity)][tree_key+'_gbar'][sec_i][seg_i][-1]/data[str(polarity)][tree_key+'_gbar'][sec_i][seg_i][0]
-
-                                    # add to dtemp structure
-                                    dtemp['spike_times'][tree_key][sec_i].append(spike_times)
-                                    dtemp['dw'][tree_key][sec_i].append(dw)
-
-                                    # record whether whether there was a spike in soma or dendrite first [all dendritic spike]
-                                    # no spike=0, dend first=1, soma first=2
-                                    # if there are dendritic spikes
-                                    if len(spike_times)>0:
-                                        # iterate through spike times
-                                        for spike_i, spike_time in enumerate(spike_times):
-
-                                            # add to list of all dendritic spike times for this trial/cell
-                                            dtemp['spikes_dend'].append(spike_time)
-                                            dtemp['spikes_dend_dist'].append(distance)
-
-                                            # if this is the first spike
-                                            if spike_i==0:
-                                                # if there is also a somatic spike
-                                                if len(dtemp['spikes_soma'])>0:
-                                                    # if the somatic spike occurs first
-                                                    if spike_time > dtemp['spikes_soma'][0]:
-
-                                                        # store as soma first
-                                                        dtemp['spikes_first'].append(2)
-                                                    # otherwise the spike is dend first
-                                                    else:
-                                                        dtemp['spikes_first'].append(1)
-                                                # if there is a dendritic but no somatic spike, it is dend first
-                                                else:
-                                                    dtemp['spikes_first'].append(1)
-                                    # otherwise no spike at all
-                                    else:
-                                        dtemp['spikes_first'].append(0)
-
-                        # create nested list of spike times with dimensions [pulse time bins][spike times]
-                        dtemp['time_bins'] = []
-                        dtemp['spikes_dend_bin'] = []
-                        dtemp['spikes_soma_bin'] = []
-                        dtemp['spikes_dend_dist_bin'] = []
-                        dtemp['spikes_dend_diff_bin'] = []
-                        dtemp['syn_frac_bin'] = []
-                        for pulse_i, pulse in enumerate(range(p['pulses'])):
-                            # determine time bins
-                            dtemp['time_bins'].append([])
-                            time1 = (p['warmup'] + 1000/p['pulse_freq']*pulse_i)/p['dt'] +1 
-                            time2 = (p['warmup'] + 1000/p['pulse_freq']*(pulse_i+1))/p['dt']
-                            dtemp['time_bins'][pulse_i].append(time1)
-                            dtemp['time_bins'][pulse_i].append(time2)
-
-                            # get spike times that fall within the current bin 
-                            binned_spikes_dist = []
-                            binned_spikes_dend =[]
-                            binned_spikes_soma = []
-                            if len(dtemp['spikes_soma'])>0:
-                                # print dtemp['spikes_soma']
-                                binned_spikes_soma = [spike for spike_i, spike in enumerate(dtemp['spikes_soma']) if (spike > time1 and spike <= time2)]
-                            if len(dtemp['spikes_dend'])>0:
-                                binned_spikes_dend = [spike for spike_i, spike in enumerate(dtemp['spikes_dend']) if (spike > time1 and spike <= time2)]
-                                binned_spikes_dist = [dtemp['spikes_dend_dist'][spike_i] for spike_i, spike in enumerate(dtemp['spikes_dend']) if (spike > time1 and spike <= time2)]
-                            # difference between dendritic and somatic spike times (dendrite first is positive, soma first is negative)
-                            if len(binned_spikes_soma)>0 and len(binned_spikes_dend)>0:
-                                binned_spikes_dend_diff = [binned_spikes_soma[0]-spike for spike_i, spike in enumerate(binned_spikes_dend)]
-                            else: #len(binned_spikes_dend)>0:
-                                binned_spikes_dend_diff = binned_spikes_dend
-
-                            # fraction of synapses that spike in current bin
-                            binned_distances =  list(set(binned_spikes_dist))
-                            binned_syn_frac = float(len(binned_distances))/float(syn_num_key)
-                            
-
-                            # add spike times for current bin to list of all bins
-                            dtemp['spikes_dend_bin'].append(binned_spikes_dend)
-                            dtemp['spikes_soma_bin'].append(binned_spikes_soma)
-                            dtemp['spikes_dend_dist_bin'].append(binned_spikes_dist)
-                            dtemp['spikes_dend_diff_bin'].append(binned_spikes_dend_diff)
-                            dtemp['syn_frac_bin'].append(binned_syn_frac)
-
-                         # fraction of synapses that spike at all during simulation
-                        distances = list(set(dtemp['spikes_dend_dist']))
-                        dtemp['syn_frac'] = float(len(distances))/float(syn_num_key)
-
-=======
-
-                            # add spike times for current bin to list of all bins for current trial
-                            dtemp['spikes_dend_bin'].append(binned_spikes_dend)
-                            dtemp['spikes_soma_bin'].append(binned_spikes_soma)
-                            dtemp['spikes_dend_dist_bin'].append(binned_spikes_dist)
-                            dtemp['spikes_dend_diff_bin'].append(binned_spikes_dend_diff)
-                            dtemp['syn_frac_bin'].append(binned_syn_frac)
-
-                        # fraction of synapses that spike at all during simulation
-                        distances = list(set(dtemp['spikes_dend_dist']))
-                        dtemp['syn_frac'] = float(len(distances))/float(syn_num_key)
-
-                        # update main data structure
-                        # for each data type
-                        for dtype_key, dtype in dtemp.iteritems():
-                            
-                            # if this type does not already exist in main group data structure
-                            if dtype_key not in spike_data[freq_key][syn_dist_key][syn_num_key][polarity_key]:
-                                # create list to store data for each trial
-                                spike_data[freq_key][syn_dist_key][syn_num_key][polarity_key][dtype_key]=[]
-
-                            # add data for current trial to list 
-                            spike_data[freq_key][syn_dist_key][syn_num_key][polarity_key][dtype_key].append(dtype)
-
-        # save processed file list
-        with open(data_folder+id_list_string_spike_times, 'wb') as output:pickle.dump(id_list_spike_times, output,protocol=pickle.HIGHEST_PROTOCOL)
-        print 'id list saved'
-        
-        # save structure of all raw spike data
-        save_group_data = spike_data
-        with open(data_folder+save_string_group_data_raw, 'wb') as output:
-            pickle.dump(save_group_data, output,protocol=pickle.HIGHEST_PROTOCOL)
-        print 'spike data saved'
-
-        #%%
-        # plot number of activated synapses vs. mean fraction of synapses with at least one soma/dendrite driven spike
-        plots={}
-        for freq_key, freq in spike_data.iteritems():
-            plots[freq_key] = {}
-            for syn_dist_key, syn_dist in freq.iteritems():
-                plots[freq_key][syn_dist_key] = plt.figure()
-                for syn_num_key, syn_num in syn_dist.iteritems():
-                    for polarity_key, polarity in syn_num.iteritems():
-
-                        # get polarity index
-                        polarity_i = [f_i for f_i, f in enumerate(polarity['p'][0]['field']) if str(f)==polarity_key][0]
-
-                        # plot color and marker
-                        color = polarity['p'][0]['field_color'][polarity_i]
-                        # size = 20.*float(syn_dist_key)/600.
-                        size = 10.
-                        opacity = 0.7
-                        marker_soma = '.'
-                        marker_dend= 'x'
-
-                        # lsit of soma/dend spike fraction for each trial in current set of conditions, i.e. number of spikes/number of active synapses [trials]
-                        soma_frac=[]
-                        dend_frac=[]
-                        # iterate through trials
-                        for trial_i, trial in enumerate(polarity['spikes_first']):
-                            # soma and dendrite spikes
-                            # soma=2, dendrite=1
-                            # note that trial contains an entry for all activated synapses, a place is held for none spiking synapses by a 0
-                            soma_first = [spike_i for spike_i, spike_loc in enumerate(trial) if spike_loc==2]
-                            dend_first = [spike_i for spike_i, spike_loc in enumerate(trial) if spike_loc==1]
-                            # add to list with dimension [trials]
-                            soma_frac.append(float(len(soma_first))/float(len(trial)))
-                            dend_frac.append(float(len(dend_first))/float(len(trial)))
-                        
-                        # group stats
-                        soma_frac_mean = np.mean(soma_frac)
-                        soma_frac_std = np.std(soma_frac)
-                        soma_frac_sem = stats.sem(soma_frac)
-                        dend_frac_mean = np.mean(dend_frac)
-                        dend_frac_std = np.std(dend_frac)
-                        dend_frac_sem = stats.sem(dend_frac)
-
-                        # plot with errorbars
-                        plt.figure(plots[freq_key][syn_dist_key].number)
-                        plt.plot(float(syn_num_key), soma_frac_mean, color=color, marker=marker_soma, markersize=size, alpha=opacity)
-                        plt.plot(float(syn_num_key), dend_frac_mean, color=color, marker=marker_dend, markersize=size, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), soma_frac_mean, yerr=soma_frac_sem, color=color, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), dend_frac_mean, yerr=dend_frac_sem, color=color, alpha=opacity)
-                        plt.xlabel('number of active synapses')
-                        plt.ylabel('fraction of spiking synapses')
-                        plt.title(freq_key + ' Hz, ' + syn_dist_key + ' um from soma')
-
-                # save and close figure
-                plt.figure(plots[freq_key][syn_dist_key].number)
-                plot_file_name = 'syn_num_x_spike_prob_location_'+freq_key+'Hz_' + syn_dist_key +'_um'
-                plots[freq_key][syn_dist_key].savefig(data_folder+plot_file_name+'.png', dpi=250)
-                with open(data_folder+plot_file_name+'.pkl', 'wb') as output:
-                    pickle.dump(plots[freq_key][syn_dist_key], output,protocol=pickle.HIGHEST_PROTOCOL)
-                print 'figure: ', plot_file_name, ' saved'
-                plt.close(plots[freq_key][syn_dist_key])
-        
-        #%%
-        # plot number of synapses vs. total number of soma/dendritic spikes normalized to total number of synapses
-        plots={}
-        for freq_key, freq in spike_data.iteritems():
-            plots[freq_key] = {}
-            for syn_dist_key, syn_dist in freq.iteritems():
-                plots[freq_key][syn_dist_key] = plt.figure()
-                for syn_num_key, syn_num in syn_dist.iteritems():
-                    for polarity_key, polarity in syn_num.iteritems():
-
-                        # get polarity index
-                        polarity_i = [f_i for f_i, f in enumerate(polarity['p'][0]['field']) if str(f)==polarity_key][0]
-
-                        # plot color and marker
-                        color = polarity['p'][0]['field_color'][polarity_i]
-                        # size = 20.*float(syn_dist_key)/600.
-                        size = 10.
-                        opacity = 0.7
-                        marker_soma = '.'
-                        marker_dend= 'x'
-
-                        # lsit of soma/dend spike fraction for each trial in current set of conditions
-
-                        # iterate through trials
-                        soma_spikes_total=[]
-                        dend_spikes_total=[]
-                        for trial_i, trial in enumerate(polarity['spikes_dend_diff_bin']):
-                            # count somatic/dendritic spikes for each trial
-                            soma_count =[]
-                            dend_count=[]
-                            for time_bin_i, time_bin in enumerate(trial):
-                                # list of spike indeces with soma/dend spikes
-                                soma_first = [spike_i for spike_i, spike_diff in enumerate(time_bin) if spike_diff<0.]
-                                dend_first = [spike_i for spike_i, spike_diff in enumerate(time_bin) if spike_diff>=0.]
-                                # count total spieks per time bin
-                                soma_count.append(float(len(soma_first)))
-                                dend_count.append(float(len(dend_first)))
-                            
-                            syn_num_unique = float(len([seg_i for tree_key, tree in polarity['p'][trial_i]['seg_idx'].iteritems() for sec_i, sec in enumerate(tree) for seg_i, seg in enumerate(sec)]))
-                            # syn_num_unique = len(polarity['p']['seg_list'])
-                            # number of unique synaptic locations
-                            # syn_num_unique = float(len(list(set(polarity['spikes_dend_dist'][trial_i]))))
-                            # total spikes per trial, normalized
-                            soma_spikes_norm = np.sum(soma_count)/syn_num_unique
-                            dend_spikes_norm = np.sum(dend_count)/syn_num_unique
-                            # add to list for all trials
-                            soma_spikes_total.append(soma_spikes_norm)
-                            dend_spikes_total.append(dend_spikes_norm)
-                            
-                            # print 'dend_spikes_total:',dend_spikes_total
-                        
-                        # group stats
-                        soma_total_mean = np.mean(soma_spikes_total)
-                        soma_total_std = np.std(soma_spikes_total)
-                        soma_total_sem = stats.sem(soma_spikes_total)
-                        dend_total_mean = np.mean(dend_spikes_total)
-                        dend_total_std = np.std(dend_spikes_total)
-                        dend_total_sem = stats.sem(dend_spikes_total)
-
-                        # plot with errorbars
-                        plt.figure(plots[freq_key][syn_dist_key].number)
-                        plt.plot(float(syn_num_key), soma_total_mean, color=color, marker=marker_soma, markersize=size, alpha=opacity)
-                        plt.plot(float(syn_num_key), dend_total_mean, color=color, marker=marker_dend, markersize=size, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), soma_total_mean, yerr=soma_total_sem, color=color, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), dend_total_mean, yerr=dend_total_sem, color=color, alpha=opacity)
-                        plt.xlabel('number of active synapses')
-                        plt.ylabel('Number of spikes/synapse')
-                        plt.title(freq_key + ' Hz, ' + syn_dist_key + ' um from soma')
-
-                # save and close figure
-                plt.figure(plots[freq_key][syn_dist_key].number)
-                plot_file_name = 'syn_num_x_spikes_total_'+freq_key+'Hz_' + syn_dist_key +'_um'
-                plots[freq_key][syn_dist_key].savefig(data_folder+plot_file_name+'.png', dpi=250)
-                with open(data_folder+plot_file_name+'.pkl', 'wb') as output:
-                    pickle.dump(plots[freq_key][syn_dist_key], output,protocol=pickle.HIGHEST_PROTOCOL)
-                print 'figure: ', plot_file_name, ' saved'
-                plt.close(plots[freq_key][syn_dist_key])
-        
-        #%%
-        # plot number of synapses vs. mean spike timing
-        plots={}
-        for freq_key, freq in spike_data.iteritems():
-            plots[freq_key] = {}
-            for syn_dist_key, syn_dist in freq.iteritems():
-                plots[freq_key][syn_dist_key] = plt.figure()
-                for syn_num_key, syn_num in syn_dist.iteritems():
-                    for polarity_key, polarity in syn_num.iteritems():
-
-                        dt = polarity['p'][0]['dt']
-                        # get polarity index
-                        polarity_i = [f_i for f_i, f in enumerate(polarity['p'][0]['field']) if str(f)==polarity_key][0]
-
-                        # plot color and marker
-                        color = polarity['p'][0]['field_color'][polarity_i]
-                        # size = 20.*float(syn_dist_key)/600.
-                        size = 10.
-                        opacity = 0.7
-                        marker_soma = '.'
-                        marker_dend= 'x'
-
-                        # lsit of soma/dend spike fraction for each trial in current set of conditions
-                        soma_frac=[]
-                        dend_frac=[]
-                        # iterate through trials
-                        soma_timing=[]
-                        dend_timing=[]
-                        for trial_i, trial in enumerate(polarity['spikes_dend_diff_bin']):
-                            for time_bin_i, time_bin in enumerate(trial):
-                                onset = polarity['time_bins'][trial_i][time_bin_i][0]
-                                soma_first = [spike_i for spike_i, spike_diff in enumerate(time_bin) if spike_diff<0.]
-                                dend_first = [spike_i for spike_i, spike_diff in enumerate(time_bin) if spike_diff>=0.]
-                                soma_time = [polarity['spikes_dend_bin'][trial_i][time_bin_i][spike_i]-onset for spike_i in soma_first]
-                                dend_time = [polarity['spikes_dend_bin'][trial_i][time_bin_i][spike_i]-onset for spike_i in dend_first]
-                                soma_timing.append(soma_time)
-                                dend_timing.append(dend_time)
-
-                        soma_timing_flat = [time*dt for times in soma_timing for time in times]
-                        dend_timing_flat = [time*dt for times in dend_timing for time in times]
-                        
-                        # group stats
-                        soma_timing_mean = np.mean(soma_timing_flat)
-                        soma_timing_std = np.std(soma_timing_flat)
-                        soma_timing_sem = stats.sem(soma_timing_flat)
-                        dend_timing_mean = np.mean(dend_timing_flat)
-                        dend_timing_std = np.std(dend_timing_flat)
-                        dend_timing_sem = stats.sem(dend_timing_flat)
-
-                        # plot with errorbars
-                        plt.figure(plots[freq_key][syn_dist_key].number)
-                        plt.plot(float(syn_num_key), soma_timing_mean, color=color, marker=marker_soma, markersize=size, alpha=opacity)
-                        plt.plot(float(syn_num_key), dend_timing_mean, color=color, marker=marker_dend, markersize=size, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), soma_timing_mean, yerr=soma_timing_sem, color=color, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), dend_timing_mean, yerr=dend_timing_sem, color=color, alpha=opacity)
-                        plt.xlabel('number of active synapses')
-                        plt.ylabel('spike timing after epsp onset (ms)')
-                        plt.title(freq_key + ' Hz, ' + syn_dist_key + ' um from soma')
-
-                # save and close figure
-                plt.figure(plots[freq_key][syn_dist_key].number)
-                plot_file_name = 'syn_num_x_spikes_timing_'+freq_key+'Hz_' + syn_dist_key +'_um'
-                plots[freq_key][syn_dist_key].savefig(data_folder+plot_file_name+'.png', dpi=250)
-                with open(data_folder+plot_file_name+'.pkl', 'wb') as output:
-                    pickle.dump(plots[freq_key][syn_dist_key], output,protocol=pickle.HIGHEST_PROTOCOL)
-                print 'figure: ', plot_file_name, ' saved'
-                plt.close(plots[freq_key][syn_dist_key])
-
-    def exp_1b(self, **kwargs):
-        """
-        activate a varying number of synapses with varying distance from the soma.  Synapses are chosen from a window of 200 um, with the window moving along the apical dendrite.  As number of synapses is increased, multiple synapses may impinge on the same compartment/segment, effectively increasing the weight in that segment.  The threshold for generating a somatic or dendritic spike (in number of synapses) is measured as a function of mean distance from the soma and frequency of synaptic activity.  
-
-        Similar to 1a, with larger distance window for synapses to be activated
-
-        Plots: 
-        number of active synapse x fraction of synapses with at least one spike (somatically and dendritically driven spikes are separated)
-
-        number of active synapses x total number of spikes (normalized to number of active synapses, somatic and dendritic spikes are separated)
-
-        number of active synapses x mean spike timing for each spike
-        """
-        # spike threshold 
-        threshold =-30
-
-        # identify data folder
-        data_folder = 'Data/'+kwargs['experiment']+'/'
-        
-        # all files in directory
-        files = os.listdir(data_folder)
-        
-        # data files
-        data_files = [file for file in files if 'data' in file]
-        plot_files = [file for file in files if 'trace' in file]
-        
-        # unique identifiers for each file type
-        data_files_id= [file[-36:-1] for file in files if 'data' in file]
-        plot_files_id = [file[-36:-1] for file in files if 'trace' in file]
-
-        # if list of processed files in folder, load list
-        id_list_string_spike_times = 'id_list_spike_times.pkl'
-        if id_list_string_spike_times in files:
-            print 'id_list found'
-            
-            with open(data_folder+id_list_string_spike_times, 'rb') as pkl_file:
-                id_list_spike_times = pickle.load(pkl_file)
-
-            print 'id list loaded'
-        
-        # otherwise create empty list
-        else:
-            id_list_spike_times = []
-
-        # string to save group data
-        save_string_group_data_raw = 'spikes_grouped_raw'+'.pkl'
-        # if data file already exists
-        if save_string_group_data_raw in files:
-            # load data
-            print 'raw spike data found'
-            with open(data_folder+save_string_group_data_raw, 'rb') as pkl_file:
-                spike_data= pickle.load(pkl_file)
-            print 'raw spike data loaded'
-        # otherwise create data structure
-        else:
-            # data organized as {frequency}{syn distance}{number of synapses}{polarity}[trial]{data type}{tree}[section][segment][spikes]
-            spike_data= {}
-
-
-        # load spike analysis functions
-        spike_analysis = Spikes()
-
-        dtypes = ['spike_times','dw','p']
-        #%%
-        # iterate over data files
-        for data_file_i, data_file in enumerate(data_files):
-
-            if data_file_i >=0:# and data_file_i <=1000:
-
-                # check if data has been processed already
-                if data_file not in id_list_spike_times:
-
-                    print data_file
-                    # open unprocessed data
-
-                    try:
-                        with open(data_folder+data_file, 'rb') as pkl_file:
-                            data = pickle.load(pkl_file)
-
-                        print 'data_file: ', data_file_i, ' out of ', len(data_files), ' opened'
-                    except EOFError:
-                        'EOF error, file not opened'
-                        continue
-
-                    # add to processed list
-                    id_list_spike_times.append(data_file)
-
-                    # parameter dictionary
-                    p = data['p']
-
-                    # temporary store for current trial data. all dictionary entries will be transferred to full data structure (all trials)
-                    dtemp = {}
-
-                    # print trial
-                    # parameter dictionary
-                    dtemp['p'] = copy.copy(p)
-
-                    # retrieve experiment conditions
-                    freq = p['pulse_freq']
-                    syn_num = p['syn_num']
-                    syn_dist = p['syn_dist'][1] 
-                    freq_key = str(freq)
-                    syn_num_key =str(syn_num)
-                    syn_dist_key = str(syn_dist)
-
-                    # update data structure dimensions
-                    if str(freq) not in spike_data:
-                        spike_data[str(freq)]={}
-
-                    if str(syn_dist) not in spike_data[str(freq)]:
-                        spike_data[str(freq)][str(syn_dist)]={}
-
-                    if str(syn_num) not in spike_data[str(freq)][str(syn_dist)]:
-                        spike_data[str(freq)][str(syn_dist)][str(syn_num)]={}
-                        for polarity_i, polarity in enumerate(p['field']):
-                            spike_data[str(freq)][str(syn_dist)][str(syn_num)][str(polarity)]={}
-
-                    # iterate through polarities
-                    for polarity_i, polarity in enumerate(p['field']):
-                        polarity_key =str(polarity)
-
-
-
-                        # for each trial get a list of dendritic spike times and a corresponding list with the location (distance from soma) they occured
-                        dtemp['spikes_dend']=[] 
-                        dtemp['spikes_dend_dist']=[]
-                        dtemp['spikes_first'] = []
-                        dtemp['spike_times'] ={}
-                        dtemp['dw']={}
-
-                        # add soma data
-                        dtemp['spike_times']['soma'] = [[]]
-                        spike_times = spike_analysis.detect_spikes(data[str(polarity)]['soma_v'][0][0], threshold=threshold)['times'][0]
-                        dtemp['spike_times']['soma'][0].append(spike_times)
-                        dtemp['spikes_soma'] = spike_times
-                        # print spike_times
-
-
-                        # iterate through tree, section, segment
-                        for tree_key, tree in p['sec_idx'].iteritems():
-                            dtemp['spike_times'][tree_key] =[]
-                            dtemp['dw'][tree_key] =[]
-                        
-                            for sec_i, sec in enumerate(tree):
-
-                                dtemp['spike_times'][tree_key].append([])
-                                dtemp['dw'][tree_key].append([])
-
-                                for seg_i, seg in enumerate(p['seg_idx'][tree_key][sec_i]):
-
-                                    sec_num = sec
-                                    seg_num = p['seg_idx'][tree_key][sec_i][seg_i]
-                                    distance = p['seg_dist'][tree_key][sec_num][seg_num]
-
-                                    # list of spike times [spike_times]
-                                    spike_times = spike_analysis.detect_spikes(data[str(polarity)][tree_key+'_v'][sec_i][seg_i], threshold=threshold)['times'][0]
-
-                                    # scalar weight change
-                                    dw = data[str(polarity)][tree_key+'_gbar'][sec_i][seg_i][-1]/data[str(polarity)][tree_key+'_gbar'][sec_i][seg_i][0]
-
-                                    # add to dtemp structure
-                                    dtemp['spike_times'][tree_key][sec_i].append(spike_times)
-                                    dtemp['dw'][tree_key][sec_i].append(dw)
-
-                                    # record whether whether there was a spike in soma or dendrite first [all dendritic spike]
-                                    # no spike=0, dend first=1, soma first=2
-                                    # if there are dendritic spikes
-                                    if len(spike_times)>0:
-                                        # iterate through spike times
-                                        for spike_i, spike_time in enumerate(spike_times):
-
-                                            # add to list of all dendritic spike times for this trial/cell
-                                            dtemp['spikes_dend'].append(spike_time)
-                                            dtemp['spikes_dend_dist'].append(distance)
-
-                                            # if this is the first spike
-                                            if spike_i==0:
-                                                # if there is also a somatic spike
-                                                if len(dtemp['spikes_soma'])>0:
-                                                    # if the somatic spike occurs first
-                                                    if spike_time > dtemp['spikes_soma'][0]:
-
-                                                        # store as soma first
-                                                        dtemp['spikes_first'].append(2)
-                                                    # otherwise the spike is dend first
-                                                    else:
-                                                        dtemp['spikes_first'].append(1)
-                                                # if there is a dendritic but no somatic spike, it is dend first
-                                                else:
-                                                    dtemp['spikes_first'].append(1)
-                                    # otherwise no spike at all
-                                    else:
-                                        dtemp['spikes_first'].append(0)
-
-                        # create nested list of spike times with dimensions [pulse time bins][spike times]
-                        dtemp['time_bins'] = []
-                        dtemp['spikes_dend_bin'] = []
-                        dtemp['spikes_soma_bin'] = []
-                        dtemp['spikes_dend_dist_bin'] = []
-                        dtemp['spikes_dend_diff_bin'] = []
-                        dtemp['syn_frac_bin'] = []
-                        for pulse_i, pulse in enumerate(range(p['pulses'])):
-                            # determine time bins
-                            dtemp['time_bins'].append([])
-                            time1 = (p['warmup'] + 1000/p['pulse_freq']*pulse_i)/p['dt'] +1 
-                            time2 = (p['warmup'] + 1000/p['pulse_freq']*(pulse_i+1))/p['dt']
-                            dtemp['time_bins'][pulse_i].append(time1)
-                            dtemp['time_bins'][pulse_i].append(time2)
-
-                            # get spike times that fall within the current bin 
-                            binned_spikes_dist = []
-                            binned_spikes_dend =[]
-                            binned_spikes_soma = []
-                            if len(dtemp['spikes_soma'])>0:
-                                # print dtemp['spikes_soma']
-                                binned_spikes_soma = [spike for spike_i, spike in enumerate(dtemp['spikes_soma']) if (spike > time1 and spike <= time2)]
-                            if len(dtemp['spikes_dend'])>0:
-                                binned_spikes_dend = [spike for spike_i, spike in enumerate(dtemp['spikes_dend']) if (spike > time1 and spike <= time2)]
-                                binned_spikes_dist = [dtemp['spikes_dend_dist'][spike_i] for spike_i, spike in enumerate(dtemp['spikes_dend']) if (spike > time1 and spike <= time2)]
-                            # difference between dendritic and somatic spike times (dendrite first is positive, soma first is negative)
-                            if len(binned_spikes_soma)>0 and len(binned_spikes_dend)>0:
-                                binned_spikes_dend_diff = [binned_spikes_soma[0]-spike for spike_i, spike in enumerate(binned_spikes_dend)]
-                            else: #len(binned_spikes_dend)>0:
-                                binned_spikes_dend_diff = binned_spikes_dend
-
-                            # fraction of synapses that spike in current bin
-                            binned_distances =  list(set(binned_spikes_dist))
-                            binned_syn_frac = float(len(binned_distances))/float(syn_num_key)
-                            
-
-                            # add spike times for current bin to list of all bins
-                            dtemp['spikes_dend_bin'].append(binned_spikes_dend)
-                            dtemp['spikes_soma_bin'].append(binned_spikes_soma)
-                            dtemp['spikes_dend_dist_bin'].append(binned_spikes_dist)
-                            dtemp['spikes_dend_diff_bin'].append(binned_spikes_dend_diff)
-                            dtemp['syn_frac_bin'].append(binned_syn_frac)
-
-                         # fraction of synapses that spike at all during simulation
-                        distances = list(set(dtemp['spikes_dend_dist']))
-                        dtemp['syn_frac'] = float(len(distances))/float(syn_num_key)
-
->>>>>>> origin/master
-                        # update main data structure
-                        for dtype_key, dtype in dtemp.iteritems():
-                            if dtype_key not in spike_data[freq_key][syn_dist_key][syn_num_key][polarity_key]:
-                                spike_data[freq_key][syn_dist_key][syn_num_key][polarity_key][dtype_key]=[]
-                            spike_data[freq_key][syn_dist_key][syn_num_key][polarity_key][dtype_key].append(dtype)
-
-        # save processed file list
-        with open(data_folder+id_list_string_spike_times, 'wb') as output:pickle.dump(id_list_spike_times, output,protocol=pickle.HIGHEST_PROTOCOL)
-        print 'id list saved'
-        
-        # save structure of all raw spike data
-        save_group_data = spike_data
-        with open(data_folder+save_string_group_data_raw, 'wb') as output:
-            pickle.dump(save_group_data, output,protocol=pickle.HIGHEST_PROTOCOL)
-        print 'spike data saved'
-
-        #%%
-        # plot number of synapses vs. mean fraction of synapses with at least one soma/dendrite driven spike
-        plots={}
-        for freq_key, freq in spike_data.iteritems():
-            plots[freq_key] = {}
-            for syn_dist_key, syn_dist in freq.iteritems():
-                plots[freq_key][syn_dist_key] = plt.figure()
-                for syn_num_key, syn_num in syn_dist.iteritems():
-                    for polarity_key, polarity in syn_num.iteritems():
-
-                        # get polarity index
-                        polarity_i = [f_i for f_i, f in enumerate(polarity['p'][0]['field']) if str(f)==polarity_key][0]
-
-                        # plot color and marker
-                        color = polarity['p'][0]['field_color'][polarity_i]
-                        # size = 20.*float(syn_dist_key)/600.
-                        size = 10.
-                        opacity = 0.7
-                        marker_soma = '.'
-                        marker_dend= 'x'
-                        marker_all= '^'
-
-                        # lsit of soma/dend spike fraction for each trial in current set of conditions
                         soma_frac=[]
                         dend_frac=[]
                         all_frac=[]
+                        syn_num_all=[]
                         # iterate through trials
                         for trial_i, trial in enumerate(polarity['spikes_first']):
                             # soma and dendrite spikes
                             # soma=2, dendrite=1
+                            # note that trial contains an entry for all activated synapses, a place is held for none spiking synapses by a 0
                             soma_first = [spike_i for spike_i, spike_loc in enumerate(trial) if spike_loc==2]
                             dend_first = [spike_i for spike_i, spike_loc in enumerate(trial) if spike_loc==1]
                             # add to list with dimension [trials]
                             soma_frac.append(float(len(soma_first))/float(len(trial)))
                             dend_frac.append(float(len(dend_first))/float(len(trial)))
                             all_frac.append(float(len(dend_first)+len(soma_first))/float(len(trial)))
+
+
+                        
                         # group stats
                         soma_frac_mean = np.mean(soma_frac)
                         soma_frac_std = np.std(soma_frac)
@@ -2552,16 +2240,15 @@ class Experiment:
 
                         # plot with errorbars
                         plt.figure(plots[freq_key][syn_dist_key].number)
-                        soma_plot = plt.plot(float(syn_num_key), soma_frac_mean, color=color, marker=marker_soma, markersize=size, alpha=opacity, label='soma driven')
-                        dend_plot = plt.plot(float(syn_num_key), dend_frac_mean, color=color, marker=marker_dend, markersize=size, alpha=opacity, label='dendrite driven')
-                        all_plot = plt.plot(float(syn_num_key), all_frac_mean, color=color, marker=marker_all, markersize=size, alpha=opacity, label='all')
+                        plt.plot(float(syn_num_key), soma_frac_mean, color=color, marker=marker_soma, markersize=size, alpha=opacity)
+                        plt.plot(float(syn_num_key), dend_frac_mean, color=color, marker=marker_dend, markersize=size, alpha=opacity)
+                        plt.plot(float(syn_num_key), all_frac_mean, color=color, marker=marker_all, markersize=size, alpha=opacity)
                         plt.errorbar(float(syn_num_key), soma_frac_mean, yerr=soma_frac_sem, color=color, alpha=opacity)
                         plt.errorbar(float(syn_num_key), dend_frac_mean, yerr=dend_frac_sem, color=color, alpha=opacity)
                         plt.errorbar(float(syn_num_key), all_frac_mean, yerr=all_frac_sem, color=color, alpha=opacity)
                         plt.xlabel('number of active synapses')
                         plt.ylabel('fraction of spiking synapses')
                         plt.title(freq_key + ' Hz, ' + syn_dist_key + ' um from soma')
-                        # plt.legend(loc='upper left')
 
                 # save and close figure
                 plt.figure(plots[freq_key][syn_dist_key].number)
@@ -2572,7 +2259,7 @@ class Experiment:
                 print 'figure: ', plot_file_name, ' saved'
                 plt.close(plots[freq_key][syn_dist_key])
         
-        #%%
+        
         # plot number of synapses vs. total number of soma/dendritic spikes normalized to total number of synapses
         plots={}
         for freq_key, freq in spike_data.iteritems():
@@ -2592,7 +2279,7 @@ class Experiment:
                         opacity = 0.7
                         marker_soma = '.'
                         marker_dend= 'x'
-                        marker_all = '^'
+                        marker_all='^'
 
                         # lsit of soma/dend spike fraction for each trial in current set of conditions
 
@@ -2622,7 +2309,7 @@ class Experiment:
                             # add to list for all trials
                             soma_spikes_total.append(soma_spikes_norm)
                             dend_spikes_total.append(dend_spikes_norm)
-                            all_spikes_total.append(soma_spikes_norm+dend_spikes_norm)
+                            dend_spikes_total.append(dend_spikes_norm+soma_spikes_norm)
                             
                             # print 'dend_spikes_total:',dend_spikes_total
                         
@@ -2639,16 +2326,15 @@ class Experiment:
 
                         # plot with errorbars
                         plt.figure(plots[freq_key][syn_dist_key].number)
-                        soma_plot = plt.plot(float(syn_num_key), soma_total_mean, color=color, marker=marker_soma, markersize=size, alpha=opacity, label='soma driven')
-                        dend_plot = plt.plot(float(syn_num_key), dend_total_mean, color=color, marker=marker_dend, markersize=size, alpha=opacity, label='dendrite driven')
-                        all_plot = plt.plot(float(syn_num_key), all_total_mean, color=color, marker=marker_all, markersize=size, alpha=opacity, label='all')
+                        plt.plot(float(syn_num_key), soma_total_mean, color=color, marker=marker_soma, markersize=size, alpha=opacity)
+                        plt.plot(float(syn_num_key), dend_total_mean, color=color, marker=marker_dend, markersize=size, alpha=opacity)
+                        plt.plot(float(syn_num_key), all_total_mean, color=color, marker=marker_all, markersize=size, alpha=opacity)
                         plt.errorbar(float(syn_num_key), soma_total_mean, yerr=soma_total_sem, color=color, alpha=opacity)
                         plt.errorbar(float(syn_num_key), dend_total_mean, yerr=dend_total_sem, color=color, alpha=opacity)
                         plt.errorbar(float(syn_num_key), all_total_mean, yerr=all_total_sem, color=color, alpha=opacity)
                         plt.xlabel('number of active synapses')
                         plt.ylabel('Number of spikes/synapse')
                         plt.title(freq_key + ' Hz, ' + syn_dist_key + ' um from soma')
-                        # plt.legend(loc='upper left')
 
                 # save and close figure
                 plt.figure(plots[freq_key][syn_dist_key].number)
@@ -2659,7 +2345,7 @@ class Experiment:
                 print 'figure: ', plot_file_name, ' saved'
                 plt.close(plots[freq_key][syn_dist_key])
         
-        #%%
+        
         # plot number of synapses vs. mean spike timing
         plots={}
         for freq_key, freq in spike_data.iteritems():
@@ -2680,7 +2366,6 @@ class Experiment:
                         opacity = 0.7
                         marker_soma = '.'
                         marker_dend= 'x'
-                        marker_all= '^'
 
                         # lsit of soma/dend spike fraction for each trial in current set of conditions
                         soma_frac=[]
@@ -2700,7 +2385,6 @@ class Experiment:
 
                         soma_timing_flat = [time*dt for times in soma_timing for time in times]
                         dend_timing_flat = [time*dt for times in dend_timing for time in times]
-                        all_timing_flat = soma_timing_flat + dend_timing_flat
                         
                         # group stats
                         soma_timing_mean = np.mean(soma_timing_flat)
@@ -2709,23 +2393,550 @@ class Experiment:
                         dend_timing_mean = np.mean(dend_timing_flat)
                         dend_timing_std = np.std(dend_timing_flat)
                         dend_timing_sem = stats.sem(dend_timing_flat)
-                        all_timing_mean = np.mean(all_timing_flat)
-                        all_timing_std = np.std(all_timing_flat)
-                        all_timing_sem = stats.sem(all_timing_flat)
 
                         # plot with errorbars
                         plt.figure(plots[freq_key][syn_dist_key].number)
-                        soma_plot = plt.plot(float(syn_num_key), soma_timing_mean, color=color, marker=marker_soma, markersize=size, alpha=opacity, label='soma driven')
-                        dend_plot = plt.plot(float(syn_num_key), dend_timing_mean, color=color, marker=marker_dend, markersize=size, alpha=opacity, label='dendrite driven')
-                        all_plot = plt.plot(float(syn_num_key), all_timing_mean, color=color, marker=marker_all, markersize=size, alpha=opacity, label='all')
+                        plt.plot(float(syn_num_key), soma_timing_mean, color=color, marker=marker_soma, markersize=size, alpha=opacity)
+                        plt.plot(float(syn_num_key), dend_timing_mean, color=color, marker=marker_dend, markersize=size, alpha=opacity)
                         plt.errorbar(float(syn_num_key), soma_timing_mean, yerr=soma_timing_sem, color=color, alpha=opacity)
                         plt.errorbar(float(syn_num_key), dend_timing_mean, yerr=dend_timing_sem, color=color, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), all_timing_mean, yerr=all_timing_sem, color=color, alpha=opacity)
                         plt.xlabel('number of active synapses')
                         plt.ylabel('spike timing after epsp onset (ms)')
                         plt.title(freq_key + ' Hz, ' + syn_dist_key + ' um from soma')
-                        # soma_legend = mpatches.Circle(color='black', label='soma driven')
-                        # plt.legend(loc='upper left')
+
+                # save and close figure
+                plt.figure(plots[freq_key][syn_dist_key].number)
+                plot_file_name = 'syn_num_x_spikes_timing_'+freq_key+'Hz_' + syn_dist_key +'_um'
+                plots[freq_key][syn_dist_key].savefig(data_folder+plot_file_name+'.png', dpi=250)
+                with open(data_folder+plot_file_name+'.pkl', 'wb') as output:
+                    pickle.dump(plots[freq_key][syn_dist_key], output,protocol=pickle.HIGHEST_PROTOCOL)
+                print 'figure: ', plot_file_name, ' saved'
+                plt.close(plots[freq_key][syn_dist_key])
+
+    def exp_1b(self, **kwargs):
+        """
+        activate a varying number of synapses with varying distance from the soma.  Synapses are chosen from a window of 200 um, with the window moving along the apical dendrite.  As number of synapses is increased, multiple synapses may impinge on the same compartment/segment, effectively increasing the weight in that segment.  The threshold for generating a somatic or dendritic spike (in number of synapses) is measured as a function of mean distance from the soma and frequency of synaptic activity.  
+
+        Similar to 1a, with larger distance window for synapses to be activated
+
+        Plots: 
+        number of active synapse x fraction of synapses with at least one spike (somatically and dendritically driven spikes are separated)
+
+        number of active synapses x total number of spikes (normalized to number of active synapses, somatic and dendritic spikes are separated)
+
+        number of active synapses x mean spike timing for each spike
+        """
+        # spike threshold 
+        threshold =-30
+
+        # identify data folder
+        data_folder = 'Data/'+kwargs['experiment']+'/'
+        
+        # all files in directory
+        files = os.listdir(data_folder)
+        
+        # data files
+        data_files = [file for file in files if 'data' in file]
+        plot_files = [file for file in files if 'trace' in file]
+        
+        # unique identifiers for each file type
+        data_files_id= [file[-36:-1] for file in files if 'data' in file]
+        plot_files_id = [file[-36:-1] for file in files if 'trace' in file]
+
+        # if list of processed files in folder, load list
+        id_list_string_spike_times = 'id_list_spike_times.pkl'
+        if id_list_string_spike_times in files:
+            print 'id_list found'
+            
+            with open(data_folder+id_list_string_spike_times, 'rb') as pkl_file:
+                id_list_spike_times = pickle.load(pkl_file)
+
+            print 'id list loaded'
+        
+        # otherwise create empty list
+        else:
+            id_list_spike_times = []
+
+        # string to save group data
+        save_string_group_data_raw = 'spikes_grouped_raw'+'.pkl'
+        # if data file already exists
+        if save_string_group_data_raw in files:
+            # load data
+            print 'raw spike data found'
+            with open(data_folder+save_string_group_data_raw, 'rb') as pkl_file:
+                spike_data= pickle.load(pkl_file)
+            print 'raw spike data loaded'
+        # otherwise create data structure
+        else:
+            # data organized as {frequency}{syn distance}{number of synapses}{polarity}[trial]{data type}{tree}[section][segment][spikes]
+            spike_data= {}
+
+
+        # load spike analysis functions
+        spike_analysis = Spikes()
+
+        dtypes = ['spike_times','dw','p']
+    
+        # iterate over data files
+        for data_file_i, data_file in enumerate(data_files):
+
+            if data_file_i >=0:# and data_file_i <=1000:
+
+                # check if data has been processed already
+                if data_file not in id_list_spike_times:
+
+                    print data_file
+                    # open unprocessed data
+
+                    try:
+                        with open(data_folder+data_file, 'rb') as pkl_file:
+                            data = pickle.load(pkl_file)
+
+                        print 'data_file: ', data_file_i, ' out of ', len(data_files), ' opened'
+                    except EOFError:
+                        'EOF error, file not opened'
+                        continue
+
+                    # add to processed list
+                    id_list_spike_times.append(data_file)
+
+                    # parameter dictionary
+                    p = data['p']
+
+                    # temporary store for current trial data. all dictionary entries will be transferred to full data structure (all trials)
+                    dtemp = {}
+
+                    # print trial
+                    # parameter dictionary
+                    dtemp['p'] = copy.copy(p)
+
+                    # retrieve experiment conditions
+                    freq = p['pulse_freq']
+                    syn_num = p['syn_num']
+                    syn_dist = p['syn_dist'][1] 
+                    freq_key = str(freq)
+                    syn_num_key =str(syn_num)
+                    syn_dist_key = str(syn_dist)
+
+                    # update data structure dimensions
+                    if str(freq) not in spike_data:
+                        spike_data[str(freq)]={}
+
+                    if str(syn_dist) not in spike_data[str(freq)]:
+                        spike_data[str(freq)][str(syn_dist)]={}
+
+                    if str(syn_num) not in spike_data[str(freq)][str(syn_dist)]:
+                        spike_data[str(freq)][str(syn_dist)][str(syn_num)]={}
+                        for polarity_i, polarity in enumerate(p['field']):
+                            spike_data[str(freq)][str(syn_dist)][str(syn_num)][str(polarity)]={}
+
+                    # iterate through polarities
+                    for polarity_i, polarity in enumerate(p['field']):
+                        polarity_key =str(polarity)
+
+
+
+                        # for each trial get a list of dendritic spike times and a corresponding list with the location (distance from soma) they occured
+                        dtemp['spikes_dend']=[] 
+                        dtemp['spikes_dend_dist']=[]
+                        dtemp['spikes_first'] = []
+                        dtemp['spike_times'] ={}
+                        dtemp['dw']={}
+
+                        # add soma data
+                        dtemp['spike_times']['soma'] = [[]]
+                        spike_times = spike_analysis.detect_spikes(data[str(polarity)]['soma_v'][0][0], threshold=threshold)['times'][0]
+                        dtemp['spike_times']['soma'][0].append(spike_times)
+                        dtemp['spikes_soma'] = spike_times
+                        # print spike_times
+
+
+                        # iterate through tree, section, segment
+                        for tree_key, tree in p['sec_idx'].iteritems():
+                            dtemp['spike_times'][tree_key] =[]
+                            dtemp['dw'][tree_key] =[]
+                        
+                            for sec_i, sec in enumerate(tree):
+
+                                dtemp['spike_times'][tree_key].append([])
+                                dtemp['dw'][tree_key].append([])
+
+                                for seg_i, seg in enumerate(p['seg_idx'][tree_key][sec_i]):
+
+                                    sec_num = sec
+                                    seg_num = p['seg_idx'][tree_key][sec_i][seg_i]
+                                    distance = p['seg_dist'][tree_key][sec_num][seg_num]
+
+                                    # list of spike times [spike_times]
+                                    spike_times = spike_analysis.detect_spikes(data[str(polarity)][tree_key+'_v'][sec_i][seg_i], threshold=threshold)['times'][0]
+
+                                    # scalar weight change
+                                    dw = data[str(polarity)][tree_key+'_gbar'][sec_i][seg_i][-1]/data[str(polarity)][tree_key+'_gbar'][sec_i][seg_i][0]
+
+                                    # add to dtemp structure
+                                    dtemp['spike_times'][tree_key][sec_i].append(spike_times)
+                                    dtemp['dw'][tree_key][sec_i].append(dw)
+
+                                    # record whether whether there was a spike in soma or dendrite first [all dendritic spike]
+                                    # no spike=0, dend first=1, soma first=2
+                                    # if there are dendritic spikes
+                                    if len(spike_times)>0:
+                                        # iterate through spike times
+                                        for spike_i, spike_time in enumerate(spike_times):
+
+                                            # add to list of all dendritic spike times for this trial/cell
+                                            dtemp['spikes_dend'].append(spike_time)
+                                            dtemp['spikes_dend_dist'].append(distance)
+
+                                            # if this is the first spike
+                                            if spike_i==0:
+                                                # if there is also a somatic spike
+                                                if len(dtemp['spikes_soma'])>0:
+                                                    # if the somatic spike occurs first
+                                                    if spike_time > dtemp['spikes_soma'][0]:
+
+                                                        # store as soma first
+                                                        dtemp['spikes_first'].append(2)
+                                                    # otherwise the spike is dend first
+                                                    else:
+                                                        dtemp['spikes_first'].append(1)
+                                                # if there is a dendritic but no somatic spike, it is dend first
+                                                else:
+                                                    dtemp['spikes_first'].append(1)
+                                    # otherwise no spike at all
+                                    else:
+                                        dtemp['spikes_first'].append(0)
+
+                        # create nested list of spike times with dimensions [pulse time bins][spike times]
+                        dtemp['time_bins'] = []
+                        dtemp['spikes_dend_bin'] = []
+                        dtemp['spikes_soma_bin'] = []
+                        dtemp['spikes_dend_dist_bin'] = []
+                        dtemp['spikes_dend_diff_bin'] = []
+                        dtemp['syn_frac_bin'] = []
+                        for pulse_i, pulse in enumerate(range(p['pulses'])):
+                            # determine time bins
+                            dtemp['time_bins'].append([])
+                            time1 = (p['warmup'] + 1000/p['pulse_freq']*pulse_i)/p['dt'] +1 
+                            time2 = (p['warmup'] + 1000/p['pulse_freq']*(pulse_i+1))/p['dt']
+                            dtemp['time_bins'][pulse_i].append(time1)
+                            dtemp['time_bins'][pulse_i].append(time2)
+
+                            # get spike times that fall within the current bin 
+                            binned_spikes_dist = []
+                            binned_spikes_dend =[]
+                            binned_spikes_soma = []
+                            if len(dtemp['spikes_soma'])>0:
+                                # print dtemp['spikes_soma']
+                                binned_spikes_soma = [spike for spike_i, spike in enumerate(dtemp['spikes_soma']) if (spike > time1 and spike <= time2)]
+                            if len(dtemp['spikes_dend'])>0:
+                                binned_spikes_dend = [spike for spike_i, spike in enumerate(dtemp['spikes_dend']) if (spike > time1 and spike <= time2)]
+                                binned_spikes_dist = [dtemp['spikes_dend_dist'][spike_i] for spike_i, spike in enumerate(dtemp['spikes_dend']) if (spike > time1 and spike <= time2)]
+                            # difference between dendritic and somatic spike times (dendrite first is positive, soma first is negative)
+                            if len(binned_spikes_soma)>0 and len(binned_spikes_dend)>0:
+                                binned_spikes_dend_diff = [binned_spikes_soma[0]-spike for spike_i, spike in enumerate(binned_spikes_dend)]
+                            else: #len(binned_spikes_dend)>0:
+                                binned_spikes_dend_diff = binned_spikes_dend
+
+                            # fraction of synapses that spike in current bin
+                            binned_distances =  list(set(binned_spikes_dist))
+                            binned_syn_frac = float(len(binned_distances))/float(syn_num_key)
+                            
+
+                            # add spike times for current bin to list of all bins
+                            dtemp['spikes_dend_bin'].append(binned_spikes_dend)
+                            dtemp['spikes_soma_bin'].append(binned_spikes_soma)
+                            dtemp['spikes_dend_dist_bin'].append(binned_spikes_dist)
+                            dtemp['spikes_dend_diff_bin'].append(binned_spikes_dend_diff)
+                            dtemp['syn_frac_bin'].append(binned_syn_frac)
+
+                         # fraction of synapses that spike at all during simulation
+                        distances = list(set(dtemp['spikes_dend_dist']))
+                        dtemp['syn_frac'] = float(len(distances))/float(syn_num_key)
+
+                        # update main data structure
+                        # for each data type
+                        for dtype_key, dtype in dtemp.iteritems():
+                            
+                            # if this type does not already exist in main group data structure
+                            if dtype_key not in spike_data[freq_key][syn_dist_key][syn_num_key][polarity_key]:
+                                # create list to store data for each trial
+                                spike_data[freq_key][syn_dist_key][syn_num_key][polarity_key][dtype_key]=[]
+
+                            # add data for current trial to list 
+                            spike_data[freq_key][syn_dist_key][syn_num_key][polarity_key][dtype_key].append(dtype)
+
+        # save processed file list
+        with open(data_folder+id_list_string_spike_times, 'wb') as output:pickle.dump(id_list_spike_times, output,protocol=pickle.HIGHEST_PROTOCOL)
+        print 'id list saved'
+        
+        # save structure of all raw spike data
+        save_group_data = spike_data
+        with open(data_folder+save_string_group_data_raw, 'wb') as output:
+            pickle.dump(save_group_data, output,protocol=pickle.HIGHEST_PROTOCOL)
+        print 'spike data saved'
+
+
+        # plot number of activated synapses vs. mean fraction of synapses with at least one soma/dendrite driven spike
+        plots={}
+        plots_dw={}
+        for freq_key, freq in spike_data.iteritems():
+            plots[freq_key] = {}
+            plots_dw[freq_key] = {}
+            for syn_dist_key, syn_dist in freq.iteritems():
+                plots[freq_key][syn_dist_key] = plt.figure()
+                plots_dw[freq_key][syn_dist_key] = plt.figure()
+                for syn_num_key, syn_num in syn_dist.iteritems():
+                    for polarity_key, polarity in syn_num.iteritems():
+
+                        # get polarity index
+                        polarity_i = [f_i for f_i, f in enumerate(polarity['p'][0]['field']) if str(f)==polarity_key][0]
+
+                        # plot color and marker
+                        color = polarity['p'][0]['field_color'][polarity_i]
+                        # size = 20.*float(syn_dist_key)/600.
+                        size = 20.
+                        opacity = 0.7
+                        marker_soma = '.'
+                        marker_dend= 'x'
+                        marker_all= '^'
+
+                        # lsit of soma/dend spike fraction for each trial in current set of conditions, i.e. number of spikes/number of active synapses [trials]
+                        soma_frac=[]
+                        dend_frac=[]
+                        all_frac=[]
+                        dw_list=[]
+                        # iterate through trials
+                        for trial_i, trial in enumerate(polarity['spikes_first']):
+                            # soma and dendrite spikes
+                            # soma=2, dendrite=1
+                            # note that trial contains an entry for all activated synapses, a place is held for none spiking synapses by a 0
+                            soma_first = [spike_i for spike_i, spike_loc in enumerate(trial) if spike_loc==2]
+                            dend_first = [spike_i for spike_i, spike_loc in enumerate(trial) if spike_loc==1]
+                            # add to list with dimension [trials]
+                            soma_frac.append(float(len(soma_first))/float(len(trial)))
+                            dend_frac.append(float(len(dend_first))/float(len(trial)))
+                            all_frac.append(float(len(dend_first)+len(soma_first))/float(len(trial)))
+                            dw_all = polarity['dw'][trial_i]
+                            syn_count = 0
+                            dw_trial=[]
+                            for tree_key, tree in dw_all.iteritems():
+                                for sec_i, sec in enumerate(tree):
+                                    for seg_i, seg in enumerate(sec):
+                                        syn_count+=1
+                                        dw_trial.append(seg)
+                            dw_mean = sum(dw_trial)/float(syn_count)
+                            dw_list.append(dw_mean)
+
+                        dw_mean = np.mean(dw_list)
+                        dw_std = np.std(dw_list)
+                        dw_sem = stats.sem(dw_list)
+
+                        # group stats
+                        soma_frac_mean = np.mean(soma_frac)
+                        soma_frac_std = np.std(soma_frac)
+                        soma_frac_sem = stats.sem(soma_frac)
+                        dend_frac_mean = np.mean(dend_frac)
+                        dend_frac_std = np.std(dend_frac)
+                        dend_frac_sem = stats.sem(dend_frac)
+                        all_frac_mean = np.mean(all_frac)
+                        all_frac_std = np.std(all_frac)
+                        all_frac_sem = stats.sem(all_frac)
+
+                        # plot with errorbars
+                        plt.figure(plots[freq_key][syn_dist_key].number)
+                        plt.plot(float(syn_num_key), soma_frac_mean, color=color, marker=marker_soma, markersize=size, alpha=opacity)
+                        plt.plot(float(syn_num_key), dend_frac_mean, color=color, marker=marker_dend, markersize=size, alpha=opacity)
+                        plt.plot(float(syn_num_key), all_frac_mean, color=color, marker=marker_all, markersize=size, alpha=opacity)
+                        plt.errorbar(float(syn_num_key), soma_frac_mean, yerr=soma_frac_sem, color=color, alpha=opacity)
+                        plt.errorbar(float(syn_num_key), dend_frac_mean, yerr=dend_frac_sem, color=color, alpha=opacity)
+                        plt.errorbar(float(syn_num_key), all_frac_mean, yerr=all_frac_sem, color=color, alpha=opacity)
+                        plt.xlabel('number of active synapses')
+                        plt.ylabel('fraction of spiking synapses')
+                        plt.title(freq_key + ' Hz, ' + syn_dist_key + ' um from soma')
+
+                         # plot dw with errorbars
+                        plt.figure(plots_dw[freq_key][syn_dist_key].number)
+                        plt.plot(float(syn_num_key), dw_mean, color=color, marker=marker_soma, markersize=size, alpha=opacity)
+                        plt.errorbar(float(syn_num_key), dw_mean, yerr=dw_sem, color=color, alpha=opacity)
+                        plt.xlabel('number of active synapses')
+                        plt.ylabel('average weight change')
+                        plt.title(freq_key + ' Hz, ' + syn_dist_key + ' um from soma')
+
+                # save and close figure
+                plt.figure(plots[freq_key][syn_dist_key].number)
+                plot_file_name = 'syn_num_x_spike_prob_location_'+freq_key+'Hz_' + syn_dist_key +'_um'
+                plots[freq_key][syn_dist_key].savefig(data_folder+plot_file_name+'.png', dpi=250)
+                with open(data_folder+plot_file_name+'.pkl', 'wb') as output:
+                    pickle.dump(plots[freq_key][syn_dist_key], output,protocol=pickle.HIGHEST_PROTOCOL)
+                print 'figure: ', plot_file_name, ' saved'
+                plt.close(plots[freq_key][syn_dist_key])
+
+                # save and close figure
+                plt.figure(plots_dw[freq_key][syn_dist_key].number)
+                plot_file_name = 'syn_num_x_dw_'+freq_key+'Hz_' + syn_dist_key +'_um'
+                plots_dw[freq_key][syn_dist_key].savefig(data_folder+plot_file_name+'.png', dpi=250)
+                with open(data_folder+plot_file_name+'.pkl', 'wb') as output:
+                    pickle.dump(plots_dw[freq_key][syn_dist_key], output,protocol=pickle.HIGHEST_PROTOCOL)
+                print 'figure: ', plot_file_name, ' saved'
+                plt.close(plots_dw[freq_key][syn_dist_key])
+        
+        
+        # plot number of synapses vs. total number of soma/dendritic spikes normalized to total number of synapses
+        plots={}
+        for freq_key, freq in spike_data.iteritems():
+            plots[freq_key] = {}
+            for syn_dist_key, syn_dist in freq.iteritems():
+                plots[freq_key][syn_dist_key] = plt.figure()
+                for syn_num_key, syn_num in syn_dist.iteritems():
+                    for polarity_key, polarity in syn_num.iteritems():
+
+                        # get polarity index
+                        polarity_i = [f_i for f_i, f in enumerate(polarity['p'][0]['field']) if str(f)==polarity_key][0]
+
+                        # plot color and marker
+                        color = polarity['p'][0]['field_color'][polarity_i]
+                        # size = 20.*float(syn_dist_key)/600.
+                        size = 20.
+                        opacity = 0.7
+                        marker_soma = '.'
+                        marker_dend= 'x'
+                        marker_all='^'
+
+                        # lsit of soma/dend spike fraction for each trial in current set of conditions
+
+                        # iterate through trials
+                        soma_spikes_total=[]
+                        dend_spikes_total=[]
+                        all_spikes_total=[]
+                        for trial_i, trial in enumerate(polarity['spikes_dend_diff_bin']):
+                            # count somatic/dendritic spikes for each trial
+                            soma_count =[]
+                            dend_count=[]
+                            for time_bin_i, time_bin in enumerate(trial):
+                                # list of spike indeces with soma/dend spikes
+                                soma_first = [spike_i for spike_i, spike_diff in enumerate(time_bin) if spike_diff<0.]
+                                dend_first = [spike_i for spike_i, spike_diff in enumerate(time_bin) if spike_diff>=0.]
+                                # count total spieks per time bin
+                                soma_count.append(float(len(soma_first)))
+                                dend_count.append(float(len(dend_first)))
+                            
+                            syn_num_unique = float(len([seg_i for tree_key, tree in polarity['p'][trial_i]['seg_idx'].iteritems() for sec_i, sec in enumerate(tree) for seg_i, seg in enumerate(sec)]))
+                            # syn_num_unique = len(polarity['p']['seg_list'])
+                            # number of unique synaptic locations
+                            # syn_num_unique = float(len(list(set(polarity['spikes_dend_dist'][trial_i]))))
+                            # total spikes per trial, normalized
+                            soma_spikes_norm = np.sum(soma_count)/syn_num_unique
+                            dend_spikes_norm = np.sum(dend_count)/syn_num_unique
+                            # add to list for all trials
+                            soma_spikes_total.append(soma_spikes_norm)
+                            dend_spikes_total.append(dend_spikes_norm)
+                            all_spikes_total.append(dend_spikes_norm+soma_spikes_norm)
+                            
+                            # print 'dend_spikes_total:',dend_spikes_total
+                        
+                        # group stats
+                        soma_total_mean = np.mean(soma_spikes_total)
+                        soma_total_std = np.std(soma_spikes_total)
+                        soma_total_sem = stats.sem(soma_spikes_total)
+                        dend_total_mean = np.mean(dend_spikes_total)
+                        dend_total_std = np.std(dend_spikes_total)
+                        dend_total_sem = stats.sem(dend_spikes_total)
+                        all_total_mean = np.mean(all_spikes_total)
+                        all_total_std = np.std(all_spikes_total)
+                        all_total_sem = stats.sem(all_spikes_total)
+
+                        # plot with errorbars
+                        plt.figure(plots[freq_key][syn_dist_key].number)
+                        plt.plot(float(syn_num_key), soma_total_mean, color=color, marker=marker_soma, markersize=size, alpha=opacity, )
+                        plt.plot(float(syn_num_key), dend_total_mean, color=color, marker=marker_dend, markersize=size, alpha=opacity, )
+                        plt.plot(float(syn_num_key), all_total_mean, color=color, marker=marker_all, markersize=size, alpha=opacity, )
+                        plt.errorbar(float(syn_num_key), all_total_mean, yerr=all_total_sem, color=color, alpha=opacity)
+                        plt.errorbar(float(syn_num_key), soma_total_mean, yerr=soma_total_sem, color=color, alpha=opacity)
+                        plt.errorbar(float(syn_num_key), dend_total_mean, yerr=dend_total_sem, color=color, alpha=opacity)
+                        # plt.xlabel('Active synapses', fontsize=30, weight='bold')
+                        # plt.ylabel('Spikes/synapse', fontsize=30, weight='bold')
+                        # if syn_dist_key=='200':
+                        #     plt.xlim([0, 40])
+                        plt.xticks(fontsize=10, weight='bold')
+                        plt.yticks(fontsize=10, weight='bold')
+                        plt.title(syn_dist_key + ' um from soma', fontsize=30, weight='bold')
+                        # plt.legend()
+
+                # save and close figure
+                plt.figure(plots[freq_key][syn_dist_key].number)
+                black_patch = patches.Patch(color='black', label='Control')
+                red_patch =patches.Patch(color='red', label='Anodal')
+                blue_patch =patches.Patch(color='blue', label='Cathodal')
+                triangle = mlines.Line2D([], [], color='black', marker='^', linestyle='None', markersize=10, label='All spikes')
+                dot = mlines.Line2D([], [], color='black', marker='.', linestyle='None', markersize=10, label='Somatic')
+                cross = mlines.Line2D([], [], color='black', marker='x', linestyle='None', markersize=10, label='Dendritic')
+                # plt.legend(handles=[black_patch, red_patch, blue_patch, triangle, dot, cross])
+                plot_file_name = 'syn_num_x_spikes_total_'+freq_key+'Hz_' + syn_dist_key +'_um'
+                plots[freq_key][syn_dist_key].savefig(data_folder+plot_file_name+'.png', dpi=250, bbox_inches='tight')
+                with open(data_folder+plot_file_name+'.pkl', 'wb') as output:
+                    pickle.dump(plots[freq_key][syn_dist_key], output,protocol=pickle.HIGHEST_PROTOCOL)
+                print 'figure: ', plot_file_name, ' saved'
+                plt.close(plots[freq_key][syn_dist_key])
+        
+    
+        # plot number of synapses vs. mean spike timing
+        plots={}
+        for freq_key, freq in spike_data.iteritems():
+            plots[freq_key] = {}
+            for syn_dist_key, syn_dist in freq.iteritems():
+                plots[freq_key][syn_dist_key] = plt.figure()
+                for syn_num_key, syn_num in syn_dist.iteritems():
+                    for polarity_key, polarity in syn_num.iteritems():
+
+                        dt = polarity['p'][0]['dt']
+                        # get polarity index
+                        polarity_i = [f_i for f_i, f in enumerate(polarity['p'][0]['field']) if str(f)==polarity_key][0]
+
+                        # plot color and marker
+                        color = polarity['p'][0]['field_color'][polarity_i]
+                        # size = 20.*float(syn_dist_key)/600.
+                        size = 10.
+                        opacity = 0.7
+                        marker_soma = '.'
+                        marker_dend= 'x'
+
+                        # lsit of soma/dend spike fraction for each trial in current set of conditions
+                        soma_frac=[]
+                        dend_frac=[]
+                        # iterate through trials
+                        soma_timing=[]
+                        dend_timing=[]
+                        for trial_i, trial in enumerate(polarity['spikes_dend_diff_bin']):
+                            for time_bin_i, time_bin in enumerate(trial):
+                                onset = polarity['time_bins'][trial_i][time_bin_i][0]
+                                soma_first = [spike_i for spike_i, spike_diff in enumerate(time_bin) if spike_diff<0.]
+                                dend_first = [spike_i for spike_i, spike_diff in enumerate(time_bin) if spike_diff>=0.]
+                                soma_time = [polarity['spikes_dend_bin'][trial_i][time_bin_i][spike_i]-onset for spike_i in soma_first]
+                                dend_time = [polarity['spikes_dend_bin'][trial_i][time_bin_i][spike_i]-onset for spike_i in dend_first]
+                                soma_timing.append(soma_time)
+                                dend_timing.append(dend_time)
+
+                        soma_timing_flat = [time*dt for times in soma_timing for time in times]
+                        dend_timing_flat = [time*dt for times in dend_timing for time in times]
+                        
+                        # group stats
+                        soma_timing_mean = np.mean(soma_timing_flat)
+                        soma_timing_std = np.std(soma_timing_flat)
+                        soma_timing_sem = stats.sem(soma_timing_flat)
+                        dend_timing_mean = np.mean(dend_timing_flat)
+                        dend_timing_std = np.std(dend_timing_flat)
+                        dend_timing_sem = stats.sem(dend_timing_flat)
+
+                        # plot with errorbars
+                        plt.figure(plots[freq_key][syn_dist_key].number)
+                        plt.plot(float(syn_num_key), soma_timing_mean, color=color, marker=marker_soma, markersize=size, alpha=opacity)
+                        plt.plot(float(syn_num_key), dend_timing_mean, color=color, marker=marker_dend, markersize=size, alpha=opacity)
+                        plt.errorbar(float(syn_num_key), soma_timing_mean, yerr=soma_timing_sem, color=color, alpha=opacity)
+                        plt.errorbar(float(syn_num_key), dend_timing_mean, yerr=dend_timing_sem, color=color, alpha=opacity)
+                        plt.xlabel('Number of active synapses', fontsize=30, weight='bold')
+                        plt.ylabel('Spike timing after epsp onset (ms)', fontsize=30, weight='bold')
+                        plt.title(freq_key + ' Hz, ' + syn_dist_key + ' um from soma')
 
                 # save and close figure
                 plt.figure(plots[freq_key][syn_dist_key].number)
@@ -2795,12 +3006,11 @@ class Experiment:
             # data organized as {frequency}{syn distance}{number of synapses}{polarity}[trial]{data type}{tree}[section][segment][spikes]
             spike_data= {}
 
-
         # load spike analysis functions
         spike_analysis = Spikes()
 
         dtypes = ['spike_times','dw','p']
-        #%%
+        
         # iterate over data files
         for data_file_i, data_file in enumerate(data_files):
 
@@ -2882,96 +3092,6 @@ class Experiment:
                         
                             for sec_i, sec in enumerate(tree):
 
-=======
-
-
-        # load spike analysis functions
-        spike_analysis = Spikes()
-
-        dtypes = ['spike_times','dw','p']
-        #%%
-        # iterate over data files
-        for data_file_i, data_file in enumerate(data_files):
-
-            if data_file_i >=0:# and data_file_i <=1000:
-
-                # check if data has been processed already
-                if data_file not in id_list_spike_times:
-
-                    print data_file
-                    # open unprocessed data
-
-                    try:
-                        with open(data_folder+data_file, 'rb') as pkl_file:
-                            data = pickle.load(pkl_file)
-
-                        print 'data_file: ', data_file_i, ' out of ', len(data_files), ' opened'
-                    except EOFError:
-                        'EOF error, file not opened'
-                        continue
-
-                    # add to processed list
-                    id_list_spike_times.append(data_file)
-
-                    # parameter dictionary
-                    p = data['p']
-
-                    # temporary store for current trial data. all dictionary entries will be transferred to full data structure (all trials)
-                    dtemp = {}
-
-                    # print trial
-                    # parameter dictionary
-                    dtemp['p'] = copy.copy(p)
-
-                    # retrieve experiment conditions
-                    freq = p['pulse_freq']
-                    syn_num = p['syn_num']
-                    syn_dist = p['syn_dist'][-1] 
-                    freq_key = str(freq)
-                    syn_num_key =str(syn_num)
-                    syn_dist_key = str(syn_dist)
-
-                    # update data structure dimensions
-                    if str(freq) not in spike_data:
-                        spike_data[str(freq)]={}
-
-                    if str(syn_dist) not in spike_data[str(freq)]:
-                        spike_data[str(freq)][str(syn_dist)]={}
-
-                    if str(syn_num) not in spike_data[str(freq)][str(syn_dist)]:
-                        spike_data[str(freq)][str(syn_dist)][str(syn_num)]={}
-                        for polarity_i, polarity in enumerate(p['field']):
-                            spike_data[str(freq)][str(syn_dist)][str(syn_num)][str(polarity)]={}
-
-                    # iterate through polarities
-                    for polarity_i, polarity in enumerate(p['field']):
-                        polarity_key =str(polarity)
-
-
-
-                        # for each trial get a list of dendritic spike times and a corresponding list with the location (distance from soma) they occured
-                        dtemp['spikes_dend']=[] 
-                        dtemp['spikes_dend_dist']=[]
-                        dtemp['spikes_first'] = []
-                        dtemp['spike_times'] ={}
-                        dtemp['dw']={}
-
-                        # add soma data
-                        dtemp['spike_times']['soma'] = [[]]
-                        spike_times = spike_analysis.detect_spikes(data[str(polarity)]['soma_v'][0][0], threshold=threshold)['times'][0]
-                        dtemp['spike_times']['soma'][0].append(spike_times)
-                        dtemp['spikes_soma'] = spike_times
-                        # print spike_times
-
-
-                        # iterate through tree, section, segment
-                        for tree_key, tree in p['sec_idx'].iteritems():
-                            dtemp['spike_times'][tree_key] =[]
-                            dtemp['dw'][tree_key] =[]
-                        
-                            for sec_i, sec in enumerate(tree):
-
->>>>>>> origin/master
                                 dtemp['spike_times'][tree_key].append([])
                                 dtemp['dw'][tree_key].append([])
 
@@ -3089,7 +3209,7 @@ class Experiment:
             pickle.dump(save_group_data, output,protocol=pickle.HIGHEST_PROTOCOL)
         print 'spike data saved'
 
-        #%%
+        
         # plot number of synapses vs. mean fraction of synapses with at least one soma/dendrite driven spike
         plots={}
         for freq_key, freq in spike_data.iteritems():
@@ -3158,7 +3278,7 @@ class Experiment:
                 print 'figure: ', plot_file_name, ' saved'
                 plt.close(plots[freq_key][syn_dist_key])
         
-        #%%
+        
         # plot number of synapses vs. total number of soma/dendritic spikes normalized to total number of synapses
         plots={}
         for freq_key, freq in spike_data.iteritems():
@@ -3281,7 +3401,7 @@ class Experiment:
                 print 'figure: ', plot_file_name, ' saved'
                 plt.close(plots[freq_key][syn_dist_key])
         
-        #%%
+        
         # plot number of synapses vs. mean spike timing
         # plot number of synapses vs. total number of soma/dendritic spikes normalized to total number of synapses
         plots={}
@@ -3414,7 +3534,7 @@ class Experiment:
                 plt.close(plots[freq_key][syn_dist_key])
 
         
-        #%%
+        
         # plot number of synapses vs. mean spike timing
         plots={}
         for freq_key, freq in spike_data.iteritems():
@@ -3489,7 +3609,7 @@ class Experiment:
                 print 'figure: ', plot_file_name, ' saved'
                 plt.close(plots[freq_key][syn_dist_key])
 
-        #%%
+
         # create least squares fit for syn_num vs spike_num curves
 
     def exp_2c(self, **kwargs):
@@ -4259,7 +4379,13 @@ class Experiment:
         # create data structure to pass to morph plot for each field
         # iterate through spike data structure, just storing spike threshold weight for each segment, if soma first weights are negative, if dendrite first weights are positive
         morphplot_data = []
+        soma_count=[]
+        dend_count=[]
+        min_val=0.
+        max_val=0.
         for f_i, f in enumerate(p_temp['field']):
+            soma_count.append([])
+            dend_count.append([])
             morphplot_data.append({})
             for tree_key, tree in spike_data.iteritems():
                 morphplot_data[f_i][tree_key]=[]
@@ -4274,34 +4400,145 @@ class Experiment:
                         # print 'first spike:', first
                         if first=='soma':
                             weight = -1*seg[f_i]['dend']['first_spike_weight']
+                            soma_count[f_i].append(weight)
                         elif first=='dend':
                             weight = seg[f_i]['dend']['first_spike_weight']
+                            dend_count[f_i].append(weight)
                         elif first=='none':
-                            weight= 0.
+                            weight= 0.02
+                            dend_count[f_i].append(weight)
+
 
                         # print 'weight threshold:', weight
                         morphplot_data[f_i][tree_key][sec_i].append(weight)
+                        if weight< min_val:
+                            min_val=weight
+                        elif weight>max_val:
+                            max_val=weight
+
+        # soma
+        fig = plt.figure()
+        # plot_locs = [[0,1], [3,4], [6,7]]
+        plot_locs = [[0], [1], [2]]
+        plot_colors = ['blue','black','red']
+        for f_i, f in enumerate(soma_count):
+            count = float(len(soma_count[f_i]))/float(len(dend_count[f_i])+len(soma_count[f_i]))
+            plt.bar(plot_locs[f_i][0], count, facecolor=plot_colors[f_i], edgecolor='pink')
+            # plt.bar(plot_locs[f_i][1], len(dend_count[f_i]), facecolor=plot_colors[f_i], edgecolor='pink')
+        plt.title('Soma-controlled synapses',fontsize=25, weight='bold')
+        plt.ylabel('Fraction of total synapses',fontsize=20, weight='bold')
+        plt.xticks([0,1,2], ['Cathodal','Control','Anodal'],fontsize=20, weight='bold')
+        plt.yticks(fontsize=8, weight='bold')
+        plt.ylim([0.06, 0.14])
+        plot_file_name = 'soma fraction' 
+        file_name = data_folder + plot_file_name + '.png'
+        fig.savefig(file_name, dpi=250)
+
+
+        # soma average threshold
+        fig = plt.figure()
+        # plot_locs = [[0,1], [3,4], [6,7]]
+        plot_locs = [[0], [1], [2]]
+        plot_colors = ['blue','black','red']
+        for f_i, f in enumerate(soma_count):
+            count = float(len(soma_count[f_i]))/float(len(dend_count[f_i])+len(soma_count[f_i]))
+            mean = -1*np.mean(soma_count[f_i])
+            sem = stats.sem(soma_count[f_i])
+            plt.bar(plot_locs[f_i][0], mean, facecolor=plot_colors[f_i], edgecolor='pink')
+            plt.errorbar(plot_locs[f_i][0], mean, sem, color=plot_colors[f_i])
+            # plt.bar(plot_locs[f_i][1], len(dend_count[f_i]), facecolor=plot_colors[f_i], edgecolor='pink')
+        plt.title('Somatic Threshold',fontsize=25, weight='bold')
+        plt.ylabel('Threshold synaptic weight',fontsize=20, weight='bold')
+        plt.xticks([0,1,2], ['Cathodal','Control','Anodal'],fontsize=20, weight='bold')
+        plt.yticks(fontsize=8, weight='bold')
+        plt.ylim([0.006, 0.016])
+        plot_file_name = 'soma threshold change' 
+        file_name = data_folder + plot_file_name + '.png'
+        fig.savefig(file_name, dpi=250)
+
+        # dednritic average threshold
+        fig = plt.figure()
+        # plot_locs = [[0,1], [3,4], [6,7]]
+        plot_locs = [[0], [1], [2]]
+        plot_colors = ['blue','black','red']
+        for f_i, f in enumerate(soma_count):
+            count = float(len(soma_count[f_i]))/float(len(dend_count[f_i])+len(soma_count[f_i]))
+            mean = np.mean(dend_count[f_i])
+            sem = stats.sem(dend_count[f_i])
+            plt.bar(plot_locs[f_i][0], mean, facecolor=plot_colors[f_i], edgecolor='pink')
+            plt.errorbar(plot_locs[f_i][0], mean, sem, color=plot_colors[f_i])
+            # plt.bar(plot_locs[f_i][1], len(dend_count[f_i]), facecolor=plot_colors[f_i], edgecolor='pink')
+        plt.title('Dendritic Threshold', fontsize=25, weight='bold')
+        plt.ylabel('Threshold synaptic weight',fontsize=20, weight='bold')
+        plt.xticks([0,1,2], ['Cathodal','Control','Anodal'], fontsize=20, weight='bold')
+        plt.yticks(fontsize=8, weight='bold')
+        plt.ylim([0.006, 0.016])
+        plot_file_name = 'dendrite threshold change' 
+        file_name = data_folder + plot_file_name + '.png'
+        fig.savefig(file_name, dpi=250)
+
+
+
+
+
+        # morphplot_data_diff=[]
+        # for f_i, f in enumerate(morphplot_data):
+        #     morphplot_data_diff.append({})
+        #     for tree_key, tree in spike_data.iteritems():
+        #         morphplot_data_diff[f_i][tree_key]=[]
+        #         for sec_i, sec in enumerate(tree):
+        #             morphplot_data_diff[f_i][tree_key].append([])
+        #             for seg_i, seg in enumerate(sec):
+        #                 weight_stim = morphplot_data[f_i][tree_key][sec_i][seg_i]
+        #                 weight_control = morphplot_data[1][tree_key][sec_i][seg_i]
+        #                 weight_diff = weight_stim-weight_control
+        #                 diff = morphplot_data[f_i][tree_key][sec_i][seg_i] - morphplot_data[1][tree_key][sec_i][seg_i]
+        #                 morphplot_data_diff[f_i][tree_key][sec_i].append(diff)
+
+
+        print min_val, max_val
 
         fig, ax = plt.subplots(nrows=1, ncols=len(p_temp['field']))
+        patch_coll=[]
         plot_file_name = 'spike_threshold_shapeplots' 
         file_name = data_folder + plot_file_name + '.png'
+        plot_labels = ['Cathodal', 'Control', 'Anodal']
+        plot_label_colors = ['blue','black','red']
         for f_i, f in enumerate(p_temp['field']):
-            ShapePlot().basic(morpho=p_temp['morpho'], data=morphplot_data[f_i], axes=ax[f_i])
+            patch_coll.append(ShapePlot().basic(morpho=p_temp['morpho'], data=morphplot_data[f_i], axes=ax[f_i], colormap=colormap.PiYG, width_scale=4))
+            patch_coll[f_i].set_clim([min_val,max_val])
+            ax[f_i].add_collection(patch_coll[f_i])
+            ax[f_i].autoscale()
+            ax[f_i].set_title(plot_labels[f_i], color=plot_label_colors[f_i], fontsize=20)
+            ax[f_i].set_yticks([])
+            ax[f_i].set_xticks([])
+        # ax[0].set_ylabel('Distance from soma (um)', fontsize=20)
+        # ax[1].set_xlabel('Distance from soma (um)', fontsize=20)
+        cbar = plt.colorbar(patch_coll[f_i], ax=ax[f_i], ticks=None, orientation='vertical')
+        cbar.set_label('Threshold synaptic input', fontsize=20)
+        cbar.set_ticks([min_val,0, max_val])
+        cbar.set_ticklabels(['Max','0','Max'])
+        # cbar.set_ticks([])
+        # cbar.set_ticklabels([])
+        red_patch =patches.Patch(color='green', label='Dendrite first')
+        blue_patch =patches.Patch(color='pink', label='Soma first')
+        plt.legend(handles=[red_patch, blue_patch], bbox_to_anchor=(0.,0), loc="upper left", frameon=False)
+
 
         fig.savefig(file_name, dpi=250)
 
     def exp_4a(self, **kwargs):
-        """
-        activate a varying number of synapses with varying distance from the soma.  Synapses are chosen from a window of 200 um, with the window moving along the apical dendrite.  As number of synapses is increased, multiple synapses may impinge on the same compartment/segment, effectively increasing the weight in that segment.  The threshold for generating a somatic or dendritic spike (in number of synapses) is measured as a function of mean distance from the soma and frequency of synaptic activity.  
+        """ Associative plasticity experiment
 
-        Similar to 1a, with larger distance window for synapses to be activated
+        Activate a strong (100 Hz burst) and weak (single pulse in the middle of burst) pathway (separately or together).
+        Vary which pathways are active (strong only, weak only, strong+weak)
+        Vary the distance from soma of each pathway (0-200,200-400,400-600 um).
+        Vary the number of synapses in each pathway (10, 20, 40).
+        Synapse locations are generated randomly with param.choose_seg_rand(). Multiple synapses can be placed on the same segment.  The weight is then multiplied by the number of "synapses"
 
         Plots: 
-        number of active synapse x fraction of synapses with at least one spike (somatically and dendritically driven spikes are separated)
+        number of active synapse x associativity factor (ratio of normalized number of spikes (number of spikes/number of active synapses) when pathways are paired vs unpaired)
 
-        number of active synapses x total number of spikes (normalized to number of active synapses, somatic and dendritic spikes are separated)
-
-        number of active synapses x mean spike timing for each spike
         """
         # spike threshold 
         threshold =-30
@@ -4320,101 +4557,25 @@ class Experiment:
         data_files_id= [file[-36:-1] for file in files if 'data' in file]
         plot_files_id = [file[-36:-1] for file in files if 'trace' in file]
 
-        # if list of processed files in folder, load list
-        id_list_string_spike_times = 'id_list_spike_times.pkl'
-        if id_list_string_spike_times in files:
-            print 'id_list found'
-            
-            with open(data_folder+id_list_string_spike_times, 'rb') as pkl_file:
-                id_list_spike_times = pickle.load(pkl_file)
+        save_string = 'group_data'+'.pkl'
+        self.group_spike_data = self._load_group_data(experiment=kwargs['experiment'], save_string=save_string)
+        id_list_key = 'id_list'
 
-            print 'id list loaded'
-        
-        # otherwise create empty list
-        else:
-            id_list_spike_times = []
-
-        # string to save group data
-        save_string_group_data_raw = 'spikes_grouped_raw'+'.pkl'
-        # if data file already exists
-        if save_string_group_data_raw in files:
-            # load data
-            print 'raw spike data found'
-            with open(data_folder+save_string_group_data_raw, 'rb') as pkl_file:
-                spike_data= pickle.load(pkl_file)
-            print 'raw spike data loaded'
-        # otherwise create data structure
-        else:
-            # data organized as {frequency}{syn distance}{number of synapses}{polarity}[trial]{data type}{tree}[section][segment][spikes]
-            spike_data= {}
-
-        #%%
-        # iterate over data files
-        for data_file_i, data_file in enumerate(data_files):
+        if save_string in data_files:
+            data_files.remove(save_string)
+        # data organized as {pathway combo}{syn distance}{number of synapses}{polarity}{pathway}{data type}[trial]{tree}[section][segment][spikes]
 
 
-        Similar to 1a, with larger distance window for synapses to be activated
-
-        Plots: 
-        number of active synapse x fraction of synapses with at least one spike (somatically and dendritically driven spikes are separated)
-
-        number of active synapses x total number of spikes (normalized to number of active synapses, somatic and dendritic spikes are separated)
-
-        number of active synapses x mean spike timing for each spike
-        """
-        # spike threshold 
-        threshold =-30
-
-        # identify data folder
-        data_folder = 'Data/'+kwargs['experiment']+'/'
-        
-        # all files in directory
-        files = os.listdir(data_folder)
-        
-        # data files
-        data_files = [file for file in files if 'data' in file]
-        plot_files = [file for file in files if 'trace' in file]
-        
-        # unique identifiers for each file type
-        data_files_id= [file[-36:-1] for file in files if 'data' in file]
-        plot_files_id = [file[-36:-1] for file in files if 'trace' in file]
-
-        # if list of processed files in folder, load list
-        id_list_string_spike_times = 'id_list_spike_times.pkl'
-        if id_list_string_spike_times in files:
-            print 'id_list found'
-            
-            with open(data_folder+id_list_string_spike_times, 'rb') as pkl_file:
-                id_list_spike_times = pickle.load(pkl_file)
-
-            print 'id list loaded'
-        
-        # otherwise create empty list
-        else:
-            id_list_spike_times = []
-
-        # string to save group data
-        save_string_group_data_raw = 'spikes_grouped_raw'+'.pkl'
-        # if data file already exists
-        if save_string_group_data_raw in files:
-            # load data
-            print 'raw spike data found'
-            with open(data_folder+save_string_group_data_raw, 'rb') as pkl_file:
-                spike_data= pickle.load(pkl_file)
-            print 'raw spike data loaded'
-        # otherwise create data structure
-        else:
-            # data organized as {frequency}{syn distance}{number of synapses}{polarity}[trial]{data type}{tree}[section][segment][spikes]
-            spike_data= {}
-
-        #%%
         # iterate over data files
         for data_file_i, data_file in enumerate(data_files):
 
             if data_file_i >=0:# and data_file_i <=1000:
-
+                # if no id list, create one
+                if id_list_key not in self.group_spike_data:
+                    self.group_spike_data[id_list_key]=[]
+                        
                 # check if data has been processed already
-                if data_file not in id_list_spike_times:
+                if data_file not in self.group_spike_data[id_list_key]:
 
                     print data_file
                     # open unprocessed data
@@ -4424,219 +4585,434 @@ class Experiment:
                             data = pickle.load(pkl_file)
 
                         print 'data_file: ', data_file_i, ' out of ', len(data_files), ' opened'
+                    # if data file is corrupted, skip it
                     except EOFError:
                         'EOF error, file not opened'
                         continue
 
-                    # add to processed list
-                    id_list_spike_times.append(data_file)
+                    # spike_dictionary{'polarity'}{'pathway'}{'data type'}
+                    spike_data = self._get_spikes(data=data, threshold=threshold, weakpath_bins=True)
 
-                    # parameter dictionary
-                    p = data['p']
+                    p = spike_data['p']
+                    p_path = p['p_path']
 
-                    # temporary store for current trial data. all dictionary entries will be transferred to full data structure (all trials)
-                    dtemp = {}
+                    # retrieve experimental conditions
+                    if 'path_combo' not in p:
+                        path_combo_key=''
+                        for key in p_path:
+                            if len(path_combo_key)==0:
+                                path_combo_key+=key
+                            else:
+                                path_combo_key+='_'+key
+                    else:
+                        path_combo_key = str(p['path_combo'])
+                    syn_dist_key = str(p['syn_dist'])
 
-                    # print trial
-                    # parameter dictionary
-                    dtemp['p'] = copy.copy(p)
-
-                    # retrieve experiment conditions
-                    freq = p['pulse_freq']
-                    syn_num = p['syn_num']
-                    syn_dist = p['syn_dist'][1] 
-                    freq_key = str(freq)
-                    syn_num_key =str(syn_num)
-                    syn_dist_key = str(syn_dist)
-
-                    try:
-                        with open(data_folder+data_file, 'rb') as pkl_file:
-                            data = pickle.load(pkl_file)
-
-                        print 'data_file: ', data_file_i, ' out of ', len(data_files), ' opened'
-                    except EOFError:
-                        'EOF error, file not opened'
-                        continue
+                    # FIXME
+                    if isinstance(p['syn_num'][0], list):
+                        for polarity_key, pathway in spike_data.iteritems():
+                            if polarity_key != 'p':
+                                for pathway_key, data_dic in pathway.iteritems():
+                                    syn_num_path = data_dic['p_path']['syn_num']
+                                    for syn_num_range in p['syn_num']:
+                                        if syn_num_path in syn_num_range:
+                                            syn_num_key=str(syn_num_path)
+                    else:
+                        syn_num_key=str(p['syn_num'][0])
 
                     # update data structure dimensions
-                    if str(freq) not in spike_data:
-                        spike_data[str(freq)]={}
+                    if path_combo_key not in self.group_spike_data:
+                        self.group_spike_data[path_combo_key]={}
 
-                    if str(syn_dist) not in spike_data[str(freq)]:
-                        spike_data[str(freq)][str(syn_dist)]={}
+                    if syn_dist_key not in self.group_spike_data[path_combo_key]:
+                        self.group_spike_data[path_combo_key][syn_dist_key]={}
 
-                    if str(syn_num) not in spike_data[str(freq)][str(syn_dist)]:
-                        spike_data[str(freq)][str(syn_dist)][str(syn_num)]={}
-                        for polarity_i, polarity in enumerate(p['field']):
-                            spike_data[str(freq)][str(syn_dist)][str(syn_num)][str(polarity)]={}
+                    if syn_num_key not in self.group_spike_data[path_combo_key][syn_dist_key]:
+                        self.group_spike_data[path_combo_key][syn_dist_key][syn_num_key]={}
 
-                    # iterate through polarities
-                    for polarity_i, polarity in enumerate(p['field']):
-                        polarity_key =str(polarity)
+                    for polarity_key, pathway in spike_data.iteritems():
+                        if polarity_key != 'p':
+                            if polarity_key not in self.group_spike_data[path_combo_key][syn_dist_key][syn_num_key]:
+                                self.group_spike_data[path_combo_key][syn_dist_key][syn_num_key][polarity_key]={}
+                            for pathway_key, data_dic in pathway.iteritems():
+                                if pathway_key not in self.group_spike_data[path_combo_key][syn_dist_key][syn_num_key][polarity_key]:
+                                    self.group_spike_data[path_combo_key][syn_dist_key][syn_num_key][polarity_key][pathway_key]={}
+
+                                for dtype_key, dtype in data_dic.iteritems():
+                                    if dtype_key not in self.group_spike_data[path_combo_key][syn_dist_key][syn_num_key][polarity_key][pathway_key]:
+                                        self.group_spike_data[path_combo_key][syn_dist_key][syn_num_key][polarity_key][pathway_key][dtype_key]=[]
+                                    
+                                    self.group_spike_data[path_combo_key][syn_dist_key][syn_num_key][polarity_key][pathway_key][dtype_key].append(dtype)
+
+                    self.group_spike_data[id_list_key].append(data_file)
+
+        # save structure of all raw spike data
+        save_group_data = self.group_spike_data
+        with open(data_folder+save_string, 'wb') as output:
+            pickle.dump(save_group_data, output,protocol=pickle.HIGHEST_PROTOCOL)
+        print 'spike data saved'
+        
+        
+        # plot number of synapses vs. total number of spikes normalized to total number of synapses in weak pathway under paired and unpaired condition
+        spikes_temp ={}
+        for path_combo_key, path_combo in self.group_spike_data.iteritems():
+            if path_combo_key != id_list_key:
+                spikes_temp[path_combo_key]={}
+                for syn_dist_key, syn_dist in path_combo.iteritems():
+                    spikes_temp[path_combo_key][syn_dist_key]={}
+                    sig_data=[]
+                    for syn_num_key, syn_num in syn_dist.iteritems():
+                        spikes_temp[path_combo_key][syn_dist_key][syn_num_key]={}
+                        for polarity_key, polarity in syn_num.iteritems():
+                            spikes_temp[path_combo_key][syn_dist_key][syn_num_key][polarity_key]={}
+                            for pathway_key, pathway in polarity.iteritems():
+                                spikes_temp[path_combo_key][syn_dist_key][syn_num_key][polarity_key][pathway_key]={}
+                                dtemp = spikes_temp[path_combo_key][syn_dist_key][syn_num_key][polarity_key][pathway_key]
+
+                                # get polarity index
+                                polarity_i = [f_i for f_i, f in enumerate(pathway['p'][0]['field']) if str(f)==polarity_key][0]
+
+                                # plot color and marker
+                                color = pathway['p'][0]['field_color'][polarity_i]
+                                # size = 20.*float(syn_dist_key)/600.
+                                size = 10.
+                                opacity = 0.7
+                                marker_soma = '.'
+                                marker_dend= 'x'
+                                marker_all= '^'
 
 
+                                # lsit of soma/dend spike fraction for each trial in current set of conditions
 
-                        # for each trial get a list of dendritic spike times and a corresponding list with the location (distance from soma) they occured
-                        dtemp['spikes_dend']=[] 
-                        dtemp['spikes_dend_dist']=[]
-                        dtemp['spikes_first'] = []
-                        dtemp['spike_times'] ={}
-                        dtemp['dw']={}
-
-                        # add soma data
-                        dtemp['spike_times']['soma'] = [[]]
-                        spike_times = spike_analysis.detect_spikes(data[str(polarity)]['soma_v'][0][0], threshold=threshold)['times'][0]
-                        dtemp['spike_times']['soma'][0].append(spike_times)
-                        dtemp['spikes_soma'] = spike_times
-                        # print spike_times
+                                # iterate through trials
+                                soma_spikes_total=[]
+                                dend_spikes_total=[]
+                                all_spikes_total=[]
+                                dw_list=[]
+                                
+                                # spikes_dend_diff_bin = [trial][time bin][dendritic spike time], where soma first is negative, dendrite first is positive
+                                for trial_i, trial in enumerate(pathway['spikes_dend_diff_bin']):
 
 
-                        # iterate through tree, section, segment
-                        for tree_key, tree in p['sec_idx'].iteritems():
-                            dtemp['spike_times'][tree_key] =[]
-                            dtemp['dw'][tree_key] =[]
-                        
-                            for sec_i, sec in enumerate(tree):
+                                    # count somatic/dendritic spikes for each trial
+                                    soma_count =[]
+                                    dend_count=[]
+                                    for time_bin_i, time_bin in enumerate(trial):
+                                        # list of spike indeces with soma/dend spikes
+                                        soma_first = [spike_i for spike_i, spike_diff in enumerate(time_bin) if spike_diff<0.]
+                                        dend_first = [spike_i for spike_i, spike_diff in enumerate(time_bin) if spike_diff>=0.]
+                                        # count total spieks per time bin
+                                        soma_count.append(float(len(soma_first)))
+                                        dend_count.append(float(len(dend_first)))
+                                    
+                                    syn_num_unique = float(len([seg_i for tree_key, tree in pathway['p_path'][trial_i]['seg_idx'].iteritems() for sec_i, sec in enumerate(tree) for seg_i, seg in enumerate(sec)]))
 
-                                dtemp['spike_times'][tree_key].append([])
-                                dtemp['dw'][tree_key].append([])
+                                    # total spikes per trial, normalized
+                                    soma_spikes_norm = np.sum(soma_count)/syn_num_unique
+                                    dend_spikes_norm = np.sum(dend_count)/syn_num_unique
+                                    # add to list for all trials
+                                    soma_spikes_total.append(soma_spikes_norm)
+                                    dend_spikes_total.append(dend_spikes_norm)
+                                    all_spikes_total.append(soma_spikes_norm+dend_spikes_norm)
 
-                                for seg_i, seg in enumerate(p['seg_idx'][tree_key][sec_i]):
+                                    dw_all = pathway['dw'][trial_i]
+                                    syn_count = 0
+                                    dw_trial=[]
+                                    for tree_key, tree in dw_all.iteritems():
+                                        for sec_i, sec in enumerate(tree):
+                                            for seg_i, seg in enumerate(sec):
+                                                syn_count+=1
+                                                dw_trial.append(seg)
+                                    dw_mean = sum(dw_trial)/float(syn_count)
+                                    dw_list.append(dw_mean)
 
-                                    sec_num = sec
-                                    seg_num = p['seg_idx'][tree_key][sec_i][seg_i]
-                                    distance = p['seg_dist'][tree_key][sec_num][seg_num]
+                                dw_mean = np.mean(dw_list)
+                                dw_std = np.std(dw_list)
+                                dw_sem = stats.sem(dw_list)
+                                
+                                # group stats
+                                soma_total_mean = np.mean(soma_spikes_total)
+                                soma_total_std = np.std(soma_spikes_total)
+                                soma_total_sem = stats.sem(soma_spikes_total)
+                                dend_total_mean = np.mean(dend_spikes_total)
+                                dend_total_std = np.std(dend_spikes_total)
+                                dend_total_sem = stats.sem(dend_spikes_total)
+                                all_total_mean = np.mean(all_spikes_total)
+                                all_total_std = np.std(all_spikes_total)
+                                all_total_sem = stats.sem(all_spikes_total)
 
-                                    # list of spike times [spike_times]
-                                    spike_times = spike_analysis.detect_spikes(data[str(polarity)][tree_key+'_v'][sec_i][seg_i], threshold=threshold)['times'][0]
+                                # find max number of synapses while all conditions have <1 spike per synapse
 
-                                    # scalar weight change
-                                    dw = data[str(polarity)][tree_key+'_gbar'][sec_i][seg_i][-1]/data[str(polarity)][tree_key+'_gbar'][sec_i][seg_i][0]
+                                # print path_combo_key, syn_num_key, pathway_key, all_total_mean
+                                dtemp['all_total_mean']=all_total_mean
+                                dtemp['all_total_std']=all_total_std
+                                dtemp['all_total_sem']=all_total_sem
+                                dtemp['dw_mean'] = dw_mean
+                                dtemp['dw_std'] = dw_std
+                                dtemp['dw_sem'] = dw_sem
+        
+        # fit sigmoid to num of synapses vs spikes/synapse
+        io = {}
+        for path_combo_key, path_combo in spikes_temp.iteritems():
+            if path_combo_key not in io:
+                io[path_combo_key]={}
+            for syn_dist_key, syn_dist in path_combo.iteritems():
+                if syn_dist_key not in io[path_combo_key]:
+                    io[path_combo_key][syn_dist_key]={}
+                for syn_num_key, syn_num in syn_dist.iteritems():
+                    for polarity_key, polarity in syn_num.iteritems():
+                        if polarity_key not in io[path_combo_key][syn_dist_key]:
+                            io[path_combo_key][syn_dist_key][polarity_key]={}
+                        for pathway_key, pathway in polarity.iteritems():
+                            if pathway_key not in io[path_combo_key][syn_dist_key][polarity_key]:
+                                io[path_combo_key][syn_dist_key][polarity_key][pathway_key]={'syn_num':[],'all_total_mean':[]}
+                            if float(syn_num_key) not in io[path_combo_key][syn_dist_key][polarity_key][pathway_key]['syn_num']:
+                                spikes_total = pathway['all_total_mean']
 
-                                    # add to dtemp structure
-                                    dtemp['spike_times'][tree_key][sec_i].append(spike_times)
-                                    dtemp['dw'][tree_key][sec_i].append(dw)
+                                if spikes_total<1.1:
+                                    io[path_combo_key][syn_dist_key][polarity_key][pathway_key]['syn_num'].append(float(syn_num_key))
+                                
+                                    io[path_combo_key][syn_dist_key][polarity_key][pathway_key]['all_total_mean'].append(spikes_total)
 
-                                    # record whether whether there was a spike in soma or dendrite first [all dendritic spike]
-                                    # no spike=0, dend first=1, soma first=2
-                                    # if there are dendritic spikes
-                                    if len(spike_times)>0:
-                                        # iterate through spike times
-                                        for spike_i, spike_time in enumerate(spike_times):
+        # iterate over conditions, fit sigmoid to data
+        save_string = 'sigmoid_params.pkl'
+        sigmoid_params = self._load_group_data(experiment='exp_4a', save_string=save_string)
+        plots={}
+        polarities = ['-20', '0', '20']
+        polarity_colors = ['blue','black','red']
+        for path_combo_key, path_combo in io.iteritems():
+            if path_combo_key not in sigmoid_params:
+                sigmoid_params[path_combo_key]={}
 
-                                            # add to list of all dendritic spike times for this trial/cell
-                                            dtemp['spikes_dend'].append(spike_time)
-                                            dtemp['spikes_dend_dist'].append(distance)
+            if '_'in path_combo_key:
+                for syn_dist_key, syn_dist in path_combo.iteritems():
+                    if syn_dist_key not in sigmoid_params[path_combo_key]:
+                        sigmoid_params[path_combo_key][syn_dist_key]={}
+                    if syn_dist_key not in plots:
+                        plots[syn_dist_key] = {}
+                        # plots_dw[syn_dist_key] = {}
+                    for polarity_key, polarity in syn_dist.iteritems():
+                        if polarity_key not in sigmoid_params[path_combo_key][syn_dist_key]:
+                            sigmoid_params[path_combo_key][syn_dist_key][polarity_key]={}
+                        for pathway_key, pathway in polarity.iteritems():
+                            if pathway_key not in plots[syn_dist_key]:
+                                plots[syn_dist_key][pathway_key]=plt.figure()
+                            if pathway_key not in sigmoid_params[path_combo_key][syn_dist_key][polarity_key]:
+                                sigmoid_params[path_combo_key][syn_dist_key][polarity_key][pathway_key]={}
 
-                                            # if this is the first spike
-                                            if spike_i==0:
-                                                # if there is also a somatic spike
-                                                if len(dtemp['spikes_soma'])>0:
-                                                    # if the somatic spike occurs first
-                                                    if spike_time > dtemp['spikes_soma'][0]:
+                                # fit sigmoid 
+                                params=[1.,10.,1.]
+                                x = np.array(pathway['syn_num'])
+                                y = np.array(pathway['all_total_mean'])
+                                # print 'x:',x
+                                # print 'y:',y
+                                data_pass = [x,y]
+                                param_opt_obj = scipy.optimize.minimize(self._sigmoid_opt, params, (x, y))
+                                if param_opt_obj.success:
+                                    param_opt=param_opt_obj.x
+                                else:
+                                    print 'optimization unsuccessful'
+                                    print param_opt_obj.message
+                                x = np.array(pathway['syn_num'])
+                                ymax = float(param_opt[0])
+                                x50 = float(param_opt[1])
+                                s = float(param_opt[2])
+                                # print 'ymax:', ymax, 'x50:', x50, 's:', s
+                                x_fit = np.arange(min(pathway['syn_num']),max(pathway['syn_num']), 0.1)
+                                y_fit = ymax/(1.+np.exp((x50-x_fit)/s))
 
-                                                        # store as soma first
-                                                        dtemp['spikes_first'].append(2)
-                                                    # otherwise the spike is dend first
-                                                    else:
-                                                        dtemp['spikes_first'].append(1)
-                                                # if there is a dendritic but no somatic spike, it is dend first
-                                                else:
-                                                    dtemp['spikes_first'].append(1)
-                                    # otherwise no spike at all
-                                    else:
-                                        dtemp['spikes_first'].append(0)
 
-                        # create nested list of spike times with dimensions [pulse time bins][spike times]
-                        dtemp['time_bins'] = []
-                        dtemp['spikes_dend_bin'] = []
-                        dtemp['spikes_soma_bin'] = []
-                        dtemp['spikes_dend_dist_bin'] = []
-                        dtemp['spikes_dend_diff_bin'] = []
-                        dtemp['syn_frac_bin'] = []
-                        for pulse_i, pulse in enumerate(range(p['pulses'])):
-                            # determine time bins
-                            dtemp['time_bins'].append([])
-                            time1 = (p['warmup'] + 1000/p['pulse_freq']*pulse_i)/p['dt'] +1 
-                            time2 = (p['warmup'] + 1000/p['pulse_freq']*(pulse_i+1))/p['dt']
-                            dtemp['time_bins'][pulse_i].append(time1)
-                            dtemp['time_bins'][pulse_i].append(time2)
+                                sigmoid_params[path_combo_key][syn_dist_key][polarity_key][pathway_key]['syn_num'] = pathway['syn_num']
+                                sigmoid_params[path_combo_key][syn_dist_key][polarity_key][pathway_key]['all_total_mean'] = pathway['all_total_mean']
+                                sigmoid_params[path_combo_key][syn_dist_key][polarity_key][pathway_key]['params'] = param_opt
+                                sigmoid_params[path_combo_key][syn_dist_key][polarity_key][pathway_key]['sigmoid_fit'] = y_fit
+                                sigmoid_params[path_combo_key][syn_dist_key][polarity_key][pathway_key]['x_fit'] = x_fit
 
-                            # get spike times that fall within the current bin 
-                            binned_spikes_dist = []
-                            binned_spikes_dend =[]
-                            binned_spikes_soma = []
-                            if len(dtemp['spikes_soma'])>0:
-                                # print dtemp['spikes_soma']
-                                binned_spikes_soma = [spike for spike_i, spike in enumerate(dtemp['spikes_soma']) if (spike > time1 and spike <= time2)]
-                            if len(dtemp['spikes_dend'])>0:
-                                binned_spikes_dend = [spike for spike_i, spike in enumerate(dtemp['spikes_dend']) if (spike > time1 and spike <= time2)]
-                                binned_spikes_dist = [dtemp['spikes_dend_dist'][spike_i] for spike_i, spike in enumerate(dtemp['spikes_dend']) if (spike > time1 and spike <= time2)]
-                            # difference between dendritic and somatic spike times (dendrite first is positive, soma first is negative)
-                            if len(binned_spikes_soma)>0 and len(binned_spikes_dend)>0:
-                                binned_spikes_dend_diff = [binned_spikes_soma[0]-spike for spike_i, spike in enumerate(binned_spikes_dend)]
-                            else: #len(binned_spikes_dend)>0:
-                                binned_spikes_dend_diff = binned_spikes_dend
-
-                            # fraction of synapses that spike in current bin
-                            binned_distances =  list(set(binned_spikes_dist))
-                            binned_syn_frac = float(len(binned_distances))/float(syn_num_key)
                             
 
-                            # add spike times for current bin to list of all bins
-                            dtemp['spikes_dend_bin'].append(binned_spikes_dend)
-                            dtemp['spikes_soma_bin'].append(binned_spikes_soma)
-                            dtemp['spikes_dend_dist_bin'].append(binned_spikes_dist)
-                            dtemp['spikes_dend_diff_bin'].append(binned_spikes_dend_diff)
-                            dtemp['syn_frac_bin'].append(binned_syn_frac)
+                            # plot color and marker
+                            color = polarity_colors[polarities.index(polarity_key)]
 
-                         # fraction of synapses that spike at all during simulation
-                        distances = list(set(dtemp['spikes_dend_dist']))
-                        dtemp['syn_frac'] = float(len(distances))/float(syn_num_key)
+                            size = 30.
+                            opacity = 0.7
+                            marker_soma = '.'
+                            marker_dend= 'x'
+                            if '_' in path_combo_key:
+                                marker_all= '^'
+                            else:
+                                marker_all='.'
+                                # print path_combo_key, pathway_key, all_total_mean, float(syn_num_key)
+                            print 'xfit:',sigmoid_params[path_combo_key][syn_dist_key][polarity_key][pathway_key]['x_fit']
+                            print 'yfit:',sigmoid_params[path_combo_key][syn_dist_key][polarity_key][pathway_key]['sigmoid_fit']
+                            # plot with errorbars
+                            plt.figure(plots[syn_dist_key][pathway_key].number)
 
-                        # update main data structure
-                        for dtype_key, dtype in dtemp.iteritems():
-                            if dtype_key not in spike_data[freq_key][syn_dist_key][syn_num_key][polarity_key]:
-                                spike_data[freq_key][syn_dist_key][syn_num_key][polarity_key][dtype_key]=[]
-                            spike_data[freq_key][syn_dist_key][syn_num_key][polarity_key][dtype_key].append(dtype)
-                    # parameter dictionary
-                    p = data['p']
+                            plt.plot(sigmoid_params[path_combo_key][syn_dist_key][polarity_key][pathway_key]['syn_num'], sigmoid_params[path_combo_key][syn_dist_key][polarity_key][pathway_key]['all_total_mean'], color=color, marker=marker_all, markersize=size, alpha=opacity, linewidth=0)
+                            
+                            plt.plot(sigmoid_params[path_combo_key][syn_dist_key][polarity_key][pathway_key]['x_fit'], sigmoid_params[path_combo_key][syn_dist_key][polarity_key][pathway_key]['sigmoid_fit'], color=color, linewidth=5)
+                            plt.xlabel('Number of active synapses')
+                            plt.ylabel('Number of spikes/synapse')
+                            # if '200' in syn_dist_key:
+                            #     plt.xlim([0,14])
+                            # elif '600' in syn_dist_key:
+                            #     plt.xlim([15,42])
+                            # plt.ylim([-0.1, 1.1])
+                            plt.title(pathway_key+'_pathway_' + syn_dist_key +'_um')
 
-                    dtemp = self._get_spikes(data=data, threshold=threshold)
+        # save structure of all raw spike data
+        save_group_data = sigmoid_params
+        with open(data_folder+save_string, 'wb') as output:
+            pickle.dump(save_group_data, output,protocol=pickle.HIGHEST_PROTOCOL)
+        print 'spike data saved'
 
-                    # temporary store for current trial data. all dictionary entries will be transferred to full data structure (all trials)
-                    dtemp = {}
+        # save and close figure
+        for syn_dist_key, syn_dist in plots.iteritems():
+            for pathway_key, plot in syn_dist.iteritems():
+                plt.figure(plot.number)
+                plot_file_name = 'syn_num_x_spikes_total_sigfit_'+pathway_key+'_pathway_' + syn_dist_key +'_um'
+                plot.savefig(data_folder+plot_file_name+'.png', dpi=250)
+                with open(data_folder+plot_file_name+'.pkl', 'wb') as output:
+                    pickle.dump(plots[syn_dist_key][pathway_key], output,protocol=pickle.HIGHEST_PROTOCOL)
+                print 'figure: ', plot_file_name, ' saved'
+                plt.close(plot)
 
-                    # print trial
-                    # parameter dictionary
-                    dtemp['p'] = copy.copy(p)
+        # reorganize so the 
+        spikes_temp_norm={}
+        plots={}
+        plots_dw={}
+        for path_combo_key, path_combo in self.group_spike_data.iteritems():
+            if path_combo_key != id_list_key:
+                spikes_temp_norm[path_combo_key]={}
+                for syn_dist_key, syn_dist in path_combo.iteritems():
+                    if syn_dist_key not in plots:
+                        plots[syn_dist_key] = {}
+                        plots_dw[syn_dist_key] = {}
+                    spikes_temp_norm[path_combo_key][syn_dist_key]={}
+                    for syn_num_key, syn_num in syn_dist.iteritems():
+                        spikes_temp_norm[path_combo_key][syn_dist_key][syn_num_key]={}
+                        for polarity_key, polarity in syn_num.iteritems():
+                            spikes_temp_norm[path_combo_key][syn_dist_key][syn_num_key][polarity_key]={}
+                            for pathway_key, pathway in polarity.iteritems():
+                                if pathway_key not in plots[syn_dist_key]:
+                                    plots[syn_dist_key][pathway_key]=plt.figure()
+                                    plots_dw[syn_dist_key][pathway_key]=plt.figure()
+                                spikes_temp_norm[path_combo_key][syn_dist_key][syn_num_key][polarity_key][pathway_key]={}
+                                for dtype_key, dtype in spikes_temp[path_combo_key][syn_dist_key][syn_num_key][polarity_key][pathway_key].iteritems():
+                                    # print dtype_key, dtype
+                                    # print 'denom:',spikes_temp[pathway_key][syn_dist_key][syn_num_key]['0'][pathway_key][dtype_key]
+                                    spikes_temp_norm[path_combo_key][syn_dist_key][syn_num_key][polarity_key][pathway_key][dtype_key]= dtype#/spikes_temp[pathway_key][syn_dist_key][syn_num_key]['0'][pathway_key][dtype_key]
+                                # print 'all_total_mean:', all_total_mean
+                                all_total_mean = spikes_temp_norm[path_combo_key][syn_dist_key][syn_num_key][polarity_key][pathway_key]['all_total_mean']
 
-                    # retrieve experiment conditions
-                    freq = p['pulse_freq']
-                    syn_num = p['syn_num']
-                    syn_dist = p['syn_dist'][1] 
-                    freq_key = str(freq)
-                    syn_num_key =str(syn_num)
-                    syn_dist_key = str(syn_dist)
+                                all_total_sem = spikes_temp_norm[path_combo_key][syn_dist_key][syn_num_key][polarity_key][pathway_key]['all_total_sem']
 
-                    # update data structure dimensions
-                    if str(freq) not in spike_data:
-                        spike_data[str(freq)]={}
+                                dw_sem = spikes_temp_norm[path_combo_key][syn_dist_key][syn_num_key][polarity_key][pathway_key]['dw_sem']
 
-                    if str(syn_dist) not in spike_data[str(freq)]:
-                        spike_data[str(freq)][str(syn_dist)]={}
+                                dw_mean = spikes_temp_norm[path_combo_key][syn_dist_key][syn_num_key][polarity_key][pathway_key]['dw_mean']
 
-                    if str(syn_num) not in spike_data[str(freq)][str(syn_dist)]:
-                        spike_data[str(freq)][str(syn_dist)][str(syn_num)]={}
-                        for polarity_i, polarity in enumerate(p['field']):
-                            spike_data[str(freq)][str(syn_dist)][str(syn_num)][str(polarity)]={}
+                                dw_std = spikes_temp_norm[path_combo_key][syn_dist_key][syn_num_key][polarity_key][pathway_key]['dw_std']
+                                
+                                
+                                # get polarity index
+                                polarity_i = [f_i for f_i, f in enumerate(pathway['p'][0]['field']) if str(f)==polarity_key][0]
 
-                    # iterate through polarities
-                    for polarity_i, polarity in enumerate(p['field']):
-                        polarity_key =str(polarity)
+                                # plot color and marker
+                                color = pathway['p'][0]['field_color'][polarity_i]
+
+                                size = 25.
+                                opacity = 0.7
+                                marker_soma = '.'
+                                marker_dend= 'x'
+                                if '_' in path_combo_key:
+                                    marker_all= '^'
+                                else:
+                                    marker_all='.'
+                                    # print path_combo_key, pathway_key, all_total_mean, float(syn_num_key)
+
+                                
+                                # plot with errorbars
+                                plt.figure(plots[syn_dist_key][pathway_key].number)
+
+                                plt.plot(float(syn_num_key), all_total_mean, color=color, marker=marker_all, markersize=size, alpha=opacity)
+                                
+                                plt.errorbar(float(syn_num_key), all_total_mean, yerr=all_total_sem, color=color, alpha=opacity)
+                                plt.xlabel('Number of active synapses')
+                                plt.ylabel('Number of spikes/synapse')
+                                if '200' in syn_dist_key:
+                                    plt.xlim([0,14])
+                                elif '600' in syn_dist_key:
+                                    plt.xlim([15,42])
+                                plt.ylim([-0.1, 1.1])
+                                plt.title(pathway_key+'_pathway_' + syn_dist_key +'_um')
+
+                                # weight plots
+                                # plot with errorbars
+                                plt.figure(plots_dw[syn_dist_key][pathway_key].number)
+
+                                plt.plot(float(syn_num_key), dw_mean, color=color, marker=marker_all, markersize=size, alpha=opacity)
+                                
+                                plt.errorbar(float(syn_num_key), dw_mean, yerr=dw_sem, color=color, alpha=opacity)
+                                plt.xlabel('Number of synapses')
+                                plt.ylabel('Weight change')
+                                plt.title(pathway_key+'_pathway_' + syn_dist_key +'_um')
+
+        # save and close figure
+        for syn_dist_key, syn_dist in plots.iteritems():
+            for pathway_key, plot in syn_dist.iteritems():
+                plt.figure(plot.number)
+                plot_file_name = 'syn_num_x_spikes_total_'+pathway_key+'_pathway_' + syn_dist_key +'_um'
+                plot.savefig(data_folder+plot_file_name+'.png', dpi=250)
+                with open(data_folder+plot_file_name+'.pkl', 'wb') as output:
+                    pickle.dump(plots[syn_dist_key][pathway_key], output,protocol=pickle.HIGHEST_PROTOCOL)
+                print 'figure: ', plot_file_name, ' saved'
+                plt.close(plot)
+
+        # save and close figure
+        for syn_dist_key, syn_dist in plots_dw.iteritems():
+            for pathway_key, plot in syn_dist.iteritems():
+                plt.figure(plot.number)
+                plot_file_name = 'syn_num_x_dw_'+pathway_key+'_pathway_' + syn_dist_key +'_um'
+                plot.savefig(data_folder+plot_file_name+'.png', dpi=250)
+                with open(data_folder+plot_file_name+'.pkl', 'wb') as output:
+                    pickle.dump(plots_dw[syn_dist_key][pathway_key], output,protocol=pickle.HIGHEST_PROTOCOL)
+                print 'figure: ', plot_file_name, ' saved'
+                plt.close(plot)
+
+
+        # def _fit_sigmoid(self, params, x, y, **kwargs):
+        #     """
+        #     """
+        #     data_folder = 'Data/'+kwargs['experiment']+'/'
+        
+        #     # all files in directory
+        #     files = os.listdir(data_folder)
+
+        #     save_string = kwargs['save_string']
+
+        #     if save_string in files:
+        #         print 'group data found:', save_string
+        #         with open(data_folder+save_string, 'rb') as pkl_file:
+        #         param_opt = pickle.load(pkl_file)
+        #         print 'group data loaded'
+
+        #     else:
+        #         param_opt_obj = scipy.optimize.minimize(Experiment._sigmoid_opt(), params)
+        #         if param_opt_obj.success:
+        #             param_opt=param_opt_obj.x
+        #         else:
+        #             print 'optimization unsuccessful'
+        #             print param_opt_obj.message
+
+        #     return param_opt
 
 
 
+        #     # check if parameters are already stored
+        #     if 'save_string' in kwargs:
+        #         print 'group data found:', save_string
+        #     with open(data_folder+save_string, 'rb') as pkl_file:
+        #         group_data= pickle.load(pkl_file)
+        #     print 'group data loaded'
 
 
 if __name__ =="__main__":
@@ -4645,5 +5021,7 @@ if __name__ =="__main__":
     # kwargs = run_control.Arguments('exp_8').kwargs
     # plots = Voltage()
     # plots.plot_all(param.Experiment(**kwargs).p)
-    kwargs = {'experiment':'exp_1b'}
-    Experiment(**kwargs)
+    # kwargs = {'experiment':'exp_4a'}
+    # Experiment(**kwargs)
+    # FitFD()
+    pass
