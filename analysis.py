@@ -252,11 +252,25 @@ class Clopath():
         ===Comments===
         """
         data_files = glob.glob(directory+search_string)
-        data_file = data_files[0]
+        data_file = data_files[1]
+        with open(data_file, 'rb') as pkl_file:
+            data = pickle.load(pkl_file)
+        p = data['p']
         print data_file
         self.data_mat, self.input_mat, self.conditions, self.p, self.t = self._load_data(directory='', data_file=data_file)
         self.w = self._clopath(x=self.input_mat, u=self.data_mat, )
-        self._plot_clopath(self.w, self.conditions)
+        fig_v = PlotRangeVar().plot_trace(data=data,
+                            sec_idx=p['sec_idx'],
+                            seg_idx=p['seg_idx'],
+                            variables=p['plot_variables'],
+                            x_variables=p['x_variables'],
+                            file_name='',
+                            group_trees=p['group_trees'],
+                            xlim=[p['warmup']-5,p['tstop']],
+                            ylim=[-70,-45])
+        fig = self._plot_clopath(self.w, self.conditions)
+        fig.savefig(directory+'_weights.png',dpi=250)
+#        fig_v.savefig(directory+'_trace.png', dpi=250)
         
         return self.w
     
@@ -265,12 +279,17 @@ class Clopath():
         """
         pols = ['-20.0','0.0','20.0']
         colors = ['blue','black','red']
-        plt.figure()
+        fig = plt.figure()
         nsyns = w.shape[0]
         for syn in range(nsyns):
             polarity = conditions['polarity'][syn]
             color = colors[pols.index(polarity)]
             plt.plot(w[syn,:],color=color)
+        plt.xlabel('time')
+        plt.ylabel('weight')
+        plt.title('weight dynamics during single theta burst')
+        
+        return fig
         
     def _load_data(self, 
                    directory='Data/', 
@@ -295,8 +314,8 @@ class Clopath():
         
         ===Args===
         -x      :   input vector of spike times (1 for spike, 0 for no spike)
-        -u      :   voltage vector
-        -fs     :   sampling rate
+        -u      :   array of voltage time traces (compartments x time)
+        -fs     :   sampling rate (1/s)
         -w0     :   initial weight 
         -param  :   dictionary of clopath parameters
         -homeostatic : if True, homeostatic term is included in LTD equation
@@ -353,7 +372,6 @@ class Clopath():
         self.A_m         = p['A_m0']*np.ones((n_syn,dur_samples))# homeostatic LTD parameter
 
         # apply learning rule
-        
         #`````````````````````````````````````````````````````````````````````` 
         # main loop
         for i, t in enumerate(time):

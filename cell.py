@@ -215,13 +215,22 @@ class PyramidalCylinder:
 
                         for syn_key,syn in self.syns[tree_key][sec_i][seg_i].iteritems():
                             if syn_key is 'ampa':
-                                # print syn_key
-                                self.syns[tree_key][sec_i][seg_i][syn_key] = h.Exp2Syn(sec(seg.x))
-                                # self.syns[tree_key][sec_i][seg_i][syn_key] = h.FDSExp2Syn(sec(seg.x))
-                                self.syns[tree_key][sec_i][seg_i][syn_key].tau1 = p['tau1_ampa']
-                                self.syns[tree_key][sec_i][seg_i][syn_key].tau2 = p['tau2_ampa']
-                                self.syns[tree_key][sec_i][seg_i][syn_key].i = p['i_ampa']
-                                # print syn
+                                # Regular ampa synapse
+                                # self.syns[tree_key][sec_i][seg_i][syn_key] = h.Exp2Syn(sec(seg.x))
+                                # self.syns[tree_key][sec_i][seg_i][syn_key].tau1 = p['tau1_ampa']
+                                # self.syns[tree_key][sec_i][seg_i][syn_key].tau2 = p['tau2_ampa']
+                                # self.syns[tree_key][sec_i][seg_i][syn_key].i = p['i_ampa']
+
+                                # FD adapting exponential synapse based on model in Varela et al. 1997
+                                self.syns[tree_key][sec_i][seg_i][syn_key] = h.FDSExp2Syn_D3(sec(seg.x))
+                                self.syns[tree_key][sec_i][seg_i][syn_key].f = p['f_ampa']
+                                self.syns[tree_key][sec_i][seg_i][syn_key].tau_F = p['tau_F_ampa']
+                                self.syns[tree_key][sec_i][seg_i][syn_key].d1 = p['d1_ampa']
+                                self.syns[tree_key][sec_i][seg_i][syn_key].tau_D1 = p['tau_D1_ampa']
+                                self.syns[tree_key][sec_i][seg_i][syn_key].d2 = p['d2_ampa']
+                                self.syns[tree_key][sec_i][seg_i][syn_key].tau_D2 = p['tau_D2_ampa']
+                                self.syns[tree_key][sec_i][seg_i][syn_key].d3 = p['d3_ampa']
+                                self.syns[tree_key][sec_i][seg_i][syn_key].tau_D3 = p['tau_D3_ampa']
 
                             elif syn_key is 'nmda':
                                 # print syn_key
@@ -425,6 +434,8 @@ class CellMigliore2005:
                                 self.syns[tree_key][sec_i][seg_i][syn_key].tau_D1 = p['tau_D1_ampa']
                                 self.syns[tree_key][sec_i][seg_i][syn_key].d2 = p['d2_ampa']
                                 self.syns[tree_key][sec_i][seg_i][syn_key].tau_D2 = p['tau_D2_ampa']
+                                self.syns[tree_key][sec_i][seg_i][syn_key].d3 = p['d3_ampa']
+                                self.syns[tree_key][sec_i][seg_i][syn_key].tau_D3 = p['tau_D3_ampa']
 
                                 # regular double exponential synapse
                                 # self.syns[tree_key][sec_i][seg_i][syn_key] = h.Exp2Syn(sec(seg.x))
