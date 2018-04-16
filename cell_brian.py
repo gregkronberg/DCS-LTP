@@ -344,7 +344,90 @@ class BonoReduced():
         '''
         self.p = {
         'n_compartment':4,
-        'n_neuron':1,
+        'n_neuron':2,
+        # compartments
+        'E_L' : -69*mV # mV
+        'g_L' : 40*nS # nS
+        'delta_T' : 2*mV # mV
+        'C' : 281*pF
+        't_noise' : 20*ms
+        't_V_T' : 50*ms
+        'refractory_time' : 1*ms
+        'spike_hold_time':0.9*ms # must be less than refractory time
+        'reset' : -55*mV
+
+        # FIXME
+        # axial conductance between compartments
+        'g_axial_somas_basals' : 1250*nS
+        'g_axial_basals_somas' : 50*nS
+        'g_axial_somas_proximals' : 1250*nS
+        'g_axial_proximals_somas' : 50*nS
+        'g_axial_proximals_distals' : 1500*nS
+        'g_axial_distals_proximals' : 225*nS
+        # I_axial1=0
+        # I_axial2=0
+
+        # synapses
+        # ampa
+        'g_max_ampa' : 3*100*nS
+        't_ampa' : 2*ms
+        'E_ampa' : 0*mV
+        # nmda
+        'g_max_nmda' : 100*nS
+        't_nmda' : 50*ms
+        'E_nmda' : 0*mV
+
+        # facilation/depression
+        'f' : 5
+        't_F' : 94*ms
+        'd1' : 0.45
+        't_D1' : 540*ms
+        'd2' : 0.12
+        't_D2' : 45*ms
+        'd3' : 0.98
+        't_D3' : 120E3*ms
+
+        # compartment thresholds
+        'threshold_soma' : '-50*mV'
+        'threshold_prox' : '-30*mV'
+        'threshold_dist' : '-30*mV'
+        'threshold_basal' : '-30*mV'
+        'reset_soma' : '-55*mV'
+        'reset_prox' : '-55*mV'
+        'reset_dist' : '-55*mV'
+        'reset_basal' : '-55*mV'
+        'V_Trest_soma' : -55*mV
+        'V_Trest_proximal' : -35*mV
+        'V_Trest_distal' : -35*mV
+        'V_Trest_basal' : -35*mV
+        'V_T_max_soma' : -30*mV
+        'V_T_max_proximal' : -20*mV
+        'V_T_max_distal' : -20*mV
+        'V_T_max_basal' : -20*mV
+        'V_hold_soma' : 20*mV
+        'V_hold_proximal' : -20*mV
+        'V_hold_distal' : -20*mV
+        'V_hold_basal' : -20*mV
+
+        # clopath rule parameters
+
+
+        # connection parameters
+        'connect_prob' : 0.1
+
+        # input stimulus
+        'bursts' : 1
+        'pulses' : 4
+        'burst_freq' : 5
+        'pulse_freq' : 100
+        'warmup' : 20 
+
+        # field
+        # field = 0*mV
+
+        'method' : 'euler'
+
+        't_reset' : 0.1*ms
 
         }
 
@@ -352,88 +435,102 @@ class BonoReduced():
         '''
         '''
 
-        self.eqs_compartment = '''
+        self.eqs_compartment = Equations('''
         # voltage dynamics including holding spike potential
-        du/dt = int(not_refractory)*(I_L + I_exp + I_axial + I_syn)/C  + (t-lastspike>spike_hold_time)*(1-int(not_refractory))*(reset-u)/t_reset : volt 
+            du/dt = int(not_refractory)*(I_L + I_exp + I_axial + I_syn)/C  + (t-lastspike>spike_hold_time)*(1-int(not_refractory))*(reset-u)/t_reset : volt 
         
-        I_L = -g_L*(u - E_L) : amp
+        # leak current
+            I_L = -g_L*(u - E_L) : amp
 
-        I_exp = g_L*delta_T*exp((u - V_T)/delta_T) : amp
+        # exponential current for adaptive exponential spiking
+            I_exp = g_L*delta_T*exp((u - V_T)/delta_T) : amp
 
-        dV_T/dt = -(V_T-V_Trest)/t_V_T : volt
-
-        I_axial = I_axial1 + I_axial2 : amp
-        I_axial1 : amp
-        I_axial2 :amp
-        I_syn : amp
-        I_ext : amp
-        V_Trest : volt
-        '''
-
-        self.eqs_connect = '''
-        field : volt # axial current due to electric field
-        g_axial_in : siemens
-        g_axial_out : siemens
-        I_axial1_post = g_axial_in*clip(u_pre-u_post, 0*volt, 1000*volt) + g_axial_out*clip(u_pre-u_post, -1000*volt, 0*volt)  :  amp (summed) 
-        '''
-        self.eqs_syn = '''
-        dg_nmda/dt = -g_nmda/t_nmda : siemens (clock-driven)
-        dg_ampa/dt = -g_ampa/t_ampa : siemens (clock-driven)
-        B =  1/(1 + exp(-0.062*u_post/mV)/3.57) : 1 
-        I_nmda = -g_nmda*B*(u_post-E_nmda) : amp
-        I_ampa = -g_ampa*(u_post-E_ampa) : amp
-        I_syn_post = I_nmda + I_ampa : amp (summed)
-
-        # facilitation/depression
-        dF/dt = (1-F)/t_F : 1 (clock-driven)
-        dD1/dt = (1-D1)/t_D1 : 1 (clock-driven)
-        dD2/dt = (1-D2)/t_D2 : 1 (clock-driven)
-        dD3/dt = (1-D3)/t_D3 : 1 (clock-driven)
-        A = F*D1*D2*D3 : 1
+        # adaptation variable
+            dV_T/dt = -(V_T-V_Trest)/t_V_T : volt
 
         # parameters
-        # w : 1
-        # g_max_nmda : siemens
-        # g_max_ampa : siemens
-        # t_F : second
-        # f : 1
-        # t_D1 : second
-        # d1 : 1
-        # t_D2 : second
-        # d2 : 1
-        # t_D3 : second
-        # d3 : 1
+            I_axial : amp
+            I_syn : amp
+            I_ext : amp
+            V_Trest : volt
+        ''')
+
+        self.eqs_connect = Equations('''
+        # connect compartments
+        
+        # total current entering compartment from all connected compartments
+            I_axial_post = g_axial_in*clip(u_pre-u_post, 0*volt, 1000*volt) + g_axial_out*clip(u_pre-u_post, -1000*volt, 0*volt)  :  amp (summed) 
+
+        # parameters
+            field : volt # axial current due to electric field
+            g_axial_in : siemens
+            g_axial_out : siemens
         '''
 
-        self.pre_syn = '''
+        self.eqs_syn = '''
+        # ampa conductance
+            dg_ampa/dt = -g_ampa/t_ampa : siemens (clock-driven)
+        
+        # nmda conductance
+            dg_nmda/dt = -g_nmda/t_nmda : siemens (clock-driven)
+        
+        # nmda magnesium gate
+            B =  1/(1 + exp(-0.062*u_post/mV)/3.57) : 1 
+
+        # synaptic current
+            I_nmda = -g_nmda*B*(u_post-E_nmda) : amp
+            I_ampa = -g_ampa*(u_post-E_ampa) : amp
+            I_syn_post = I_nmda + I_ampa : amp (summed)
+
+        # facilitation/depression
+            dF/dt = (1-F)/t_F : 1 (clock-driven)
+            dD1/dt = (1-D1)/t_D1 : 1 (clock-driven)
+            dD2/dt = (1-D2)/t_D2 : 1 (clock-driven)
+            dD3/dt = (1-D3)/t_D3 : 1 (clock-driven)
+            A = F*D1*D2*D3 : 1
+        ''')
+
+        self.pre_syn = Equations('''
         g_nmda += w*g_max_nmda*A
         g_ampa += w*g_max_ampa*A
         F += f
         D1 *= d1
         D2 *= d2
         D3 *= d3
-        '''
+        ''')
 
-        # equations executed at every timestepC
-        self.eqs_syn_clopath =   ('''
-            w_ampa:1                # synaptic weight (ampa synapse)
+        # equations executed at every timestep
+        self.eqs_syn_clopath =   Equations('''
+        # low threshold filtered membrane potential
+            du_lowpass1/dt = (u_post-u_lowpass1)/tau_lowpass1 : volt     
+
+        # high threshold filtered membrane potential
+            du_lowpass2/dt = (u_post-u_lowpass2)/tau_lowpass2 : volt     
+
+        # homeostatic term
+            du_homeo/dt = (u_post-V_rest-u_homeo)/tau_homeo : volt       
+        
+        # lowpass presynaptic variable
+            dx_trace/dt = -x_trace/taux :1                          
+
+        # clopath rule for potentiation (depression implented with on_pre)
+            dw_clopath/dt = A_LTP*x_trace_post*(u_lowpass2/mV - Theta_low/mV)*int(u_lowpass2/mV - Theta_low/mV > 0)  
+
+        # homeostatic depression amplitude
+            A_LTD_u = A_LTD*(u_homeo**2/v_target)                            
+
             ''')
 
         # equations executed only when a presynaptic spike occurs
-        self.pre_syn_clopath = ('''
-            g_ampa_post += w_ampa*ampa_max_cond                                                               # increment synaptic conductance
-            A_LTD_u = A_LTD*(v_homeo**2/v_target)                                                             # metaplasticity
-            w_minus = A_LTD_u*(v_lowpass1_post/mV - Theta_low/mV)*int(v_lowpass1_post/mV - Theta_low/mV > 0)  # synaptic depression
-            w_ampa = clip(w_ampa-w_minus, 0, w_max)                                                           # hard bounds
-            ''' )
+        self.pre_syn_clopath = Equations('''
+            # depression term
+                w_minus = A_LTD_u*(u_lowpass1/mV - Theta_low/mV)*int(u_lowpass1/mV - Theta_low/mV > 0)  
 
-        # equations executed only when a postsynaptic spike occurs
-        self.post_syn_clopath = ('''
-            v_lowpass1 += 10*mV                                                                                        # mimics the depolarisation effect due to a spike
-            v_lowpass2 += 10*mV                                                                                        # mimics the depolarisation effect due to a spike
-            v_homeo += 0.1*mV                                                                                          # mimics the depolarisation effect due to a spike
-            w_plus = A_LTP*x_trace_pre*(v_lowpass2_post/mV - Theta_low/mV)*int(v_lowpass2_post/mV - Theta_low/mV > 0)  # synaptic potentiation
-            w_ampa = clip(w_ampa+w_plus, 0, w_max)                                                                     # hard bounds
+            # update overall weight
+                w_clopath = clip(w_clopath-w_minus, 0, w_max)
+
+            # update presynaptic trace
+                x_trace += 1
             ''' )
 
         # clopath equations
@@ -479,7 +576,7 @@ class BonoReduced():
             self.connect_proximals.connect(i=[i, i+n_neuron], j=i)
             self.connect_distals.connect(i=i, j=i)
 
-    def _make_input_spikes(self, bursts=1, pulses=4, pulse_freq=100, burst_freq=5, warmup=10, index=0):
+    def _make_input_spikes(self, bursts=1, pulses=4, pulse_freq=100, burst_freq=5, warmup=10, n_inputs=1, index=0):
         # input stimuli
         #======================================================================
         input_times = np.zeros(pulses*bursts)*ms
@@ -491,25 +588,35 @@ class BonoReduced():
                 time = warmup + 1000*burst/burst_freq + 1000*pulse/pulse_freq
                 input_times[cnt] = time*ms
                 
-        self.input_spikes = SpikeGeneratorGroup(1, indices, input_times )
+        self.input_spikes = SpikeGeneratorGroup(n_inputs, indices, input_times )
 
-        input_syn = Synapses(input_spikes, proximals, eqs_syn, pre=pre_syn)
+    def _connect_inputs(self, input_spikes, post_compartment, post_indices, p_connect=1):
+        '''
+        '''
 
-        input_syn.connect(j='i')
+        self.input_syn = Synapses(input_spikes, proximals, eqs_syn, pre=pre_syn)
+
+        self.input_syn.connect(p=p_connect)
 
     def _set_initial_conditions(self):
         '''
         '''
         pass
-    def _record_variables(self):
+    def _record_variables(self, compartments, variables):
         '''
         '''
-        pass
+        self.rec_somas = StateMonitor(somas, ('u'), record=True)
+        self.rec_proximals = StateMonitor(proximals, ('u'), record=True)
+        self.rec_distals = StateMonitor(distals, ('I_axial1','u'), record=True)
+        self.rec_basals = StateMonitor(basals, ('u'), record=True)
 
     def _run(self):
+        run_time = warmup + 1000*(bursts-1)/burst_freq + 1000*(pulses+1)/pulse_freq 
+        run(run_time*ms)
+
+    def _plots(self):
         pass
 
-    def _plots(self)
 def _test_run():
     # Parameters
     #`````````````````````````````````````````````````````````````````````````
