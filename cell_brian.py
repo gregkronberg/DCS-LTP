@@ -404,7 +404,7 @@ class FourCompartment():
         'C' : 281*pF,
         't_noise' : 20*ms,
         't_V_T' : 50*ms,
-        'refractory_time' : 1*ms,
+        'refractory_time' : 2*ms,
         'spike_hold_time':0.9*ms, # must be less than refractory time
         'reset' : -55*mV,
         'spike_peak':-20*mV,
@@ -762,31 +762,32 @@ class FourCompartment():
     def _plots(self):
         pass
 
-def _test_run():
+def _four_compartment():
     '''
     '''
 
     # Parameters
     #========================================================================
-    n=1 # number of neurons
+    n=3 # number of neurons
     E_L = -69*mV # mV
     g_L = 40*nS # nS
     delta_T = 2*mV # mV
     C = 281*pF
     t_noise = 20*ms
     t_V_T = 50*ms
-    refractory_time = 1.2*ms
+    refractory_time = 2.2*ms
     spike_hold_time=1*ms # must be at least 0.2 ms less than refractory time
+    spike_hold_time2=1.8*ms # must be at least 0.2 ms less than refractory time
     reset = -55*mV
     # time constant for resetting voltage after holding spike (should be equal to dt)
     t_reset = .1*ms
 
     # axial conductance between compartments (g_axial_fromcompartment_tocompartment)
     #````````````````````````````````````````
-    g_axial_soma_basal = 1250*nS
-    g_axial_basal_soma = 50*nS
+    g_axial_soma_basal = 1500*nS
+    g_axial_basal_soma = 100*nS
     g_axial_soma_proximal = 1250*nS
-    g_axial_proximal_soma = 50*nS
+    g_axial_proximal_soma = 100*nS
     g_axial_proximal_distal = 1500*nS
     g_axial_distal_proximal = 225*nS
 
@@ -794,7 +795,7 @@ def _test_run():
     #````````````````````````````````````````````````````````````````````````
     # ampa
     #`````````````````````````
-    g_max_ampa = 3*100*nS
+    g_max_ampa = 5*100*nS
     t_ampa = 2*ms
     E_ampa = 0*mV
     # nmda
@@ -839,7 +840,7 @@ def _test_run():
 
     # compartment-specific thresholds, resets, adaptation
     #```````````````````````````````````````````````````````````````````````
-    threshold_soma = '-50*mV'
+    threshold_soma = '-55*mV'
     threshold_prox = '-30*mV'
     threshold_dist = '-35*mV'
     threshold_basal = '-30*mV'
@@ -848,21 +849,21 @@ def _test_run():
     reset_dist = '-55*mV'
     reset_basal = '-55*mV'
     V_Trest_soma = -55*mV
-    V_Trest_proximal = -35*mV
-    V_Trest_distal = -35*mV
-    V_Trest_basal = -35*mV
+    V_Trest_proximal = -30*mV
+    V_Trest_distal = -30*mV
+    V_Trest_basal = -30*mV
     V_Tmax_soma = -30*mV
     V_Tmax_proximal = -20*mV
     V_Tmax_distal = -20*mV
     V_Tmax_basal = -20*mV
     V_hold_soma = 20*mV
-    V_hold_proximal = 20*mV
-    V_hold_distal = 20*mV
-    V_hold_basal = 20*mV
+    V_hold_proximal = -20*mV
+    V_hold_distal = -20*mV
+    V_hold_basal = -20*mV
 
     # connection parameters
     #``````````````````````````````
-    connect_prob = 0.1
+    p_connect = 0.5
 
     # input stimulus
     #``````````````````````````````
@@ -870,10 +871,10 @@ def _test_run():
     pulses = 4
     burst_freq = 5
     pulse_freq = 100
-    warmup = 20 
+    warmup = 5
 
     method = 'euler'
-
+    dcs = .2*mV
     w=1
 
     # equations
@@ -888,7 +889,9 @@ def _test_run():
     # voltage dynamics for each comparment
     #````````````````````````````````````````````````````````````````````
     eqs_compartment = '''
-    du/dt = int(not_refractory)*(I_L + I_exp + I_axial + I_syn)/C  + ((t-lastspike)>spike_hold_time)*(1-int(not_refractory))*(reset-u)/t_reset : volt 
+    du/dt = int(not_refractory)*(I_L + I_exp + I_axial + I_syn + I_field)/C  + ((t-lastspike)<spike_hold_time2)*((t-lastspike)>spike_hold_time)*(1-int(not_refractory))*(reset-u)/t_reset + ((t-lastspike)>spike_hold_time2)*(1-int(not_refractory))*(I_L + I_exp + I_axial + I_syn + I_field)/C  : volt 
+
+    # du/dt = int(not_refractory)*(I_L + I_exp + I_axial + I_syn +I_field)/C  + ((t-lastspike)>spike_hold_time)*(1-int(not_refractory))*(reset-u)/t_reset : volt
 
     I_L = -g_L*(u - E_L) : amp
 
@@ -900,6 +903,9 @@ def _test_run():
     I_axial = I_axial1 + I_axial2 : amp
     I_axial1 : amp
     I_axial2 :amp
+    I_field = I_field1 + I_field2 : amp
+    I_field1 : amp
+    I_field2 :amp
     I_syn : amp
     I_ext : amp
     V_Trest : volt
@@ -915,7 +921,9 @@ def _test_run():
     field : volt # axial current due to electric field
     g_axial_in : siemens
     g_axial_out : siemens
-    I_axial1_post = g_axial_in*clip(u_pre-u_post, 0*volt, 1000*volt) + g_axial_out*clip(u_pre-u_post, -1000*volt, 0*volt)  :  amp (summed) 
+    I_axial1_post = g_axial_in*clip(u_pre-u_post, 0*volt, 1000*volt) + g_axial_out*clip(u_pre-u_post, -1000*volt, 0*volt) :  amp (summed)
+
+    I_field1_post =  g_axial_in*clip(field, 0*volt, 1000*volt)  + g_axial_out*clip(field, -1000*volt, 0*volt) : amp (summed) 
     '''
 
     # connection between compartments (axial conductance), if compartment has a second connection
@@ -925,8 +933,9 @@ def _test_run():
     field : volt # axial current due to electric field
     g_axial_in : siemens
     g_axial_out : siemens
-    I_axial2_post = g_axial_in*clip(u_pre-u_post, 0*volt, 1000*volt) + g_axial_out*clip(u_pre-u_post, -1000*volt, 0*volt)  :  amp (summed) 
+    I_axial2_post = g_axial_in*clip(u_pre-u_post, 0*volt, 1000*volt) + g_axial_out*clip(u_pre-u_post, -1000*volt, 0*volt) :  amp (summed) 
 
+    I_field2_post =  g_axial_in*clip(field, 0*volt, 1000*volt)  + g_axial_out*clip(field, -1000*volt, 0*volt) : amp (summed) 
     '''
 
     # synapse equations
@@ -939,7 +948,7 @@ def _test_run():
     B =  1/(1 + exp(-0.062*u_post/mV)/3.57) : 1 
     I_nmda = -g_nmda*B*(u_post-E_nmda) : amp
     I_ampa = -g_ampa*(u_post-E_ampa) : amp
-    I_syn_post = I_nmda + I_ampa : amp (summed)
+    I_syn = I_nmda + I_ampa : amp 
 
     # facilitation/depression
     #````````````````````````````````````````````````````````
@@ -1033,19 +1042,19 @@ def _test_run():
 
     # connect compartments
     #======================================================================
-    connect_soma_basal = Synapses(soma, basal, eqs_connect1)
-    connect_soma_proximal = Synapses(soma, proximal, eqs_connect2)
-    connect_proximal_distal = Synapses(proximal, distal, eqs_connect1)
-    connect_basal_soma = Synapses(basal, soma, eqs_connect1)
-    connect_proximal_soma = Synapses(proximal, soma, eqs_connect2)
-    connect_distal_proximal = Synapses(distal, proximal, eqs_connect1)
-    for i in range(n):
-        connect_soma_basal.connect(i=i, j=i)
-        connect_soma_proximal.connect(i=i, j=i)
-        connect_proximal_distal.connect(i=i, j=i)
-        connect_basal_soma.connect(i=i, j=i)
-        connect_proximal_soma.connect(i=i, j=i)
-        connect_distal_proximal.connect(i=i, j=i)
+    connect_soma_basal = Synapses(soma, basal, eqs_connect1, method=method)
+    connect_soma_proximal = Synapses(soma, proximal, eqs_connect2, method=method)
+    connect_proximal_distal = Synapses(proximal, distal, eqs_connect1, method=method)
+    connect_basal_soma = Synapses(basal, soma, eqs_connect1, method=method)
+    connect_proximal_soma = Synapses(proximal, soma, eqs_connect2, method=method)
+    connect_distal_proximal = Synapses(distal, proximal, eqs_connect1, method=method)
+    for n_i in range(n):
+        connect_soma_basal.connect(i=n_i, j=n_i)
+        connect_soma_proximal.connect(i=n_i, j=n_i)
+        connect_proximal_distal.connect(i=n_i, j=n_i)
+        connect_basal_soma.connect(i=n_i, j=n_i)
+        connect_proximal_soma.connect(i=n_i, j=n_i)
+        connect_distal_proximal.connect(i=n_i, j=n_i)
 
     # update axial conductances
     #=======================================================================
@@ -1061,7 +1070,16 @@ def _test_run():
     connect_proximal_soma.g_axial_out = g_axial_soma_proximal
     connect_distal_proximal.g_axial_in = g_axial_distal_proximal
     connect_distal_proximal.g_axial_out = g_axial_proximal_distal
-        
+
+    # apply extracellular field
+    #=======================================================================
+    connect_soma_basal.field = -dcs
+    connect_soma_proximal.field = dcs
+    connect_proximal_distal.field = dcs
+    connect_basal_soma.field = dcs
+    connect_proximal_soma.field = -dcs
+    connect_distal_proximal.field = -dcs
+
     # generate input stimuli
     #======================================================================
     input_times = np.zeros(pulses*bursts)*ms
@@ -1075,7 +1093,7 @@ def _test_run():
             
     input_spikes = SpikeGeneratorGroup(1, indices, input_times )
 
-    input_syn = Synapses(input_spikes, distal, eqs_syn, on_pre=pre_syn)
+    input_syn = Synapses(input_spikes, proximal, eqs_syn, on_pre=pre_syn, method=method)
 
     input_syn.connect(j='i')
 
@@ -1089,17 +1107,24 @@ def _test_run():
     # set initial clopath weights
     #```````````````````````````````````
     input_syn.w_clopath = 0.5
+    input_syn.x_trace=0
+    input_syn.u_homeo=0
+    input_syn.u_lowpass1 = E_L
+    input_syn.u_lowpass2 = E_L
+
             
     # connect neurons
     #========================================================================
     #FIXME
+    recurrent_syn = Synapses(soma, proximal, eqs_syn, on_pre=pre_syn, method=method)
+    recurrent_syn.connect(condition='i!=j', p=p_connect)
 
     # record variables
     #========================================================================
     # FIXME
     rec_soma = StateMonitor(soma, ('u'), record=True)
-    rec_proximal = StateMonitor(proximal, ('u'), record=True)
-    rec_distal = StateMonitor(distal, ('V_T','u'), record=True)
+    rec_proximal = StateMonitor(proximal, ('I_axial','u'), record=True)
+    rec_distal = StateMonitor(distal, ('I_axial','u'), record=True)
     rec_basal = StateMonitor(basal, ('u'), record=True)
     rec_w = StateMonitor(input_syn, ('w_clopath'), record=True)
 
@@ -1111,10 +1136,12 @@ def _test_run():
     # plot
     #=======================================================================
     figure()
-    plot(rec_distal.t/ms, rec_distal.V_T.T/mV)
+    plot(rec_distal.t/ms, rec_distal.I_axial.T/pA)
     figure()
     plot(rec_distal.t/ms, rec_distal.u.T/mV)
     plot(rec_distal.t/ms, rec_proximal.u.T/mV)
+    plot(rec_distal.t/ms, rec_soma.u.T/mV)
+    plot(rec_distal.t/ms, rec_basal.u.T/mV)
     figure()
     plot(rec_distal.t/ms, rec_soma.u.T/mV)
     figure()
