@@ -270,9 +270,6 @@ class Clopath():
                             ylim=[-70,-45])
         fig = self._plot_clopath(self.w, self.conditions)
         fig.savefig(directory+'_weights.png',dpi=250)
-#        fig_v.savefig(directory+'_trace.png', dpi=250)
-        
-        return self.w
     
     def _plot_clopath(self, w, conditions):
         """ Plot weight changes
@@ -291,10 +288,7 @@ class Clopath():
         
         return fig
         
-    def _load_data(self, 
-                   directory='Data/', 
-                   param_file='fd_parameters.pkl', 
-                   data_file='induction_slopes_all.mat', ):
+    def _load_data(self, directory='Data/', param_file='fd_parameters.pkl',data_file='induction_slopes_all.mat', ):
         """
         
         ===Args===
@@ -315,7 +309,7 @@ class Clopath():
         ===Args===
         -x      :   input vector of spike times (1 for spike, 0 for no spike)
         -u      :   array of voltage time traces (compartments x time)
-        -fs     :   sampling rate (1/s)
+        -fs     :   sampling rate (kHz)
         -w0     :   initial weight 
         -param  :   dictionary of clopath parameters
         -homeostatic : if True, homeostatic term is included in LTD equation
@@ -747,7 +741,6 @@ class FitFD():
 
         # output total error summed over all streams
         return sum(ssq_error)
-
 
 class ShapePlot():
     """ create plot of neuron morphology with data as a colormap
@@ -1336,6 +1329,8 @@ class PlotRangeVar():
         for path_key, path in p['p_path'].iteritems():
             sec_idx = path['sec_idx']
             seg_idx = path['seg_idx']
+            print seg_idx
+            print sec_idx
             
             fig[path_key]={}
             # iterate over list of y variables to plot

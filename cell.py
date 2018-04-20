@@ -13,7 +13,7 @@ import run_control
 
 
 class PyramidalCylinder:
-    """ 4 compartment pyramidal cell
+    """ 4 compartment pyramidal cell with HH dynamics
     """
     def __init__(self, p):
         self.geometry(p)
@@ -465,14 +465,21 @@ class CellMigliore2005:
                             seg.gbar_na3 = 0.
                         
                         # h current
-                        seg.ghdbar_hd = p['ghd']*(1+p['ghd_grad']*seg_dist/100.)
+                        if seg_dist < p['ghd_cutoff_distance']:
+                            seg.ghdbar_hd = p['ghd']*(1+p['ghd_grad']*seg_dist/100.)
+                        else:
+                            seg.ghdbar_hd = p['ghd']*(1+p['ghd_grad']*p['ghd_cutoff_distance']/100.)
+
                         
                         # A-type potassium
                         if seg_dist > 100.: # distal
                             seg.vhalfl_hd = p['vhalfl_hd_dist']
                             seg.vhalfl_kad = p['vhalfl_kad']
                             seg.vhalfn_kad = p['vhalfn_kad']
-                            seg.gkabar_kad = p['KMULT']*(1+p['ka_grad']*seg_dist/100.)
+                            if seg_dist < p['ka_cutoff_distance']:
+                                seg.gkabar_kad = p['KMULT']*(1+p['ka_grad']*seg_dist/100.)
+                            else:
+                                seg.gkabar_kad = p['KMULT']*(1+p['ka_grad']*p['ka_cutoff_distance']/100.)
                         else:   # proximal
                             seg.vhalfl_hd = p['vhalfl_hd_prox']
                             seg.vhalfl_kap = p['vhalfl_kap']
@@ -576,6 +583,7 @@ class Syn_act:
                             for syn_stim_i,syn_stim in enumerate(stim[tree_key][sec_i][seg_i]):
 
                                 # store NetCon
+                                print p['w_list'][tree_key][sec_i][seg_i]
                                 self.nc[tree_key][sec_i][seg_i][syntype_key].append(h.NetCon(syn_stim, syns[tree_key][sec][seg][syntype_key], 0, 0, p['w_list'][tree_key][sec_i][seg_i]))
 
 class DendriteTransform:

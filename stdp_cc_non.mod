@@ -8,7 +8,7 @@ This mod file has been altered so that it does not actually produce any synaptic
 
 Other point processes are used to model synaptic current, while this point process only implements the clopath learning rule.  Weight updates are therefore not made online, i.e. the learning rule does not influence synaptic current during the simulation, it is merely used as a method to monitor weight changes in response to the simulation.   
 
-Non is for non-conducting
+Non is for non-conducting.  This mechanism is only used to compute weight changes without implementing them online.
 
 ENDCOMMENT
 
