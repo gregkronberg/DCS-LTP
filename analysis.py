@@ -54,10 +54,10 @@ def _param2times(p_path, tree_key, sec_i, seg_i, t):
         """
         # get parameters from dictionary
         #```````````````````````````````````````````````````````````````
-        pulses = p_path['pulses']
+        pulses = int(p_path['pulses'])
         pulse_freq = p_path['pulse_freq']/1000
         burst_freq = p_path['burst_freq']/1000
-        bursts  =p_path['bursts']
+        bursts  =int(p_path['bursts'])
         warmup = p_path['warmup']
         delay = p_path['sequence_delays'][tree_key][sec_i][seg_i]
         
@@ -84,9 +84,8 @@ def _param2times(p_path, tree_key, sec_i, seg_i, t):
             x[np.where(t==t_t)]=1
                 
         return input_times, x
-    
-# get total number of segments (determines size of data marix)
-def seg_zip(data):
+
+def _seg_zip(data):
     """ From nested data structure, get list of all segments and corresponding conditions
     
     ===Args===
@@ -96,6 +95,7 @@ def seg_zip(data):
     -seg_list : list of tuples.  each tuple contains (polarity_key, path_key, tree_key, sec_i, seg_i).  list has length equal to the total number of recorded segments in the data structure
     
     ===Comments===
+    -used in _data2mat to store list of attributes for each data time series
     """
     # parameter structure
     p = data['p']
@@ -120,7 +120,6 @@ def seg_zip(data):
                                 seg_list.append((polarity_key, path_key, tree_key, sec_i, seg_i))
     return seg_list
     
-    
 def _data2mat(data, variable):
     """ Convert data structure to single matrix
     
@@ -144,7 +143,7 @@ def _data2mat(data, variable):
     # get time vector (all time vectors are the same within a given data file, same simulation)
     t = data[data.keys()[0]].values()[0]['t']
     # get total number of recorded segments
-    nsegs = len(seg_zip(data))
+    nsegs = len(_seg_zip(data))
     # preallocate output arrays (segments x samples)
     data_mat = np.zeros((nsegs, len(t)))
     input_mat = np.zeros((nsegs, len(t)))
@@ -185,7 +184,7 @@ def _data2mat(data, variable):
                         for sec_i, sec in enumerate(tree):
                             
                             # get section number
-                            sec_num = p['sec_idx'][tree_key][sec_i]
+                            sec_num = p_path['sec_idx'][tree_key][sec_i]
                             
                             # iterate over segments in section
                             for seg_i, seg in enumerate(sec):
@@ -221,10 +220,172 @@ def _data2mat(data, variable):
                                 conditions['seg_i'].append(seg_i)
                                 conditions['seg_num'].append(seg_num)
                                 conditions['input_times'].append(input_times)
-    
-    # FIXME first row in matrix initializes it, but not used
+
     return data_mat, input_mat, conditions, p, t
+
+def _load_group_data(directory='', file_name=''):
+        """ Load group data from folder
+        
+        ===Args===
+        -directory : directory where group data is stored including /
+        -file_name : file name for group data file, including .pkl
+                    -file_name cannot contain the string 'data', since this string is used t search for individual data files
+
+        ===Out===
+        -group_data  : typically a dictionary.  If no file is found with the specified string, an empty dictionary is returned
+
+        ===Updates===
+        -none
+
+        ===Comments===
+        """
+        
+        # all files in directory
+        files = os.listdir(directory)
+        
+        # if data file already exists
+        if file_name in files:
+            # load data
+            print 'group data found:', file_name
+            with open(directory+file_name, 'rb') as pkl_file:
+                group_data= pickle.load(pkl_file)
+            print 'group data loaded'
+        # otherwise create data structure
+        else:
+            # data organized as {frequency}{syn distance}{number of synapses}{polarity}[trial]{data type}{tree}[section][segment][spikes]
+            print 'no group data found'
+            group_data= {}
+
+        return group_data 
+
+def _update_group_data(directory, search_string, group_data, variables):
+    '''
+    ===Args===
+    -directory : directory where group data is stored including /
+    -search_string : string that is unique individual data files to search directory.  typically '*data*'
+    -group_data : group data structure organized as group_data{variable}{data_type}
+            -group_data['v']['data_mat'] is a matrix with dimensions segments x samples
+
+    ===Out===
+    ===Updates===
+    ===Comments===
+    -group_data['processed'] = list of data file names that have already been added to the group 
+    -variable = variable type that was recorded from neuron simulaitons, e.g. 'v' or 'gbar'
+    -data_type for group_data structure:
+        -'data_mat' : matrix of time series data for the specified variable
+        -'input_mat': matrix of boolean time series of synpatic inputs for the corresponding data_mat (1=active input, 0=inactive input)
+        -'conditions' : 
+                -'polarity', 'path', 'tree', 'sec_i', 'sec_num', 'seg_i', 'seg_num', 'input_times'
+                -e.g. group_data['v']['conditions']['polarity'] returns a list of field polarities with indices corresponsponding to rows group_data['v']['data_mat']
+        't' : single 0D vector of time values (should be identical for all simulations in a given group data structure)
+    '''
+    # get list of new data files
+    #`````````````````````````````````````````````````````````````
+    # get list of all data files
+    data_files = glob.glob(directory+search_string)
+
+    # get list of processed data files
+    if group_data:
+        processed_data_files = group_data['processed']
+    else:
+        group_data['processed']=[]
+        processed_data_files = group_data['processed']
+
+    # get list of new data files
+    new_data_files = list(set(data_files)-set(processed_data_files))
+    print 'total data files:', len(data_files) 
+    print 'new data fies:', len(new_data_files)
     
+    # iterate over new files and update group_data structure
+    #`````````````````````````````````````````````````````````````````
+    print 'updating group data structure'
+    # dictionary for temporary storage of individual simulation data
+    dtemp={}
+    # iterate over new data files
+    for file_i, file in enumerate(new_data_files):
+
+        # load data file
+        with open(file, 'rb') as pkl_file:
+            data = pickle.load(pkl_file)
+
+        # iterate over variables to be updated
+        for variable_i, variable in enumerate(variables):
+
+            # convert data to matrix and get corresponding conditions
+            dtemp['data_mat'], dtemp['input_mat'], dtemp['conditions'], dtemp['p'], dtemp['t'] = _data2mat(data, variable)
+
+
+            # add to group data
+            #``````````````````````````````````````````````````````````````
+            # if variable does not exist in group_data
+            if variable not in group_data:
+                # create entry
+                group_data[variable]={}
+                # iterate through data types for individual simulation
+                for key, val in dtemp.iteritems():
+                    # set initial value in group_data to the individual value
+                    group_data[variable][key]=val
+
+            # if variable already exists in group_data structure
+            else:
+                # iterate through data types
+                for key, val in dtemp.iteritems():
+                    # for conditions info
+                    if key=='conditions':
+                        # iterate through the various conditions (e.g. 'polarity', 'path', 'tree', 'sec_i', 'seg_i')
+                        for condition_key, condition_list in val.iteritems():
+                            # add list for individual data to running list for group
+                            group_data[variable][key][condition_key] += condition_list 
+                    # if data type is a matrix
+                    elif 'mat' in key:
+                        # add to existing group matrix
+                        group_data[variable][key] = np.append(group_data[variable][key], val, axis=0)
+                    
+                    # FIXME this is overwritten on each loop (should only be set once)
+                    # create single time vector in group_data
+                    elif key=='t':
+                        group_data[variable][key] = val
+
+            # add file to processed list to keep track of processed files
+            group_data['processed'].append(file)
+
+    print 'finished updating group data structure'
+
+    # ouput group data structure 
+    return group_data
+
+def _save_group_data(group_data, directory, file_name):
+    '''
+    ===Args===
+    ===Out===
+    ===Updates===
+    ===Comments===
+    '''
+    with open(directory+file_name, 'wb') as output:
+        pickle.dump(group_data, output,protocol=pickle.HIGHEST_PROTOCOL)
+
+    print 'group data saved as:', file_name 
+
+def _plot_weights_mean(group_data, condition, condition_vals, colors):
+    '''
+    '''
+    fig = plt.figure()
+    for condition_i, condition_val in enumerate(condition_vals):
+        # get indeces that match the conditions
+        # print group_data['gbar']
+        indices = [i for i,val in enumerate(group_data['gbar']['conditions'][condition]) if val==condition_val]
+        color = colors[condition_i]
+        w_mean = np.mean(group_data['gbar']['data_mat'][indices,:],axis=0, keepdims=True).transpose()
+        w_std = np.std(group_data['gbar']['data_mat'][indices,:],axis=0, keepdims=True).transpose()
+        t_vec = group_data['gbar']['t']
+        t_vec.reshape(len(t_vec), 1)
+
+        plt.plot( t_vec, w_mean, color=colors[condition_i],)
+        plt.xlabel('time (ms)')
+        plt.ylabel('weight (AU)')
+
+
+    return fig
 
 class Clopath():
     
@@ -240,9 +401,7 @@ class Clopath():
         """
         pass
         
-    def _run_clopath_individual(self,
-                                directory='Data/quick_run/',
-                                search_string='data*syn_num_2*',):
+    def _run_clopath_individual(self,directory='Data/quick_run/',search_string='data*syn_num_2*',):
         """ Load data from a single simulation and apply learning rule
         
         ===Args===
@@ -329,6 +488,7 @@ class Clopath():
         
         # create time vector
         #`````````````````````````````
+        print 'data shape:', u.shape
         dt      = 1./fs
         T       = u.shape[1]/fs
         dur_samples = int(T*fs)
@@ -346,11 +506,11 @@ class Clopath():
         p['tetam']      = -60       # tetam: low threshold
         p['tetap']      = -53       # tetap: high threshold in the potentiation term
         p['E_L']        = -70.6     # resting potential [mV], used for LTD adaptation
-        p['delay']      = 0         # conduction delay after action potential (ms)
+        p['delay']      = 0        # conduction delay after action potential (ms)
         
         
         # update with parameters passed as arguments
-        for key, val in param:
+        for key, val in param.iteritems():
             p[key] = val
         
         # preallocate learning rule variables
@@ -373,8 +533,7 @@ class Clopath():
             # start simulation after specified delay
             if t>p['delay']:
                 
-                # trace of membrane potential (u) with time constant tau_d
-                self.u_md[:,i]  = self.u_md[ :, i-1] + dt* ( u[ :, i-1]-self.u_md[ :, i-1])/p['tau_m']
+                
                              
                 # if include homeostatic LTD mechanism
                 if homeostatic:
@@ -391,6 +550,9 @@ class Clopath():
                 else:
                     # constant LTD rate
                     self.A_m[:,i]   = p['A_m0']
+
+                # trace of membrane potential (u) with time constant tau_d
+                self.u_md[:,i]  = self.u_md[ :, i-1] + dt* ( u[ :, i-1]-self.u_md[ :, i-1])/p['tau_m']
                       
                 # trace of membrane potential (u) with time constant tau_p
                 self.u_mp[:,i]  = self.u_mp[:, i-1]  +dt*( u[:,i-1]-self.u_mp[:, i-1]) /p['tau_p']
@@ -399,21 +561,20 @@ class Clopath():
                 self.x_m0[:,i]  = self.x_m0[:,i-1]  +dt*(x[:,i-1]-self.x_m0[:,i-1]) /p['tau_x']
                 
                 # membrane potential (u) thresholded by thetap
-                self.u_sig[:,i] = (u[:,i-1] > p['tetap']) *( u[:,i-1] -p['tetap'])
+                self.u_sig[:,i] = (u[:,i] > p['tetap']) *( u[:,i] -p['tetap'])
                 
                 # membrane potential trace (u_md) thresholded by thetam (taken 3ms before since time of a spike is 2ms)
-                self.u_md_sig[:,i]  = ( ( self.u_md[:, i-p['delay']*fs] -p['tetam']) > 0) *( self.u_md[:, i-p['delay']*fs] -p['tetam'])                  
+                self.u_md_sig[:,i]  = ( self.u_md[:, i-p['delay']*fs] > p['tetam']) *( self.u_md[:, i-p['delay']*fs] -p['tetam'])                  
                 
                 # membrane potential trace (u_md) thresholded by thetam (taken 3ms before since time of a spike is 2ms)
                 self.u_mp_sig[:,i]  = ( (self.u_mp[:,i-p['delay']*fs] -p['tetam']) > 0) *(self.u_mp[:,i-p['delay']*fs] -p['tetam'])
                 
                 # update weights
-                self.w[:,i] = self.w[:,i-1] - self.A_m[:,i-1] *self.u_md_sig[:,i-1] *x[:,i-1] + p['A_p']*self.u_sig[:,i-1] *self.u_mp_sig[:,i-1] *self.x_m0[:,i-1]
+                self.w[:,i] = self.w[:,i-1] - self.A_m[:,i] *self.u_md_sig[:,i] *x[:,i] + p['A_p']*self.u_sig[:,i] *self.u_mp_sig[:,i] *self.x_m0[:,i]
         
         self.p=p
         # output weight matrix (synapses x time)
         return self.w
-
 
 class FitFD():
     """ Functions for fitting facillitation and depression parameters to train of synaptic inputs

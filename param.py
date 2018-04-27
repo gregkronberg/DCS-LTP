@@ -41,6 +41,7 @@ class Default(object):
             'nsec_apical_dist' : 1,
             'syn_types' : ['ampa', 'nmda', 'clopath'],
             'fixnseg':False,        # determine number of segments in cylinder according to d_lambda rule
+            'nseg':1,
 
             # FIXME, must be set so that variable names are unique
             # set recording variables
@@ -1086,8 +1087,6 @@ class Default(object):
         'seg_idx': {},
         }
         
-
-
         # list all segments as [[section,segment, tree]] 
         segs_all = [[sec_i,seg_i, tree_key] for tree_key, tree in syns.iteritems() for sec_i,sec in enumerate(tree) for seg_i,seg in enumerate(tree[sec_i]) if tree_key in trees]
 
@@ -1142,6 +1141,7 @@ class Default(object):
 
             # print 'distance requirement'
             segs_all_dist = [seg for seg_i, seg in enumerate(segs_all) if seg_dist[seg[2]][seg[0]][seg[1]]>distance[0] and seg_dist[seg[2]][seg[0]][seg[1]]<distance[1]] 
+
 
             # print len(segs_all_dist)
             # segs_all = segs_all_dist

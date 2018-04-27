@@ -267,7 +267,7 @@ def _four_compartment():
     x_trace += 1   # update presynaptic trace with each input
     '''
 
-    # to be executed on each presynaptic spike
+    # to be executed on each presynaptic spike for online weight updates
     #``````````````````````````````````````````````````````````````````````
     pre_syn_online = '''
     g_nmda += w_clopath*g_max_nmda*A  # nmda 
@@ -367,7 +367,7 @@ def _four_compartment():
             
     input_spikes = SpikeGeneratorGroup(1, indices, input_times )
 
-    input_syn = Synapses(input_spikes, proximal, eqs_syn, on_pre=pre_syn_online, method=method)
+    input_syn = Synapses(input_spikes, proximal, eqs_syn, on_pre=pre_syn, method=method)
 
     input_syn.connect(condition= 'j==i')
 

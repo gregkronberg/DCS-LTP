@@ -81,7 +81,7 @@ class PyramidalCylinder:
                 self.geo[tree][sec_i].L = p['L_'+tree]
                 # self.geo[tree][sec_i].diam = p['diam_'+tree]
 
-                self.geo[tree][sec_i].nseg=1
+                self.geo[tree][sec_i].nseg=p['nseg']
 
         self.geo['basal'][0].connect(self.geo['soma'][0](0),0)
         self.geo['apical_prox'][0].connect(self.geo['soma'][0](1),0)
@@ -194,13 +194,23 @@ class PyramidalCylinder:
                         
                         # h current
                         seg.ghdbar_hd = p['ghd']*(1+p['ghd_grad']*(seg_dist/100.)/(p['L_apical_prox']/200.))
+
+                        # h current
+                        if seg_dist < p['ghd_cutoff_distance']*(p['L_apical_prox']/200.):
+                            seg.ghdbar_hd = p['ghd']*(1+p['ghd_grad']*(seg_dist/100.)/(p['L_apical_prox']/200.))
+                        else:
+                            seg.ghdbar_hd = p['ghd']*(1+p['ghd_grad']*(p['ghd_cutoff_distance']/100.)/(p['L_apical_prox']/200.))
                         
                         # A-type potassium
-                        if seg_dist > 100.: # distal
+                        if seg_dist > 100.*(p['L_apical_prox']/200.): # distal
                             seg.vhalfl_hd = p['vhalfl_hd_dist']
                             seg.vhalfl_kad = p['vhalfl_kad']
                             seg.vhalfn_kad = p['vhalfn_kad']
                             seg.gkabar_kad = p['KMULT']*(1+p['ka_grad']*(seg_dist/100.)/(p['L_apical_prox']/200.))
+                            if seg_dist < p['ka_cutoff_distance']*(p['L_apical_prox']/200.):
+                                seg.gkabar_kad = p['KMULT']*(1+p['ka_grad']*(seg_dist/100.)/(p['L_apical_prox']/200.))
+                            else:
+                                seg.gkabar_kad = p['KMULT']*(1+p['ka_grad']*(p['ka_cutoff_distance']/100.)/(p['L_apical_prox']/200.))
                         else:   # proximal
                             seg.vhalfl_hd = p['vhalfl_hd_prox']
                             seg.vhalfl_kap = p['vhalfl_kap']
