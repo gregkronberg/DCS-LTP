@@ -114,10 +114,26 @@ class Run():
             self.rec[path_key]={}
             seg_idx= copy.copy(path['seg_idx'])
             sec_idx= copy.copy(path['sec_idx'])
-            sec_idx['soma']= [0]
-            seg_idx['soma']= [[0]]
-            sec_idx['axon']= [0]
-            seg_idx['axon']= [[0]]
+            sec_idx['soma']=[]
+            seg_idx['soma']=[]
+            sec_idx['axon']=[]
+            seg_idx['axon']=[]
+            for sec_i, sec in enumerate(p['seg_dist']['soma']):
+                sec_idx['soma'].append(sec_i)
+                seg_idx['soma'].append([])
+                for seg_i, seg in enumerate(sec):
+                    seg_idx['soma'][sec_i].append(seg_i)
+            for sec_i, sec in enumerate(p['seg_dist']['axon']):
+                sec_idx['axon'].append(sec_i)
+                seg_idx['axon'].append([])
+                for seg_i, seg in enumerate(sec):
+                    seg_idx['axon'][sec_i].append(seg_i)
+
+
+            # sec_idx['soma']= [0]
+            # seg_idx['soma']= [[0]]
+            # sec_idx['axon']= [0]
+            # seg_idx['axon']= [[0]]
 
             # loop over trees
             for tree_key, tree in seg_idx.iteritems():

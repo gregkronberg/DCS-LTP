@@ -593,7 +593,7 @@ class Syn_act:
                             for syn_stim_i,syn_stim in enumerate(stim[tree_key][sec_i][seg_i]):
 
                                 # store NetCon
-                                print p['w_list'][tree_key][sec_i][seg_i]
+                                # print p['w_list'][tree_key][sec_i][seg_i]
                                 self.nc[tree_key][sec_i][seg_i][syntype_key].append(h.NetCon(syn_stim, syns[tree_key][sec][seg][syntype_key], 0, 0, p['w_list'][tree_key][sec_i][seg_i]))
 
 class DendriteTransform:

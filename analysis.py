@@ -6,9 +6,9 @@ data structure for each trial is organized as []['tree'][polarity][section][segm
 
 from __future__ import division
 import numpy as np
-import scipy
-import scipy.io
-from scipy import stats
+# import scipy
+# import scipy.io
+# from scipy import stats
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import itertools as it
@@ -71,7 +71,7 @@ def _param2times(p_path, tree_key, sec_i, seg_i, t):
         for burst_i in range(bursts):
             
             # add times to array
-            input_times[0,burst_i:burst_i+pulses] = warmup + delay + burst_i/burst_freq + burst1
+            input_times[0,burst_i*pulses:(burst_i+1)*pulses] = warmup + delay + burst_i/burst_freq + burst1
             
         # convert to boolean vector (dim: samples)
         x = np.zeros(t.shape)
@@ -303,7 +303,6 @@ def _update_group_data(directory, search_string, group_data, variables):
     dtemp={}
     # iterate over new data files
     for file_i, file in enumerate(new_data_files):
-
         # load data file
         with open(file, 'rb') as pkl_file:
             data = pickle.load(pkl_file)
@@ -370,6 +369,7 @@ def _plot_weights_mean(group_data, condition, condition_vals, colors):
     '''
     '''
     fig = plt.figure()
+    
     for condition_i, condition_val in enumerate(condition_vals):
         # get indeces that match the conditions
         # print group_data['gbar']
@@ -380,10 +380,43 @@ def _plot_weights_mean(group_data, condition, condition_vals, colors):
         t_vec = group_data['gbar']['t']
         t_vec.reshape(len(t_vec), 1)
 
+        
         plt.plot( t_vec, w_mean, color=colors[condition_i],)
-        plt.xlabel('time (ms)')
-        plt.ylabel('weight (AU)')
+    plt.xlabel('time (ms)')
+    plt.ylabel('weight (AU)')
+    
 
+
+
+    return fig
+
+def _plot_weights_final(group_data, condition, condition_vals, colors):
+    '''
+    '''
+    fig = plt.figure()
+    xticks=[]
+    xticklabels=['cathodal','control','anodal']
+    for condition_i, condition_val in enumerate(condition_vals):
+        # get indeces that match the conditions
+        # print group_data['gbar']
+        indices = [i for i,val in enumerate(group_data['gbar']['conditions'][condition]) if val==condition_val]
+        color = colors[condition_i]
+        w_mean = np.mean(group_data['gbar']['data_mat'][indices,:],axis=0, keepdims=True).transpose()
+        w_std = np.std(group_data['gbar']['data_mat'][indices,:],axis=0, keepdims=True).transpose()
+        dw = group_data['gbar']['data_mat'][indices,-1]/group_data['gbar']['data_mat'][indices,0]
+        dw_mean = np.mean(dw)
+        dw_std = np.std(dw)
+        x_vals = condition_i*np.ones(dw.shape)
+
+        xticks.append(condition_i)
+        # xticklabels.append(str(condition_val))
+        plt.bar( condition_i, dw_mean, yerr=dw_std, color=colors[condition_i],)
+        plt.plot(x_vals, dw, linestyle='None', marker='.', color='grey')
+
+        # plt.xlabel('time (ms)')
+        plt.ylabel('weight change (final/initial)', fontsize=20)
+    plt.ylim([1, np.max(dw)])
+    plt.xticks(xticks, xticklabels, fontsize=15)
 
     return fig
 
@@ -507,12 +540,11 @@ class Clopath():
         p['tetap']      = -53       # tetap: high threshold in the potentiation term
         p['E_L']        = -70.6     # resting potential [mV], used for LTD adaptation
         p['delay']      = 0        # conduction delay after action potential (ms)
-        
-        
+        p['LTD_delay']  = 1         # delay (ms) applied to presynaptic spike before computing LTD term (this allows LTD in response to subthreshold inputs) 
         # update with parameters passed as arguments
         for key, val in param.iteritems():
             p[key] = val
-        
+
         # preallocate learning rule variables
         #``````````````````````````````````````````````````````````````````````
         self.w           = w0*np.ones((n_syn,dur_samples))       # weights
@@ -531,9 +563,7 @@ class Clopath():
         for i, t in enumerate(time):
             
             # start simulation after specified delay
-            if t>p['delay']:
-                
-                
+            if t>p['delay'] and t>p['LTD_delay']:
                              
                 # if include homeostatic LTD mechanism
                 if homeostatic:
@@ -570,7 +600,7 @@ class Clopath():
                 self.u_mp_sig[:,i]  = ( (self.u_mp[:,i-p['delay']*fs] -p['tetam']) > 0) *(self.u_mp[:,i-p['delay']*fs] -p['tetam'])
                 
                 # update weights
-                self.w[:,i] = self.w[:,i-1] - self.A_m[:,i] *self.u_md_sig[:,i] *x[:,i] + p['A_p']*self.u_sig[:,i] *self.u_mp_sig[:,i] *self.x_m0[:,i]
+                self.w[:,i] = self.w[:,i-1] - self.A_m[:,i] *self.u_md_sig[:,i] *x[:,i-int(p['LTD_delay']*fs)] + p['A_p']*self.u_sig[:,i] *self.u_mp_sig[:,i] *self.x_m0[:,i]
         
         self.p=p
         # output weight matrix (synapses x time)
@@ -982,6 +1012,7 @@ class ShapePlot():
             colors.append(parent_color)
             patches.append(child_polygon)
             colors.append(child_color)
+        # print patches
 
         # create patch collection
         p = PatchCollection(patches, cmap=colormap, alpha=1.)
@@ -993,7 +1024,7 @@ class ShapePlot():
         # plt.colorbar(p)
         # autoscale axes
         # axes.autoscale()
-        return p
+        return p, colors
 
     # create 3d interpolation function
     def interpolate_3d(self, point1, point2, t):

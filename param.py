@@ -344,7 +344,9 @@ class Default(object):
         'bursts': 1,
         'burst_freq': 5.,
         'warmup': self.p['warmup'],
-        'noise':0
+        'noise':0,
+        'syn_frac':[],
+        'replace_syn':True,
         }}
 
     def kim_2015(self):

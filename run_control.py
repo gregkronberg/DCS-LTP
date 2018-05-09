@@ -91,7 +91,7 @@ class Experiment:
         'AXONM': 50.,
         'gna':.04,
         'dgna':1.*-.000025,
-        'pulses':5,
+        'pulses':0,
         'pulse_freq':100,
         'group_trees':False,
         'plot_variables':['v','gbar'],
@@ -1021,14 +1021,14 @@ class Experiment:
     """
     EXPERIMENT 3
 
-    Frequency dependence (compare 20 Hz to TBS)
+    Frequency dependence (compare 20 Hz to TBS) and dose response
     """
     def exp_3a1(self, **kwargs):
         """ 20 Hz simulation (40 pulses, 2 seconds) with sodium channel inactivation.  Track backpropagation of action potentials
         """
         # 
         p_update = {
-        'experiment' : 'exp_3a1', 
+        'experiment' : kwargs['experiment'], 
         'trials' : kwargs['trials'],
         'field':[-20.,0.,20.],
         'plot_variables':['v','gbar'],
@@ -1105,9 +1105,92 @@ class Experiment:
                         group_trees=P.p['group_trees'],
                         xlim=[P.p['warmup']-5,P.p['tstop']],
                         ylim=[-75,-40])
+
+    def exp_3a1_basal(self, **kwargs):
+        """ 20 Hz simulation (40 pulses, 2 seconds) with sodium channel inactivation.  Track backpropagation of action potentials
+        """
+        # 
+        p_update = {
+        'experiment' : kwargs['experiment'], 
+        'trials' : kwargs['trials'],
+        'field':[-20.,0.,20.],
+        'plot_variables':['v','gbar'],
+        'path_combo':'1',
+        'clopath_A_m':100E-5, # depression magnitude parameter (mV^-1)
+        'clopath_tetam':-70,#-41, # depression threshold (mV)
+        'clopath_tetap':-67,#-38, # potentiation threshold (mV)
+        'clopath_tau_r':8,#-38, # potentiation threshold (mV)
+        'clopath_tau_0':20,#-38, # potentiation threshold (mV)
+        'clopath_tau_y': 3, # time constant (ms) for low pass filter post membrane potential for potentiation
+        'clopath_A_p': 38E-5, # amplitude for potentiation (mV^-2)
+        }
+
+        # set up two pathways
+        paths_update = {'1':{
+        'trees': ['basal'],
+        'syn_num': 8,
+        'nsyns': 1.,
+        'syn_dist': [0,300],
+        'pulses': 40.,
+        'pulse_freq': 20.,
+        'bursts': 1,
+        'burst_freq': 5.,
+        'warmup': 30,
+        'w_mean': .0015,
+        }}
+
+        # setup cell and updated parameter structures
+        P, cell1 = setup_parameters(
+            default_p='migliore_2005',
+            cell_class='CellMigliore2005',
+            p_update=p_update,
+            paths_update=paths_update)
+
+        # iterate over trials
+        for trial_i, trial in enumerate(range(P.p['trials'])):
+
+            update_synapse_parameters(P, P.p, P.paths, cell1=cell1)
+
+            # store trial number
+            P.p['trial']=trial
+                            
+            # create unique identifier for each trial
+            P.p['trial_id'] = str(uuid.uuid4())
+                            
+            # start timer
+            start = time.time() 
+            
+            # print cell1.syns
+            # run simulation
+            sim = run.Run(p=P.p, cell=cell1) 
+
+            # end timer
+            end = time.time() 
+
+            # print trial and simulation time
+            print 'trial'+ str(P.p['trial']) + ' duration:' + str(end -start) 
+            
+            # set file name to save data
+            file_name = str(
+            P.p['experiment']+
+            '_trial_'+str(P.p['trial'])+
+            '_id_'+P.p['trial_id']
+            )
+
+            # save data for eahc trial
+            run.save_data(data=sim.data, file_name=file_name)
+
+            # plot traces
+            analysis.PlotRangeVar().plot_trace(data=sim.data, 
+                        variables=P.p['plot_variables'],
+                        x_variables=P.p['x_variables'],
+                        file_name=file_name,
+                        group_trees=P.p['group_trees'],
+                        xlim=[P.p['warmup']-5,P.p['tstop']],
+                        ylim=[-75,-40])
     
     def exp_3a2(self, **kwargs):
-        """ TBS simulation (40 pulses, 2 seconds) with sodium channel inactivation.  Track backpropagation of action potentials
+        """ TBS simulation (40 pulses, 2 seconds) in full pyramidal cell with parameters from Migliore et al. 2005.  Track backpropagation of action potentials
         """
         trials = 1
         p_update = {
@@ -1116,7 +1199,7 @@ class Experiment:
         'field':[-20.,0.,20.],
         'plot_variables':['v','gbar'],
         'path_combo':['1'],
-        'clopath_A_m':40E-5, # depression magnitude parameter (mV^-1)
+        'clopath_A_m':3E-5, # depression magnitude parameter (mV^-1)
         'clopath_tetam':-70,#-41, # depression threshold (mV)
         'clopath_tetap':-65,#-38, # potentiation threshold (mV)
         'clopath_tau_r':8,#-38, # potentiation threshold (mV)
@@ -1163,6 +1246,266 @@ class Experiment:
             start = time.time() 
             
             # run simulation
+            print P.p['p_path']['1']['pulses']
+            sim = run.Run(p=P.p, cell=cell1) 
+
+            # end timer
+            end = time.time() 
+
+            # print trial and simulation time
+            print 'trial'+ str(P.p['trial']) + ' duration:' + str(end -start) 
+            
+            # set file name to save data
+            file_name = str(
+            P.p['experiment']+
+            '_trial_'+str(P.p['trial'])+
+            '_id_'+P.p['trial_id']
+            )
+
+            # save data for eahc trial
+            run.save_data(data=sim.data, file_name=file_name)
+
+            # plot traces
+            analysis.PlotRangeVar().plot_trace(
+                data=sim.data, 
+                variables=P.p['plot_variables'],
+                x_variables=P.p['x_variables'],
+                file_name=file_name,
+                group_trees=P.p['group_trees'],
+                xlim=[P.p['warmup']-5,P.p['tstop']],
+                 ylim=[-75,-40])
+
+    def exp_3a2_dose(self, **kwargs):
+        """ TBS simulation (40 pulses, 2 seconds) in full pyramidal cell with parameters from Migliore et al. 2005.  Sweep across field intensities to get dose response
+        """
+        trials = 1
+        p_update = {
+        'experiment' : kwargs['experiment'], 
+        'trials' : kwargs['trials'],
+        'field':[-20.,-5.,-1.,-0.5, 0.,0.5, 1., 5., 20.],
+        'plot_variables':['v','gbar'],
+        'path_combo':['1'],
+        'clopath_A_m':100E-5, # depression magnitude parameter (mV^-1)
+        'clopath_tetam':-70,#-41, # depression threshold (mV)
+        'clopath_tetap':-67,#-38, # potentiation threshold (mV)
+        'clopath_tau_r':8,#-38, # potentiation threshold (mV)
+        'clopath_tau_0':20,#-38, # potentiation threshold (mV)
+        'clopath_tau_y': 3, # time constant (ms) for low pass filter post membrane potential for potentiation
+        'clopath_A_p': 38E-5, # amplitude for potentiation (mV^-2)
+        }
+
+        # set up synaptic pathway parameters
+        paths_update = {'1':{
+        'trees': ['apical_tuft','apical_trunk'],
+        'syn_num': 8,
+        'nsyns': 1.,
+        'syn_dist': [0,300],
+        'pulses': 4.,
+        'pulse_freq': 100.,
+        'bursts': 10.,
+        'burst_freq': 5.,
+        'warmup': 30,
+        'w_mean': .0015,
+        }}
+
+        # setup cell and updated parameter structures
+        P, cell1 = setup_parameters(
+            default_p='migliore_2005',
+            cell_class='CellMigliore2005',
+            p_update=p_update,
+            paths_update=paths_update,)
+
+        # iterate over trials
+        for trial_i, trial in enumerate(range(P.p['trials'])):
+
+            # create list of active synapses, weights, delays
+            # stored in P.p['seg_idx', 'w_list', 'sequence_delays'], 
+            update_synapse_parameters(P, P.p, P.paths, cell1)
+
+            # store trial number
+            P.p['trial']=trial
+                            
+            # create unique identifier for each trial
+            P.p['trial_id'] = str(uuid.uuid4())
+                            
+            # start timer
+            start = time.time() 
+            
+            # run simulation
+            # print P.p['p_path']['1']['pulses']
+            sim = run.Run(p=P.p, cell=cell1) 
+
+            # end timer
+            end = time.time() 
+
+            # print trial and simulation time
+            print 'trial'+ str(P.p['trial']) + ' duration:' + str(end -start) 
+            
+            # set file name to save data
+            file_name = str(
+            P.p['experiment']+
+            '_trial_'+str(P.p['trial'])+
+            '_id_'+P.p['trial_id']
+            )
+
+            # save data for eahc trial
+            run.save_data(data=sim.data, file_name=file_name)
+
+            # plot traces
+            analysis.PlotRangeVar().plot_trace(
+                data=sim.data, 
+                variables=P.p['plot_variables'],
+                x_variables=P.p['x_variables'],
+                file_name=file_name,
+                group_trees=P.p['group_trees'],
+                xlim=[P.p['warmup']-5,P.p['tstop']],
+                 ylim=[-75,-40])
+    
+    def exp_3a2_basal(self, **kwargs):
+        """ TBS simulation (40 pulses, 2 seconds) in full pyramidal cell with parameters from Migliore et al. 2005.  Track backpropagation of action potentials
+        """
+        trials = 1
+        p_update = {
+        'experiment' : kwargs['experiment'], 
+        'trials' : kwargs['trials'],
+        'field':[-20.,0.,20.],
+        'plot_variables':['v','gbar'],
+        'path_combo':['1'],
+        'clopath_A_m':100E-5, # depression magnitude parameter (mV^-1)
+        'clopath_tetam':-70,#-41, # depression threshold (mV)
+        'clopath_tetap':-67,#-38, # potentiation threshold (mV)
+        'clopath_tau_r':8,#-38, # potentiation threshold (mV)
+        'clopath_tau_0':20,#-38, # potentiation threshold (mV)
+        'clopath_tau_y': 3, # time constant (ms) for low pass filter post membrane potential for potentiation
+        'clopath_A_p': 38E-5, # amplitude for potentiation (mV^-2)
+        }
+
+        # set up synaptic pathway parameters
+        paths_update = {'1':{
+        'trees': ['basal'],
+        'syn_num': 8,
+        'nsyns': 1.,
+        'syn_dist': [0,300],
+        'pulses': 4.,
+        'pulse_freq': 100.,
+        'bursts': 10.,
+        'burst_freq': 5.,
+        'warmup': 30,
+        'w_mean': .0015,
+        }}
+
+        # setup cell and updated parameter structures
+        P, cell1 = setup_parameters(
+            default_p='migliore_2005',
+            cell_class='CellMigliore2005',
+            p_update=p_update,
+            paths_update=paths_update,)
+
+        print 'trials:', P.p['trials']
+        # iterate over trials
+        for trial_i, trial in enumerate(range(P.p['trials'])):
+
+            # create list of active synapses, weights, delays
+            # stored in P.p['seg_idx', 'w_list', 'sequence_delays'], 
+            update_synapse_parameters(P, P.p, P.paths, cell1)
+
+            # store trial number
+            P.p['trial']=trial
+                            
+            # create unique identifier for each trial
+            P.p['trial_id'] = str(uuid.uuid4())
+                            
+            # start timer
+            start = time.time() 
+            
+            # run simulation
+            # print P.p['p_path']['1']['pulses']
+            sim = run.Run(p=P.p, cell=cell1) 
+
+            # end timer
+            end = time.time() 
+
+            # print trial and simulation time
+            print 'trial'+ str(P.p['trial']) + ' duration:' + str(end -start) 
+            
+            # set file name to save data
+            file_name = str(
+            P.p['experiment']+
+            '_trial_'+str(P.p['trial'])+
+            '_id_'+P.p['trial_id']
+            )
+
+            # save data for eahc trial
+            run.save_data(data=sim.data, file_name=file_name)
+
+            # plot traces
+            analysis.PlotRangeVar().plot_trace(
+                data=sim.data, 
+                variables=P.p['plot_variables'],
+                x_variables=P.p['x_variables'],
+                file_name=file_name,
+                group_trees=P.p['group_trees'],
+                xlim=[P.p['warmup']-5,P.p['tstop']],
+                 ylim=[-75,-40])
+
+    def exp_3a3(self, **kwargs):
+        """ 1 Hz simulation (40 pulses, 40 seconds) in full pyramidal cell with parameters from Migliore et al. 2005.  Track backpropagation of action potentials
+        """
+        trials = 1
+        p_update = {
+        'experiment' : kwargs['experiment'], 
+        'trials' : kwargs['trials'],
+        'field':[-20.,0.,20.],
+        'plot_variables':['v','gbar'],
+        'path_combo':['1'],
+        'clopath_A_m':3E-5, # depression magnitude parameter (mV^-1)
+        'clopath_tetam':-70,#-41, # depression threshold (mV)
+        'clopath_tetap':-65,#-38, # potentiation threshold (mV)
+        'clopath_tau_r':8,#-38, # potentiation threshold (mV)
+        'clopath_tau_0':30,#-38, # potentiation threshold (mV)
+        'clopath_tau_y': 5, # time constant (ms) for low pass filter post membrane potential for potentiation
+        'clopath_A_p': 38E-5, # amplitude for potentiation (mV^-2)
+        }
+
+        # set up synaptic pathway parameters
+        paths_update = {'1':{
+        'trees': ['apical_tuft','apical_trunk'],
+        'syn_num': 8,
+        'nsyns': 1.,
+        'syn_dist': [0,300],
+        'pulses': 40.,
+        'pulse_freq': 1.,
+        'bursts': 1.,
+        'burst_freq': 1.,
+        'warmup': 30,
+        'w_mean': .0015,
+        }}
+
+        # setup cell and updated parameter structures
+        P, cell1 = setup_parameters(
+            default_p='migliore_2005',
+            cell_class='CellMigliore2005',
+            p_update=p_update,
+            paths_update=paths_update,)
+
+        # iterate over trials
+        for trial_i, trial in enumerate(range(P.p['trials'])):
+
+            # create list of active synapses, weights, delays
+            # stored in P.p['seg_idx', 'w_list', 'sequence_delays'], 
+            update_synapse_parameters(P, P.p, P.paths, cell1)
+
+            # store trial number
+            P.p['trial']=trial
+                            
+            # create unique identifier for each trial
+            P.p['trial_id'] = str(uuid.uuid4())
+                            
+            # start timer
+            start = time.time() 
+            
+            # run simulation
+            print P.p['p_path']['1']['pulses']
             sim = run.Run(p=P.p, cell=cell1) 
 
             # end timer
@@ -1195,15 +1538,15 @@ class Experiment:
         """ 20 Hz simulation (40 pulses, 2 seconds) with reduced cylindrical model
         """
         # 
-        kwargs['trials']=1
+        # kwargs['trials']=1
         p_update = {
         'experiment' : kwargs['experiment'], 
         'trials' : kwargs['trials'],
         'field':[-5.,0.,5.],
         'plot_variables':['v','gbar'],
         'path_combo':'1',
-        'nseg':2,
-        'clopath_A_m':25E-5, # depression magnitude parameter (mV^-1)
+        'nseg':1,
+        'clopath_A_m':4E-5, # depression magnitude parameter (mV^-1)
         'clopath_tetam':-70,#-41, # depression threshold (mV)
         'clopath_tetap':-65,#-38, # potentiation threshold (mV)
         'clopath_tau_r':8,#-38, # potentiation threshold (mV)
@@ -1214,12 +1557,99 @@ class Experiment:
 
         # set up two pathways
         paths_update = {'1':{
-        'trees': ['apical_prox','apical_dist'],
-        'syn_num': 3,
+        'trees': ['apical_dist'],
+        'syn_num': 10,
         'nsyns': 1.,
-        'syn_dist': [1000,2000],
-        'pulses': 40.,
+        'syn_dist': [0,2000],
+        'pulses': 0.,
         'pulse_freq': 20.,
+        'bursts': 0,
+        'burst_freq': 5.,
+        'warmup': 30,
+        'w_mean': .0015,
+        }}
+
+        # setup cell and updated parameter structures
+        P, cell1 = setup_parameters(
+            default_p='migliore_2005',
+            cell_class='PyramidalCylinder',
+            p_update=p_update,
+            paths_update=paths_update,
+            load_fd=False)
+
+        # iterate over trials
+        for trial_i, trial in enumerate(range(P.p['trials'])):
+
+            update_synapse_parameters(P, P.p, P.paths, cell1=cell1)
+
+            # store trial number
+            P.p['trial']=trial
+                            
+            # create unique identifier for each trial
+            P.p['trial_id'] = str(uuid.uuid4())
+                            
+            # start timer
+            start = time.time() 
+            
+            # print cell1.syns
+            # run simulation
+
+            sim = run.Run(p=P.p, cell=cell1) 
+
+            # end timer
+            end = time.time() 
+
+            # print trial and simulation time
+            print 'trial'+ str(P.p['trial']) + ' duration:' + str(end -start) 
+            
+            # set file name to save data
+            file_name = str(
+            P.p['experiment']+
+            '_trial_'+str(P.p['trial'])+
+            '_id_'+P.p['trial_id']
+            )
+
+            # save data for eahc trial
+            run.save_data(data=sim.data, file_name=file_name)
+
+            # plot traces
+            analysis.PlotRangeVar().plot_trace(data=sim.data, 
+                        variables=P.p['plot_variables'],
+                        x_variables=P.p['x_variables'],
+                        file_name=file_name,
+                        group_trees=P.p['group_trees'],
+                        xlim=[P.p['warmup']-5,P.p['tstop']],
+                        ylim=[-75,-40])
+
+    def exp_3b3(self, **kwargs):
+        """ 1 Hz simulation (40 pulses, 40 seconds) with reduced cylindrical model
+        """
+        # 
+        kwargs['trials']=1
+        p_update = {
+        'experiment' : kwargs['experiment'], 
+        'trials' : kwargs['trials'],
+        'field':[-5.,0.,5.],
+        'plot_variables':['v','gbar'],
+        'path_combo':'1',
+        'nseg':1,
+        'clopath_A_m':4E-5, # depression magnitude parameter (mV^-1)
+        'clopath_tetam':-70,#-41, # depression threshold (mV)
+        'clopath_tetap':-65,#-38, # potentiation threshold (mV)
+        'clopath_tau_r':8,#-38, # potentiation threshold (mV)
+        'clopath_tau_0':30,#-38, # potentiation threshold (mV)
+        'clopath_tau_y': 5, # time constant (ms) for low pass filter post membrane potential for potentiation
+        'clopath_A_p': 38E-5, # amplitude for potentiation (mV^-2)
+        }
+
+        # set up two pathways
+        paths_update = {'1':{
+        'trees': ['apical_dist'],
+        'syn_num': 10,
+        'nsyns': 1.,
+        'syn_dist': [0,2000],
+        'pulses': 40.,
+        'pulse_freq': 1.,
         'bursts': 1,
         'burst_freq': 5.,
         'warmup': 30,
@@ -1250,6 +1680,7 @@ class Experiment:
             
             # print cell1.syns
             # run simulation
+
             sim = run.Run(p=P.p, cell=cell1) 
 
             # end timer
@@ -1276,6 +1707,92 @@ class Experiment:
                         group_trees=P.p['group_trees'],
                         xlim=[P.p['warmup']-5,P.p['tstop']],
                         ylim=[-75,-40])
+
+    def exp_3c1(self, **kwargs):
+        """ Measure membrane polarization and create shapeplot
+        """
+        # 
+        p_update = {
+        'experiment' : kwargs['experiment'], 
+        'trials' : kwargs['trials'],
+        'field':[-20.,0.,20.],
+        'plot_variables':['v','gbar'],
+        'path_combo':'1',
+        'clopath_A_m':40E-5, # depression magnitude parameter (mV^-1)
+        'clopath_tetam':-70,#-41, # depression threshold (mV)
+        'clopath_tetap':-65,#-38, # potentiation threshold (mV)
+        'clopath_tau_r':8,#-38, # potentiation threshold (mV)
+        'clopath_tau_0':30,#-38, # potentiation threshold (mV)
+        'clopath_tau_y': 5, # time constant (ms) for low pass filter post membrane potential for potentiation
+        'clopath_A_p': 38E-5, # amplitude for potentiation (mV^-2)
+        }
+
+        # set up two pathways
+        paths_update = {'1':{
+        'trees': ['basal','apical_tuft','apical_trunk'],
+        'syn_num': [],
+        'syn_frac':1.,
+        'replace_syn':False,
+        'nsyns': 0.,
+        'syn_dist': [],
+        'pulses': 0.,
+        'pulse_freq': 20.,
+        'bursts': 1,
+        'burst_freq': 5.,
+        'warmup': 30,
+        'w_mean': .0015,
+        }}
+
+        # setup cell and updated parameter structures
+        P, cell1 = setup_parameters(
+            default_p='migliore_2005',
+            cell_class='CellMigliore2005',
+            p_update=p_update,
+            paths_update=paths_update)
+
+        # iterate over trials
+        for trial_i, trial in enumerate(range(P.p['trials'])):
+
+            update_synapse_parameters(P, P.p, P.paths, cell1=cell1)
+
+            P.p['tstop']=50
+            # store trial number
+            P.p['trial']=trial
+                            
+            # create unique identifier for each trial
+            P.p['trial_id'] = str(uuid.uuid4())
+                            
+            # start timer
+            start = time.time() 
+            
+            # print cell1.syns
+            # run simulation
+            sim = run.Run(p=P.p, cell=cell1) 
+
+            # end timer
+            end = time.time() 
+
+            # print trial and simulation time
+            print 'trial'+ str(P.p['trial']) + ' duration:' + str(end -start) 
+            
+            # set file name to save data
+            file_name = str(
+            P.p['experiment']+
+            '_trial_'+str(P.p['trial'])+
+            '_id_'+P.p['trial_id']
+            )
+
+            # save data for eahc trial
+            run.save_data(data=sim.data, file_name=file_name)
+
+            # plot traces
+            # analysis.PlotRangeVar().plot_trace(data=sim.data, 
+            #             variables=P.p['plot_variables'],
+            #             x_variables=P.p['x_variables'],
+            #             file_name=file_name,
+            #             group_trees=P.p['group_trees'],
+            #             xlim=[P.p['warmup']-5,P.p['tstop']],
+            #             ylim=[-75,-40])
     """
     Experiment 4
 
@@ -1545,13 +2062,13 @@ def update_synapse_parameters(p_class, p, paths, cell1):
     # update pathways and add to global p structure
     for path_key, path in paths.iteritems():
 
-        print path_key, ' warmup:', path['warmup']
+        # print path_key, ' warmup:', path['warmup']
         
         # if path is included in current combination
         if path_key in p['path_combo']:
             
             # choose active segments for this pathway
-            seg_dic = p_class.choose_seg_rand(trees=path['trees'], syns=cell1.syns, syn_frac=0., seg_dist=p['seg_dist'], syn_num=path['syn_num'], distance=path['syn_dist'], replace=True)
+            seg_dic = p_class.choose_seg_rand(trees=path['trees'], syns=cell1.syns, syn_frac=path['syn_frac'], seg_dist=p['seg_dist'], syn_num=path['syn_num'], distance=path['syn_dist'], replace=path['replace_syn'])
             path.update(seg_dic)
             
             # set weights for each segment in this pathway
@@ -1594,6 +2111,13 @@ class ExperimentsParallel:
             kwargs={'experiment':experiment}
             experiment_function(**kwargs)
 
+    def quick_run(self, **kwargs):
+        self.parameters=[]
+        n_workers=10
+        for i in range(n_workers):
+            self.parameters.append({'experiment':kwargs['experiment']})
+
+        return self.parameters
 
     def exp_3a1(self, **kwargs):
         self.parameters = []
@@ -1605,7 +2129,57 @@ class ExperimentsParallel:
                 'trials':trials_per_worker})
         return self.parameters
 
+    def exp_3a1_basal(self, **kwargs):
+        self.parameters = []
+        n_workers = 10
+        trials_per_worker=1
+        for i in range(n_workers):
+            self.parameters.append(
+                {'experiment':kwargs['experiment'],
+                'trials':trials_per_worker})
+        return self.parameters
+
     def exp_3a2(self, **kwargs):
+        self.parameters = []
+        n_workers = 10
+        trials_per_worker=1
+        for i in range(n_workers):
+            self.parameters.append(
+                {'experiment':kwargs['experiment'],
+                'trials':trials_per_worker})
+        return self.parameters
+
+    def exp_3a2_basal(self, **kwargs):
+        self.parameters = []
+        n_workers = 1
+        trials_per_worker=1
+        for i in range(n_workers):
+            self.parameters.append(
+                {'experiment':kwargs['experiment'],
+                'trials':trials_per_worker})
+        return self.parameters
+
+    def exp_3a2_dose(self, **kwargs):
+        self.parameters = []
+        n_workers = 1
+        trials_per_worker=1
+        for i in range(n_workers):
+            self.parameters.append(
+                {'experiment':kwargs['experiment'],
+                'trials':trials_per_worker})
+        return self.parameters
+
+    def exp_3a3(self, **kwargs):
+        self.parameters = []
+        n_workers = 10
+        trials_per_worker=1
+        for i in range(n_workers):
+            self.parameters.append(
+                {'experiment':kwargs['experiment'],
+                'trials':trials_per_worker})
+        return self.parameters
+
+    def exp_3b1(self, **kwargs):
         self.parameters = []
         n_workers = 10
         trials_per_worker=1
@@ -1731,8 +2305,8 @@ def _run_parallel(parameters):
 
 
 if __name__ =="__main__":
-    # Experiment(experiment='exp_3b1', load_fd=True)
-    _run_parallel(ExperimentsParallel('exp_3a2').parameters)
+    # Experiment(experiment='exp_3a1', load_fd=False, trials=1)
+    _run_parallel(ExperimentsParallel('exp_3a2_dose').parameters)
     # kwargs = {'experiment':'exp_1a'}
     # analysis.Experiment(**kwargs)
     # kwargs = {'experiment':'exp_1c'}
