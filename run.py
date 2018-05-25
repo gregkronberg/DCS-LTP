@@ -41,6 +41,20 @@ class Run():
         self.recording_vectors(p)
         self.run_sims(p)
 
+    def __init__(self, p, cell):
+
+        # create cell
+        # self.cell1 = cell.CellMigliore2005(p)
+        # self.cell1 = cell.PyramidalCylinder(p) 
+        # self.cell1 = p['cell'] # cell must be deleted from p before saving
+        self.cell1 = cell
+        self.update_clopath( p, syns=self.cell1.syns)
+        self.activate_synapses(p)
+        self.recording_vectors(p)
+        self.run_sims(p)
+        # clear synapses
+        self.nc = []
+
     # update clopath parameters
     def update_clopath(self, p, syns):
         """
@@ -74,6 +88,7 @@ class Run():
             self.nc={}
             self.stim={}
             for path_key, path in p['p_path'].iteritems():
+                print 'activating synapses. pathway:', path_key
                 uncage = stims.Uncage()
                 uncage.branch_sequence(seg_idx=path['seg_idx'], 
                     delays=path['sequence_delays'], 
@@ -85,6 +100,7 @@ class Run():
                 self.stim[path_key] = uncage.stim
                 self.nc[path_key] = cell.Syn_act(p=path, syns=self.cell1.syns, stim=self.stim[path_key])
         else:
+            print 'activating synapses'
             uncage = stims.Uncage()
             uncage.branch_sequence(seg_idx=p['seg_idx'], 
                 delays=p['sequence_delays'], 
@@ -105,11 +121,65 @@ class Run():
         for sec_i,sec in enumerate(p['sec_idx']):
             self.sl.append(sec=self.cell1.geo[p['trees']][sec])
             self.shapeplot.color(2, sec=self.cell1.geo[p['trees']][sec])
+    
+    def _setup_recording_vectors(self, p, locations, variables, geo, syns):
+        ''' set up recording vectors for simulation
+        ===Args===
+        -locations : list of tuples [(tree, sec, seg)]
+        -variables :list of variables to record [(variable, variable type, mechanism)]
+        -geometry : geo structure
+
+        ===Out===
+        -rec : dictionary of recorded variables
+
+        ===Updates===
+        -hoc recording vectors are created for each segment specified in locations
+        '''
+
+        rec = {}
+        for variable, variable_type, mechanism in variables:
+            
+            rec[variable] = {'data':[],
+            'location':[],
+            'p':p}
+
+            for location_i, location in enumnerate(locations):
+
+                tree_key,sec_num,seg_num = location
+                seg_loc = float(seg_num+1)/(geo[tree_key][sec_num].nseg+1)
+                
+                if variable_type == 'range' and  variable in dir(geo[tree_key][sec_num](seg_loc)):
+
+                    # point to variable for recording
+                    var_rec = getattr(geo[tree_key][sec_num](seg_loc), '_ref_'+variable)
+                    
+                    # create recording vector
+                    rec[variable]['data'].append(h.Vector())
+                    rec[variable]['data'][-1].record(var_rec)
+
+                    rec[variable]['conditions']['p'].append(p)
+                    rec[variable]['conditions']['location'].append(location)
+
+                if variable_type == 'syn' and mechanism in syns[tree_key][sec_num][seg_num].keys() and  variable in dir(syns[tree_key][sec_num][seg_num][mechanism]): 
+                                
+                    # point to variable to record
+                    var_rec = getattr(syns[tree_key][sec_num][seg_num][var_dic['syn']], '_ref_'+var_key)
+
+                    # create recording vector
+                    rec[variable]['data'].append(h.Vector())
+                    rec[variable]['data'][-1].record(var_rec)
+
+                    rec[variable]['p'].append(p)
+                    rec[variable]['location'].append(location)
+
+        return rec
 
     def recording_vectors(self, p):
+        ''' set up re
+        '''
         # set up recording vectors
         self.rec= {}
-        
+        print 'setting up recording vectors'
         for path_key, path in p['p_path'].iteritems():
             self.rec[path_key]={}
             seg_idx= copy.copy(path['seg_idx'])
@@ -128,12 +198,6 @@ class Run():
                 seg_idx['axon'].append([])
                 for seg_i, seg in enumerate(sec):
                     seg_idx['axon'][sec_i].append(seg_i)
-
-
-            # sec_idx['soma']= [0]
-            # seg_idx['soma']= [[0]]
-            # sec_idx['axon']= [0]
-            # seg_idx['axon']= [[0]]
 
             # loop over trees
             for tree_key, tree in seg_idx.iteritems():
@@ -213,6 +277,31 @@ class Run():
             # record time
             self.rec[path_key]['t'].record(h._ref_t)
 
+    def _run_sims(self, p, rec):
+        '''
+        '''
+        # insert extracellular field
+        dcs = stims.DCS(cell=0, field_angle=p['field_angle'], intensity=p['field'], field_on=p['field_on'], field_off=p['field_off'])
+
+        # run time
+        h.dt = p['dt']
+        h.tstop = p['tstop']
+        h.celsius= p['celsius']
+
+        # h.finitialize()
+        print 'running simulation:', f_i+1, 'of', len(p['field'])
+        # initialize voltage
+        h.v_init=p['v_init'] # v_init is an object created in h when stdrun.hoc is called
+        h.run()
+        print 'simulation finished'
+
+        data = copy.copy(rec)
+
+        # convert data to numpy array
+        for variable in data:
+            data[variable]['data'] = np.array(data[variable]['data'])
+
+        
     def run_sims(self,p):
         # data organized as {'polarity'}{'path number'}{'tree_variable'}[section][segment][data vector]
         
@@ -232,9 +321,11 @@ class Run():
             h.celsius= p['celsius']
 
             # h.finitialize()
+            print 'running simulation:', f_i+1, 'of', len(p['field'])
+            # initialize voltage
+            h.v_init=p['v_init'] # v_init is an object created in h when stdrun.hoc is called
             h.run()
-
-            # print 'run complete'
+            print 'simulation finished'
 
             for path_key, path in self.rec.iteritems():
                 self.data[str(f)][path_key] = {}
@@ -271,12 +362,13 @@ def save_data(data, file_name): # save data
     # check if folder exists with experiment name
     
     if os.path.isdir(p['data_folder']) is False:
+        print 'making new directory to save data'
         os.mkdir(p['data_folder'])
 
     with open(p['data_folder']+'data_'+
         file_name+
         '.pkl', 'wb') as output:
-
+        print 'saving data'
         pickle.dump(data, output,protocol=pickle.HIGHEST_PROTOCOL)
 
 # procedures to be initialized if called as a script

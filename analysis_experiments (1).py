@@ -61,38 +61,18 @@ class Experiment:
             self.group_data['gbar']['data_mat'] = self.w_group
             self.group_data['p_clopath'] = clopath_param
 
-        # add syn_dist and syn_num parameters to group data list
         self.group_data = analysis._add_param_to_group(group_data=self.group_data, condition='syn_dist', path=True)
         self.group_data = analysis._add_param_to_group(group_data=self.group_data, condition='syn_num', path=True)
-
-        # add spike time and spike source data to group data
         
         # add spike times to group data
-        if 'spike_times' not in self.group_data['v'] or len(self.group_data['v']['spike_times']) !=  self.group_data['v']['data_mat'].shape[0]:
+        if 'spike_times' not in self.group_data['v']:
             self.group_data['v']['spike_times'] = analysis._get_spike_times(data_mat=self.group_data['v']['data_mat'], threshold=-30, fs=40)['times']
-        if 'spike_train' not in self.group_data['v'] or self.group_data['v']['spike_train'].shape[0] !=  self.group_data['v']['data_mat'].shape[0]:
+        if 'spike_times' not in self.group_data['v']:
             self.group_data['v']['spike_train'] = analysis._get_spike_times(data_mat=self.group_data['v']['data_mat'], threshold=-30, fs=40)['train']
-
-        # organize spike times according to bins (time windows between synaptic inputs)
-        # self.group_data = analysis._bin_spike_times(self.group_data)
-        # self.group_data = analysis._get_spike_origin(self.group_data)
-
-        # get cross correlation of each synapse's spike train with soma
-        self.group_data['v']['spike_xcorr']=analysis._get_spike_xcorr_with_soma(self.group_data)
-        print np.where(self.group_data['v']['spike_xcorr']==1.0)
 
         # save updated group data
         print 'saving_group_data'
         analysis._save_group_data(group_data=self.group_data, directory=directory, file_name=group_data_file_name)
-
-        # show cross correlation for each polarity
-        plt.figure()
-        plt.plot(self.group_data['v']['spike_xcorr'].transpose())
-        # plt.axis('equal')
-        plt.show()
-
-        plt.figure()
-        plt.plot(self.group_data['v']['data_mat'].transpose())
 
         # plot average weight change across all synapses for a given polarity
         condition_trace='polarity'

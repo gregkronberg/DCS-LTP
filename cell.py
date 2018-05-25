@@ -109,6 +109,7 @@ class PyramidalCylinder:
                 h.pt3dchange(i, xprime, yprime, h.z3d(i, sec=sec), h.diam3d(i, sec=sec), sec=sec)
 
     def mechanisms(self, p):
+
         for tree_key, tree in self.geo.iteritems():
             for sec_i, sec in enumerate(tree): 
 
@@ -272,6 +273,7 @@ class CellMigliore2005:
         """ create cell geometry at hoc top level
         
         """
+        print 'loading cell geometry:', self.__class__.__name__
         # load cell geometry into hoc interpreter
         h.load_file('geo5038804.hoc')  
         # h.load_file('geoc62564.hoc')
@@ -300,7 +302,7 @@ class CellMigliore2005:
 
         the parameters for each membrane mechanism  are store in a dictionary called p.  See the param module for details.
         """
-
+        print 'loading cell mechanisms'
         # loop over trees
         for tree_key,tree in self.geo.iteritems():
             

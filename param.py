@@ -301,6 +301,7 @@ class Default(object):
             # conversion 10,000*(pS/um2) = 10*(nS/um2) = (mho/cm2) = .001*(mS/cm2)
             # *** units in paper are a typo, values are already reported in (mho/cm2) ***
             'Vrest' : -65.,             # resting potential (mV)
+            'v_init' :-71.4,
             'gna' :  1.*0.025,#.025,                # peak sodium conductance (mho/cm2)
             'dgna' : 0.,#-.000025,          # change in sodium conductance with distance (ohm/cm2/um) from Kim 2015
             'ena' : 55.,                    # sodium reversal potential (mV)
@@ -1151,7 +1152,6 @@ class Default(object):
             # if synapse number is given
             if syn_num:
                 print 'syn_num:', int(syn_num)
-                print 'available segments:'
                 # choose segments to activate
                 segs_choose = np.random.choice(len(segs_all_dist), int(syn_num), replace=replace)
 
@@ -1172,7 +1172,6 @@ class Default(object):
         else:
             if syn_num:
                 print 'syn_num:', int(syn_num)
-                print 'available segments:'
                 # choose segments to activate
                 segs_choose = np.random.choice(len(segs_all), int(syn_num), replace=replace)
 

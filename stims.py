@@ -234,7 +234,7 @@ class Uncage:
                         self.stim[tree_key][sec_i][seg_i][burst].interval = fs/pulse_freq
                         self.stim[tree_key][sec_i][seg_i][burst].noise  = noise 
                         self.stim[tree_key][sec_i][seg_i][burst].number = pulses
-                        print 'pulses in burst number', burst, ':', pulses
+                        # print 'pulses in burst number', burst, ':', pulses
 
     def poisson_input(self, seg_idx, delays, bursts=1, pulses=1, pulse_freq=100, burst_freq=5, warmup=30, noise=1):
         """ activate sequence of synapses along a dendritic branch

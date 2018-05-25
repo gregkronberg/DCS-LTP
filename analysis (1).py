@@ -59,38 +59,33 @@ def _param2times(p_path, tree_key, sec_i, seg_i, t):
         burst_freq = p_path['burst_freq']/1000
         bursts  =int(p_path['bursts'])
         warmup = p_path['warmup']
-
+        delay = p_path['sequence_delays'][tree_key][sec_i][seg_i]
+        
         # array for storing input times
         input_times = np.zeros((1, bursts*pulses))
-
+        
+        # define a single burst 
+        burst1 = np.arange(0., pulses/pulse_freq, 1./pulse_freq)
+        
+        # iterate through bursts
+        for burst_i in range(bursts):
+            
+            # add times to array
+            input_times[0,burst_i*pulses:(burst_i+1)*pulses] = warmup + delay + burst_i/burst_freq + burst1
+            
         # convert to boolean vector (dim: samples)
         x = np.zeros(t.shape)
         # cut off number of decimals to prevent rounding error
         t = np.around(t, 4)
-
-        if tree_key in p_path['seg_idx']:
-
-            delay = p_path['sequence_delays'][tree_key][sec_i][seg_i]
+        # find input times and to boolean vector
+        for t_i, t_t in enumerate(input_times[0,:]):
             
-            # define a single burst 
-            burst1 = np.arange(0., pulses/pulse_freq, 1./pulse_freq)
-            
-            # iterate through bursts
-            for burst_i in range(bursts):
-                
-                # add times to array
-                input_times[0,burst_i*pulses:(burst_i+1)*pulses] = warmup + delay + burst_i/burst_freq + burst1
-                
-            
-            # find input times and to boolean vector
-            for t_i, t_t in enumerate(input_times[0,:]):
-                
-                # store input times
-                x[np.where(t==t_t)]=1
+            # store input times
+            x[np.where(t==t_t)]=1
                 
         return input_times, x
 
-def _seg_zip(data, variable):
+def _seg_zip(data):
     """ From nested data structure, get list of all segments and corresponding conditions
     
     ===Args===
@@ -114,21 +109,15 @@ def _seg_zip(data, variable):
                 # get path-specific parameters
                 p_path = p['p_path'][path_key]  
                 # iterate over trees
-                for tree_key_raw, tree in path.iteritems():
-                    
-                    for key in p['seg_dist']:
-                        if key in tree_key_raw:
-                            tree_key=key
-              
+                for tree_key, tree in p_path['seg_idx'].iteritems():                
                     # exclude time vectors
-                    if tree_key!='t':    
-                        if '_'+variable in tree_key_raw:                   
-                            # iterate over sections in tree
-                            for sec_i, sec in enumerate(tree):                        
-                                # iterate over segments in section
-                                for seg_i, seg in enumerate(sec):
-                                    # add tuple to segment list
-                                    seg_list.append((polarity_key, path_key, tree_key, sec_i, seg_i))
+                    if tree_key!='t':                       
+                        # iterate over sections in tree
+                        for sec_i, sec in enumerate(tree):                        
+                            # iterate over segments in section
+                            for seg_i, seg in enumerate(sec):
+                                # add tuple to segment list
+                                seg_list.append((polarity_key, path_key, tree_key, sec_i, seg_i))
     return seg_list
     
 def _data2mat(data, variable, **kwargs):
@@ -154,7 +143,7 @@ def _data2mat(data, variable, **kwargs):
     # get time vector (all time vectors are the same within a given data file, same simulation)
     t = data[data.keys()[0]].values()[0]['t']
     # get total number of recorded segments
-    nsegs = len(_seg_zip(data, variable))
+    nsegs = len(_seg_zip(data))
     # preallocate output arrays (segments x samples)
     data_mat = np.zeros((nsegs, len(t)))
     input_mat = np.zeros((nsegs, len(t)))
@@ -188,79 +177,53 @@ def _data2mat(data, variable, **kwargs):
                 p_path = p['p_path'][path_key]
                 
                 # iterate over trees
-                for tree_key_raw, tree in path.iteritems():
+                for tree_key, tree in p_path['seg_idx'].iteritems():
                     
-                    for key in p['seg_dist']:
-                        if key in tree_key_raw:
-                            tree_key=key
-                    # if '_' in tree_key_raw:
-                    #     tree_key = tree_key_raw.rpartition('_')[0]
-                    # else:
-                    #     tree_key = tree_key_raw
-
-                    
-
                     # exclude time vectors
                     if tree_key!='t':   
                         
-                        if '_'+variable in tree_key_raw:
-
-                            print tree_key_raw, tree_key
-                            # iterate over sections in tree
-                            for sec_i, sec in enumerate(tree):
+                        # iterate over sections in tree
+                        for sec_i, sec in enumerate(tree):
+                            
+                            # get section number
+                            sec_num = p_path['sec_idx'][tree_key][sec_i]
+                            
+                            # iterate over segments in section
+                            for seg_i, seg in enumerate(sec):
                                 
-                                if tree_key in p_path['sec_idx']:
-                                    # get section number
-                                    sec_num = p_path['sec_idx'][tree_key][sec_i]
-                                else:
-                                    sec_num=sec_i
+                                seg_cnt += 1
+                                # segment number
+                                seg_num = seg
                                 
-                                # iterate over segments in section
-                                for seg_i, seg in enumerate(sec):
-                                    
-                                    if seg.shape[0]==data_mat.shape[1]:
-                                        seg_cnt += 1
-
-                                        if tree_key in p_path['seg_idx']:
-                                            # get section number
-                                            # print p_path['seg_idx']
-                                            # print seg_i
-                                            seg_num = p_path['seg_idx'][tree_key][sec_i][seg_i]
-                                        else:
-                                            seg_num=seg_i
-                                        
-                                        # get input times from parameter dictionary
-                                        # input_times: list of all input times in ms
-                                        # x: boolean vector. Same dimensions as t. 1=input, 0=no input
-
-                                        #FIXME how to handle soma recordings
-                                        input_times, x = _param2times(p_path, tree_key, sec_i, seg_i, t)
-                                        
-                                        # reshape x to 2D row vector
-                                        x = x.reshape(1, x.shape[0])
-                                        
-                                        # add x to input matrix (boolean, dim: segments x samples)
-                                        input_mat[seg_cnt,:] = x
-                                        
-                                        # get time series data for current segment
-                                        # vec =  path[tree_key+'_'+variable][sec_i][seg_i]
-                                        vec=seg
-                                        # reshape to 2D row vector
-                                        vec = vec.reshape(1, vec.shape[0])
-                                        # add to data matrix (dim: segments x samples)
-                                        data_mat[seg_cnt,:] = vec
-                                        
-                                        # update conditions matrix ['condition type'][segment number]
-                                        conditions['polarity'].append(polarity_key)
-                                        conditions['path'].append(path_key)
-                                        conditions['p'].append(p)
-                                        conditions['tree'].append(tree_key)
-                                        conditions['sec_i'].append(sec_i)
-                                        conditions['sec_num'].append(sec_num)
-                                        conditions['seg_i'].append(seg_i)
-                                        conditions['seg_num'].append(seg_num)
-                                        conditions['input_times'].append(input_times)
-                                        conditions['trial_id'].append(p['trial_id'])
+                                # get input times from parameter dictionary
+                                # input_times: list of all input times in ms
+                                # x: boolean vector. Same dimensions as t. 1=input, 0=no input
+                                input_times, x = _param2times(p_path, tree_key, sec_i, seg_i, t)
+                                
+                                # reshape x to 2D row vector
+                                x = x.reshape(1, x.shape[0])
+                                
+                                # add x to input matrix (boolean, dim: segments x samples)
+                                input_mat[seg_cnt,:] = x
+                                
+                                # get time series data for current segment
+                                vec =  path[tree_key+'_'+variable][sec_i][seg_i]
+                                # reshape to 2D row vector
+                                vec = vec.reshape(1, vec.shape[0])
+                                # add to data matrix (dim: segments x samples)
+                                data_mat[seg_cnt,:] = vec
+                                
+                                # update conditions matrix ['condition type'][segment number]
+                                conditions['polarity'].append(polarity_key)
+                                conditions['path'].append(path_key)
+                                conditions['p'].append(p)
+                                conditions['tree'].append(tree_key)
+                                conditions['sec_i'].append(sec_i)
+                                conditions['sec_num'].append(sec_num)
+                                conditions['seg_i'].append(seg_i)
+                                conditions['seg_num'].append(seg_num)
+                                conditions['input_times'].append(input_times)
+                                conditions['trial_id'].append(p['trial_id'])
 
     return data_mat, input_mat, conditions, p, t
 
@@ -344,53 +307,50 @@ def _update_group_data(directory, search_string, group_data, variables):
     dtemp={}
     # iterate over new data files
     for file_i, file in enumerate(new_data_files):
+        # load data file
+        with open(file, 'rb') as pkl_file:
+            data = pickle.load(pkl_file)
 
-        if file_i<2:
+        # iterate over variables to be updated
+        for variable_i, variable in enumerate(variables):
 
-            # load data file
-            with open(file, 'rb') as pkl_file:
-                data = pickle.load(pkl_file)
-
-            # iterate over variables to be updated
-            for variable_i, variable in enumerate(variables):
-
-                # convert data to matrix and get corresponding conditions
-                dtemp['data_mat'], dtemp['input_mat'], dtemp['conditions'], dtemp['p'], dtemp['t'] = _data2mat(data, variable)
+            # convert data to matrix and get corresponding conditions
+            dtemp['data_mat'], dtemp['input_mat'], dtemp['conditions'], dtemp['p'], dtemp['t'] = _data2mat(data, variable)
 
 
-                # add to group data
-                #``````````````````````````````````````````````````````````````
-                # if variable does not exist in group_data
-                if variable not in group_data:
-                    # create entry
-                    group_data[variable]={}
-                    # iterate through data types for individual simulation
-                    for key, val in dtemp.iteritems():
-                        # set initial value in group_data to the individual value
-                        group_data[variable][key]=val
+            # add to group data
+            #``````````````````````````````````````````````````````````````
+            # if variable does not exist in group_data
+            if variable not in group_data:
+                # create entry
+                group_data[variable]={}
+                # iterate through data types for individual simulation
+                for key, val in dtemp.iteritems():
+                    # set initial value in group_data to the individual value
+                    group_data[variable][key]=val
 
-                # if variable already exists in group_data structure
-                else:
-                    # iterate through data types
-                    for key, val in dtemp.iteritems():
-                        # for conditions info
-                        if key=='conditions':
-                            # iterate through the various conditions (e.g. 'polarity', 'path', 'tree', 'sec_i', 'seg_i')
-                            for condition_key, condition_list in val.iteritems():
-                                # add list for individual data to running list for group
-                                group_data[variable][key][condition_key] += condition_list 
-                        # if data type is a matrix
-                        elif 'mat' in key:
-                            # add to existing group matrix
-                            group_data[variable][key] = np.append(group_data[variable][key], val, axis=0)
-                        
-                        # FIXME this is overwritten on each loop (should only be set once)
-                        # create single time vector in group_data
-                        elif key=='t':
-                            group_data[variable][key] = val
+            # if variable already exists in group_data structure
+            else:
+                # iterate through data types
+                for key, val in dtemp.iteritems():
+                    # for conditions info
+                    if key=='conditions':
+                        # iterate through the various conditions (e.g. 'polarity', 'path', 'tree', 'sec_i', 'seg_i')
+                        for condition_key, condition_list in val.iteritems():
+                            # add list for individual data to running list for group
+                            group_data[variable][key][condition_key] += condition_list 
+                    # if data type is a matrix
+                    elif 'mat' in key:
+                        # add to existing group matrix
+                        group_data[variable][key] = np.append(group_data[variable][key], val, axis=0)
+                    
+                    # FIXME this is overwritten on each loop (should only be set once)
+                    # create single time vector in group_data
+                    elif key=='t':
+                        group_data[variable][key] = val
 
-                # add file to processed list to keep track of processed files
-                group_data['processed'].append(file)
+            # add file to processed list to keep track of processed files
+            group_data['processed'].append(file)
 
     print 'finished updating group data structure'
 
@@ -600,216 +560,6 @@ def _get_spike_times(data_mat, threshold, fs):
 
     # detect indeces where vector crosses threshold in the positive direction
     return {'times':spike_times,'train':spike_train}
-
-# FIXME
-def _bin_spike_times(group_data):
-    '''
-    ===Args===
-    ===Out===
-    ===Updates===
-    ===Comments===
-    '''
-    print 'binning spike times'
-    # create entry for storing binned spike times
-    group_data['v']['spike_times_bin']=[]
-
-    # add a dimension to list for each segment
-    for x in group_data['v']['conditions']['trial_id']:
-        group_data['v']['spike_times_bin'].append([])
-    
-    # spike_times_bin organized as [segment][bin number][spike time]
-    # create entry for storing binned spike times
-    group_data['v']['spike_times_bin']=[]
-    # iterate over segments
-    for input_times_i, input_times in enumerate(group_data['v']['conditions']['input_times']):
-
-        # add dimension for each segment
-        group_data['v']['spike_times_bin'].append([])
-        # get all spike times for the current segment
-        spike_times = group_data['v']['spike_times'][input_times_i]
-
-        if input_times:
-            # iterate over time bins (between input spikes)
-            for input_time_i, input_time in enumerate(input_times):
-
-                # if not the last input spike 
-                if input_time_i < len(input_times)-1:
-                    input_time_next = input_times[input_time_i+1]
-                    # list of spikes that fall within the current bin
-                    spike_times_bin = [time for time_i, time in times if time > input_time and time <= input_time_next ]
-                else:   
-                    # list of spikes that fall within the current bin
-                    spike_times_bin = [time for time_i, time in times if time > input_time]
-
-                # add to spike_times_bin list
-                group_data['v']['spike_times_bin'][input_times_i].append(spike_times_bin)
-
-    return group_data
-
-# FIXME
-def _get_spike_origin(group_data):
-    '''
-    ===Args===
-    ===Out===
-    ===Updates===
-    ===Comments===
-    '''
-
-    # get list of unique trial ids
-    trial_ids = list(set(group_data['v']['conditions']['trial_id']))
-
-    # get list of polarities
-    polarities = list(set(group_data['v']['conditions']['polarity']))
-
-    group_data['v']['spike_origins_bin'] = []
-    for i, v in enumerate(group_data['v']['spike_times_bin']):
-        group_data['v']['spike_origins_bin'].append([])
-
-    # iterate over trial id's (cells)
-    for trial_id in trial_ids:
-        
-        # get index of all segments with the current trial id
-        trial_is = [i for i,x in enumerate(group_data['v']['conditions']['trial_id']) if x==trial_id]
-        
-        # get input times
-        input_times = group_data['v']['conditions']['input_times'][trial_is[0]]
-
-        # all spikes for the current trial [segment][time bin][spike time]
-        current_spikes = [v for i, v in enumerate(group_data['v']['spike_times_bin']) if i in trial_is[trial_id]]
-
-        # iterate over input times (time bins)
-        for input_time_i, input_time in enumerate(input_times):
-
-            # spikes for the current input time bin [segments][[spike times]]
-            spikes = [v[input_time_i] for i, v in enumerate(current_spikes)]
-            
-            # list of spike times in the segment containing the first spike time [spike times]
-            first_spike_times = min(spikes)
-            
-            # get the index of the segment containing the first spike
-            first_spike_loc = spikes.index(first_spike_times)
-
-            # recover tree, section, segment info
-            global_i = trial_is[first_spike_loc]
-            tree = group_data['v']['conditions']['tree'][global_i]
-            sec_num = group_data['v']['conditions']['sec_num'][global_i]
-            seg_num = group_data['v']['conditions']['seg_num'][global_i]
-            location = (tree, sec_num, seg_num, first_spike_times[0])
-
-            # add location of first spike to each segment 
-            for trial_i in trial_is:
-                group_data['v']['spike_origins_bin'][trial_i]
-
-    return group_data
-
-def _get_spike_xcorr_with_soma(group_data):
-    ''' cross correlation between somatic and dendritic spike trains as a function of distance from soma
-
-    ===Args===
-    ===Out===
-    ===Updates===
-    ===Comments===
-    '''
-    # for each segment, find the spike train from the corresponding soma
-    # compute cross correlation for the segment and the soma
-    # store matrix of spike cross correlations between dendrite and soma
-    print 'getting cross correlation'
-    # get list of unique trial ids
-    trial_ids = list(set(group_data['v']['conditions']['trial_id']))
-    # get shape of data matrix
-    data_shape = group_data['v']['spike_train'].shape
-    # create new array to store cross correlations
-    xcorr_mat = np.zeros((data_shape[0],data_shape[1]*2-1))
-    
-    print group_data['v']['data_mat'].shape
-    print group_data['v']['spike_train'].shape
-    print len(group_data['v']['conditions']['trial_id'])
-    plt.figure()
-    plt.imshow(group_data['v']['spike_train'])
-    plt.axis('equal')
-    plt.show()
-    # iterate over segments
-    for spike_train_i, spike_train in enumerate(group_data['v']['spike_train']):
-
-        # get trial id
-        trial_id = group_data['v']['conditions']['trial_id'][spike_train_i]
-
-        # print trial_id
-        # print [i for i,val in enumerate(group_data['v']['conditions']['tree']) if val=='soma']
-        # print group_data['v']['conditions']['tree'][:20]
-        # print []
-        # get soma index
-        soma_i = [i for i,val in enumerate(group_data['v']['conditions']['trial_id']) if val==trial_id and group_data['v']['conditions']['tree'][i]=='soma']
-        # print soma_i[0]
-
-        
-        # get soma spike train
-        soma_spikes = group_data['v']['spike_train'][soma_i[0],:]
-        print 'xcorr:', sum(np.correlate(spike_train, soma_spikes,mode='full'))
-        # get full cross correlation
-        xcorr_mat[spike_train_i,:] = np.correlate(spike_train, soma_spikes, mode='full')
-
-        print i
-        print np.sum(xcorr_mat[:spike_train_i,:],axis=1)
-    # print np.max(xcorr_mat)
-
-    return xcorr_mat
-    # iterate over trial id's (cells)
-    for trial_id in trial_ids:
-        
-        # get index of all segments with the current trial id
-        trial_is = [i for i,x in enumerate(group_data['v']['conditions']['trial_id']) if x==trial_id]
-        
-        # get input times
-        input_times = group_data['v']['conditions']['input_times'][trial_is[0]]
-
-        # all spikes for the current trial [segment][time bin][spike time]
-        current_spikes = [v for i, v in enumerate(group_data['v']['spike_times_bin']) if i in trial_is[trial_id]]
-
-        # iterate over input times (time bins)
-        for input_time_i, input_time in enumerate(input_times):
-
-            # spikes for the current input time bin [segments][[spike times]]
-            spikes = [v[input_time_i] for i, v in enumerate(current_spikes)]
-            
-            # list of spike times in the segment containing the first spike time [spike times]
-            first_spike_times = min(spikes)
-            
-            # get the index of the segment containing the first spike
-            first_spike_loc = spikes.index(first_spike_times)
-
-            # recover tree, section, segment info
-            global_i = trial_is[first_spike_loc]
-            tree = group_data['v']['conditions']['tree'][global_i]
-            sec_num = group_data['v']['conditions']['sec_num'][global_i]
-            seg_num = group_data['v']['conditions']['seg_num'][global_i]
-            location = (tree, sec_num, seg_num, first_spike_times[0])
-
-            # add location of first spike to each segment 
-            for trial_i in trial_is:
-                group_data['v']['spike_origins_bin'][trial_i]
-
-    pass
-
-def _convert_spike_times_to_bool(t, spike_times):
-    '''
-    ===Args===
-    ===Out===
-    ===Updates===
-    ===Comments===
-    '''
-    # convert to boolean vector (dim: samples)
-    x = np.zeros(t.shape)
-    # cut off number of decimals to prevent rounding error
-    t = np.around(t, 4)
-    spike_times = np.around(spike_times, 4)
-    # find input times and to boolean vector
-    for t_i, t_t in enumerate(spike_times):
-        # store input times
-        x[np.where(t==t_t)]=1
-
-    return x
-
 
 class Clopath():
     
