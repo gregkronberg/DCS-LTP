@@ -3,12 +3,9 @@ docstring
 """
 # imports
 from neuron import h
-# from mpi4py import MPI
-# import multiprocessing 
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
-import cell 
 import itertools as it
 import stims
 import pickle
@@ -16,49 +13,52 @@ import param
 import os
 import copy
 
-# load standard runtime settings.  this is critical.
-h.load_file("stdrun.hoc")
-
-# run control
 class Run():
-    """
+    '''
     Arguments list:
     p - dictionary of parameters
 
     each experiment appends a list to the appropriate key in the data dictionary
     data is organized as data['type of data'][experiments][sections][time series data vector]
     details of each experiment are tracked via the data['detail'][experiment number], e.g. data['field'][2]
-    """
-    def __init__(self, p, cell):
+    '''
+    def __init__(self):
+        '''
+        ==Args==
+        ==Out==
+        ==Update==
+        ==Comments==
+        '''
+        pass
 
-        # create cell
-        # self.cell1 = cell.CellMigliore2005(p)
-        # self.cell1 = cell.PyramidalCylinder(p) 
-        # self.cell1 = p['cell'] # cell must be deleted from p before saving
-        self.cell1 = cell
-        self.update_clopath( p, syns=self.cell1.syns)
-        self.activate_synapses(p)
-        self.recording_vectors(p)
-        self.run_sims(p)
-
-    def __init__(self, p, cell):
-
-        # create cell
-        # self.cell1 = cell.CellMigliore2005(p)
-        # self.cell1 = cell.PyramidalCylinder(p) 
-        # self.cell1 = p['cell'] # cell must be deleted from p before saving
-        self.cell1 = cell
-        self.update_clopath( p, syns=self.cell1.syns)
-        self.activate_synapses(p)
-        self.recording_vectors(p)
-        self.run_sims(p)
+    def _standard_run(self, p, cell, **kwargs):
+        '''
+        '''
+        # update clopath parameters
+        self._update_clopath( p=p, syns=cell.syns)
+        # activate synapses
+        method='_bursts'
+        if 'uncage_method' in kwargs:
+            method=kwargs['uncage_method']
+        self.stim, self.nc = self._activate_synapses_uncage(p_paths=p['p_path'], cell=cell, method=method)
+        # set up recording vectors
+        self.rec = self._setup_recording_vectors(p=p, geo=cell.geo, syns=cell.syns, nc=self.nc)
+        # load hoc standard run environment
+        h.load_file("stdrun.hoc")
+        # run simulation and record data
+        self.data = self._run_sims(p=p, rec=self.rec)
         # clear synapses
         self.nc = []
-
+        self.stim=[]
+    
     # update clopath parameters
-    def update_clopath(self, p, syns):
-        """
-        """
+    def _update_clopath(self, p, syns):
+        '''
+        ==Args==
+        ==Out==
+        ==Update==
+        ==Comments==
+        '''
         # iterate over parameters
         for parameter_key, parameter in p.iteritems():
             # if it is a clopath learning rule parameter
@@ -75,80 +75,87 @@ class Run():
                             if 'clopath' in list(seg.keys()): 
                                 # set synapse parameter value
                                 setattr(seg['clopath'], p_clopath, p['clopath_'+p_clopath])
-
-    # activate synapses
-    def activate_synapses(self, p):
-        """
-        """
-        # bipolar = stims.Bipolar()
-        # bipolar.tbs(bursts=p['bursts'], warmup=p['warmup'], pulses=p['pulses'], pulse_freq=p['pulse_freq'])
-        # self.stim = bipolar.stim
-
-        if 'p_path' in p:
-            self.nc={}
-            self.stim={}
-            for path_key, path in p['p_path'].iteritems():
-                print 'activating synapses. pathway:', path_key
-                uncage = stims.Uncage()
-                uncage.branch_sequence(seg_idx=path['seg_idx'], 
-                    delays=path['sequence_delays'], 
-                    bursts=path['bursts'], pulses=path['pulses'], 
-                    pulse_freq=path['pulse_freq'],
-                    burst_freq=path['burst_freq'],
-                    warmup=path['warmup'],
-                    noise=path['noise'] )
-                self.stim[path_key] = uncage.stim
-                self.nc[path_key] = cell.Syn_act(p=path, syns=self.cell1.syns, stim=self.stim[path_key])
-        else:
-            print 'activating synapses'
-            uncage = stims.Uncage()
-            uncage.branch_sequence(seg_idx=p['seg_idx'], 
-                delays=p['sequence_delays'], 
-                bursts=p['bursts'], pulses=p['pulses'], 
-                pulse_freq=p['pulse_freq'],
-                burst_freq=p['burst_freq'],
-                warmup=p['warmup'],
-                noise=p['noise'] )
-            self.stim = uncage.stim
-            self.nc = cell.Syn_act(p=p, syns=self.cell1.syns, stim=self.stim)
-
-    def shape_plot(self, p):
-        # highlight active sections
-        self.shapeplot = h.PlotShape()
-        
-        # create section list of active sections
-        self.sl = h.SectionList()    # secetion list of included sections
-        for sec_i,sec in enumerate(p['sec_idx']):
-            self.sl.append(sec=self.cell1.geo[p['trees']][sec])
-            self.shapeplot.color(2, sec=self.cell1.geo[p['trees']][sec])
     
-    def _setup_recording_vectors(self, p, locations, variables, geo, syns):
+    def _activate_synapses_uncage(self, p_paths,cell, method='_bursts'):
+        """ create netstim objects and connect them to synapses
+
+        ==Args==
+        -p_paths : parameter dictionary for each synaptic pathway as {path}{parameter:value}
+        -method  : string specifing the method for creating NetStim objects.  will call the corresponding method in stims.Uncage
+
+        ==Out==
+        -stims : NetStim objects as {path}[synapse number][burst number]
+        -nc    : NetCon objects as {path}[synapse number][burst number]
+
+        ==Updates==
+        -nc and stims are stored as attributes of the Run instance
+
+        ==Comments==
+        """
+        # store NetStim objects
+        self.stim={}
+        # stor NetCon objects
+        self.nc={}
+        # iterate over paths
+        for path_key, path in p_paths.iteritems():
+            # create uncage object for activating synapses
+            uncage=stims.Uncage()
+            # get method for creating NetStim objects
+            stim_method = getattr(uncage, method)
+            # create NetStims
+            self.stim[path_key] = stim_method(path)
+            # connect NetStims to synapses with NetCons
+            self.nc[path_key] = uncage._connect_synapses(p_path=path, stim=self.stim[path_key], syns=cell.syns)
+
+        return self.stim, self.nc
+
+    def _setup_recording_vectors(self, p, geo, syns, nc):
         ''' set up recording vectors for simulation
         ===Args===
-        -locations : list of tuples [(tree, sec, seg)]
-        -variables :list of variables to record [(variable, variable type, mechanism)]
+        -p : global parameter dictionary, must contain:
+        -----rec_idx : list of tuples [(tree, sec, seg)]
+        -----rec_variables :list of variables to record [(variable, variable type, mechanism)]
         -geometry : geo structure
 
         ===Out===
         -rec : dictionary of recorded variables
+                -rec{data{variable}, location, t, p}
+                    -if variable is 'input_times', data is a list of 1d arrays containing input times for each burst in each synapse (there can be multiple repeats for each synapse location and each array can be different length depending on the input to each synapse)
+                -t and p are single entries, not lists.  They should be the same for all segments
+                -location is a list of all recorded segments as [(tree, section, segment)], specified by p['rec_idx']
+                -data{variable} is a list of hoc recording vectors 
 
         ===Updates===
         -hoc recording vectors are created for each segment specified in locations
+
+        ==Comments==
+        -for the 'input_times' variable, a list of the corresponding synapse type (eg ampa, nmda) is kept in rec{variable}{'syn_types'}
+        -note that each locations list can contain redundant entries due to synapses occuring in multiple pathways
         '''
+        print 'setting up recording vectors'
+        rec={}
+        for variable, variable_type, mechanism in p['rec_variables']:
+            if variable=='t':
+                continue
+            if variable not in rec:
+                
+                rec[variable]={
+                'data':[],
+                'locations':[],
+                'p':p,
+                't':h.Vector()}
+                # record time
+                rec[variable]['t'].record(h._ref_t)
 
-        rec = {}
-        for variable, variable_type, mechanism in variables:
-            
-            rec[variable] = {'data':[],
-            'location':[],
-            'p':p}
+                if variable == 'input_times':
+                    rec[variable]['syn_types']=[]
 
-            for location_i, location in enumnerate(locations):
-
+            #iterate over locations to record from
+            for location_i, location in enumerate(p['rec_idx']):
                 tree_key,sec_num,seg_num = location
                 seg_loc = float(seg_num+1)/(geo[tree_key][sec_num].nseg+1)
-                
-                if variable_type == 'range' and  variable in dir(geo[tree_key][sec_num](seg_loc)):
+
+                if variable_type == 'range' and  mechanism in dir(geo[tree_key][sec_num](seg_loc)):
 
                     # point to variable for recording
                     var_rec = getattr(geo[tree_key][sec_num](seg_loc), '_ref_'+variable)
@@ -156,222 +163,160 @@ class Run():
                     # create recording vector
                     rec[variable]['data'].append(h.Vector())
                     rec[variable]['data'][-1].record(var_rec)
-
-                    rec[variable]['conditions']['p'].append(p)
-                    rec[variable]['conditions']['location'].append(location)
+                    rec[variable]['locations'].append(location)
 
                 if variable_type == 'syn' and mechanism in syns[tree_key][sec_num][seg_num].keys() and  variable in dir(syns[tree_key][sec_num][seg_num][mechanism]): 
                                 
                     # point to variable to record
-                    var_rec = getattr(syns[tree_key][sec_num][seg_num][var_dic['syn']], '_ref_'+var_key)
+                    var_rec = getattr(syns[tree_key][sec_num][seg_num][mechanism], '_ref_'+variable)
 
                     # create recording vector
                     rec[variable]['data'].append(h.Vector())
                     rec[variable]['data'][-1].record(var_rec)
+                    rec[variable]['locations'].append(location)
 
-                    rec[variable]['p'].append(p)
-                    rec[variable]['location'].append(location)
+                # synapse input times
+                if variable== 'input_times' and variable_type == 'syn':
+
+                    # iterate over synapse pathways
+                    for path_key, path in p['p_path'].iteritems():
+
+                        # if the current location is in the current pathway
+                        if location in path['syn_idx']:
+
+                            # get index of the location in the pathway
+                            seg_i = path['syn_idx'].index(location)
+
+                            # iterate over bursts 
+                            for burst_i, burst in enumerate(nc[path_key][seg_i][mechanism]):
+                                
+                                # add recording vector
+                                rec[variable]['data'].append(h.Vector())
+
+                                # set recording from netcon object
+                                nc[path_key][seg_i][mechanism][burst_i].record(rec[variable]['data'][-1])
+                                
+                                # add location
+                                rec[variable]['locations'].append(location)
+                                
+                                # add synapse type
+                                rec[variable]['syn_types'].append(mechanism)
 
         return rec
-
-    def recording_vectors(self, p):
-        ''' set up re
-        '''
-        # set up recording vectors
-        self.rec= {}
-        print 'setting up recording vectors'
-        for path_key, path in p['p_path'].iteritems():
-            self.rec[path_key]={}
-            seg_idx= copy.copy(path['seg_idx'])
-            sec_idx= copy.copy(path['sec_idx'])
-            sec_idx['soma']=[]
-            seg_idx['soma']=[]
-            sec_idx['axon']=[]
-            seg_idx['axon']=[]
-            for sec_i, sec in enumerate(p['seg_dist']['soma']):
-                sec_idx['soma'].append(sec_i)
-                seg_idx['soma'].append([])
-                for seg_i, seg in enumerate(sec):
-                    seg_idx['soma'][sec_i].append(seg_i)
-            for sec_i, sec in enumerate(p['seg_dist']['axon']):
-                sec_idx['axon'].append(sec_i)
-                seg_idx['axon'].append([])
-                for seg_i, seg in enumerate(sec):
-                    seg_idx['axon'][sec_i].append(seg_i)
-
-            # loop over trees
-            for tree_key, tree in seg_idx.iteritems():
-
-                if tree_key in self.cell1.geo:
-                
-                    # iterate over variables to record
-                    for var_key, var_dic in p['record_variables'].iteritems():
-
-                        # FIXME 
-                            # do not create recording vector if section does not have variable
-                        # create entry for each variable
-                        self.rec[path_key][tree_key+'_'+var_key] = []
-                    
-                        # loop over sections
-                        for sec_i,sec in enumerate(tree):
-                            
-                            # section number
-                            sec_num = sec_idx[tree_key][sec_i]
-                            
-                            # add list for each section
-                            self.rec[path_key][tree_key+'_'+var_key].append([])
-                            
-                            # loop over segments
-                            for seg_i,seg in enumerate(sec):
-                                
-                                # determine relative segment location in (0-1) 
-                                seg_loc = float(seg+1)/(self.cell1.geo[tree_key][sec_num].nseg+1)
-
-                                # if variable occurs in a synapse object
-                                if 'syn' in var_dic:
-
-                                    # check if synapse type exists in this segment
-                                    if var_dic['syn'] in self.cell1.syns[tree_key][sec_num][seg].keys():
-
-                                        # if the desired variable exists in the corresponding synapse
-                                        if var_key in dir(self.cell1.syns[tree_key][sec_num][seg][var_dic['syn']]): 
-                                            
-                                            # point to variable to record
-                                            var_rec = getattr(self.cell1.syns[tree_key][sec_num][seg][var_dic['syn']], '_ref_'+var_key)
-
-                                            # create recording vector
-                                            self.rec[path_key][tree_key+'_'+var_key][sec_i].append(h.Vector())
-
-                                            # record variable
-                                            self.rec[path_key][tree_key+'_'+var_key][sec_i][seg_i].record(var_rec)
-
-                                        # append empty vector to hold place and check if data variable exists
-                                        else: 
-                                            self.rec[path_key][tree_key+'_'+var_key][sec_i].append([])
-                                    else:
-                                        self.rec[path_key][tree_key+'_'+var_key][sec_i].append([])
-
-
-                                # if variable is a range variable
-                                if 'range' in var_dic:
-                                    
-                                    # if variable belongs to a range mechanism that exists in this section
-                                    if var_dic['range'] in dir(self.cell1.geo[tree_key][sec_num](seg_loc)):
-                                        
-                                        # point to variable for recording
-                                        var_rec = getattr(self.cell1.geo[tree_key][sec_num](seg_loc), '_ref_'+var_key)
-                                        
-                                        # create recording vector
-                                        self.rec[path_key][tree_key+'_'+var_key][sec_i].append(h.Vector())
-                                        
-                                        # record variable
-                                        self.rec[path_key][tree_key+'_'+var_key][sec_i][seg_i].record(var_rec)
-                                    else:
-                                        # create recording vector
-                                        self.rec[path_key][tree_key+'_'+var_key][sec_i].append([])
-
-
-            # create time vector
-            self.rec[path_key]['t'] = h.Vector()
-            
-            # record time
-            self.rec[path_key]['t'].record(h._ref_t)
-
+    
     def _run_sims(self, p, rec):
-        '''
-        '''
-        # insert extracellular field
-        dcs = stims.DCS(cell=0, field_angle=p['field_angle'], intensity=p['field'], field_on=p['field_on'], field_off=p['field_off'])
-
-        # run time
-        h.dt = p['dt']
-        h.tstop = p['tstop']
-        h.celsius= p['celsius']
-
-        # h.finitialize()
-        print 'running simulation:', f_i+1, 'of', len(p['field'])
-        # initialize voltage
-        h.v_init=p['v_init'] # v_init is an object created in h when stdrun.hoc is called
-        h.run()
-        print 'simulation finished'
-
-        data = copy.copy(rec)
-
-        # convert data to numpy array
-        for variable in data:
-            data[variable]['data'] = np.array(data[variable]['data'])
-
+        ''' run simulations, grouping simulations with different applied electric fields
         
-    def run_sims(self,p):
-        # data organized as {'polarity'}{'path number'}{'tree_variable'}[section][segment][data vector]
-        
-        # loop over dcs fields
-        self.data={'p':p}
-        for f_i,f in enumerate(p['field']):
+        ==Args==
+        -p : global parameter dictionary
+        -rec : structure containing hoc recording vectors for segments that are specified by p['rec_idx']
+                    -rec{variable}{data, location, field, t, p,}[segment number]
+                    -t and p are single entries, not lists.  They should be the same for all segments
 
-            # add dimension for each DCS polarity
-            self.data[str(f)] = {}
-            
+        ==Out==
+        -rec : dictionary of recorded variables
+                -data{data{variable}, location, field, t, p}
+                    -data{variable} : segments x samples array of time series data for the specified variable.  First dimension matches location and field lists
+                            -if variable is input_times, data is a list of 1d arrays containing input times for each burst in each synapse (there can be multiple repeats for each synapse location and each array can be different length depending on the input to each synapse)
+                    -location : list of recorded segment locations as [(tree, section, segment)]
+                    -field : list of field polarities/intensities (negative:cathodal/soma hyperpolarizing, positive:anodal/soma depolarizing) 
+                    -t : 1D array of time vector that is shared for simulations in group
+                    -p : single parameter dictionary for all simulations in group
+
+        ==Updates==
+        ==Comments==
+        -For repeated simulations, hoc recording vectors are overwritten.  To save the data for each simulation, the hoc vectors are copied from the structure rec to the structure data as np arrays
+        -for the 'input_times' variable, a list of the corresponding synapse type (eg ampa, nmda) is kept in rec{variable}{'syn_types'}
+        -note that each locations list can contain redundant entries due to synapses occuring in multiple pathways
+        -
+        '''
+
+        nsamples = int(p['tstop']/p['dt'])+1
+        data={}
+        # preallocate data arrays?
+        for variable_key, variable in rec.iteritems():
+            if variable_key not in data:
+
+                data[variable_key]={
+                'data':np.zeros( (len(p['field'])*len(variable['data']),nsamples)),
+                'locations':[],
+                'field':[],
+                'trial_id':[],
+                'p':variable['p'],
+                't':variable['t']
+                }
+
+        # iterate over field polarities/intensities
+        for field_i, field in enumerate(p['field']):
+
             # insert extracellular field
-            dcs = stims.DCS(cell=0, field_angle=p['field_angle'], intensity=f, field_on=p['field_on'], field_off=p['field_off'])
+            dcs = stims.DCS(cell=0, field_angle=p['field_angle'], intensity=field, field_on=p['field_on'], field_off=p['field_off'],)
+
+            if 'ac_field' in p:
+                acs = stims.ACS(cell=0, p=p)
 
             # run time
             h.dt = p['dt']
             h.tstop = p['tstop']
             h.celsius= p['celsius']
 
-            # h.finitialize()
-            print 'running simulation:', f_i+1, 'of', len(p['field'])
+            # load standard run environment
+            
+            print 'running simulation, electric field:', field
+            
             # initialize voltage
             h.v_init=p['v_init'] # v_init is an object created in h when stdrun.hoc is called
+            
+            # run simulation
             h.run()
             print 'simulation finished'
 
-            for path_key, path in self.rec.iteritems():
-                self.data[str(f)][path_key] = {}
+            
+            for variable_key, variable in rec.iteritems():
 
-                # store recording vectors as arrays
-                # loop over trees
-                for tree_key,tree in path.iteritems():
-                    
-                    # add list for each field polarity
-                    self.data[str(f)][path_key][tree_key]=[]
+                # handle input times for each synapse. note each list entry can have a different number of input times
+                if variable_key == 'input_times':
+                    if not isinstance(data[variable_key]['data'],list):
+                        data[variable_key]['data']=[]
+                    if 'syn_types' not in data[variable_key]:
+                        data[variable_key]['syn_types']=[]
+                    for loc_i, loc in enumerate(variable['data']):
+                        # print loc
+                        data[variable_key]['data'].append(np.array(loc))
+                    data[variable_key]['field'] += [field for seg_i in variable['locations']] 
+                    data[variable_key]['trial_id'] += [p['trial_id'] for seg_i in variable['locations']]
+                    data[variable_key]['locations'] += copy.copy(variable['locations'])
+                    data[variable_key]['syn_types']+=copy.copy(variable['syn_types'])
+                    data[variable_key]['t'] = np.asarray(data[variable_key]['t'])
+                else:
+                    nseg = len(variable['locations'])
+                    data[variable_key]['data'][field_i*nseg:(field_i+1)*nseg, :] = np.array(variable['data'])
 
-                    if tree_key != 't':
+                    data[variable_key]['field'] += [field for seg_i in variable['locations']] 
+                    data[variable_key]['trial_id'] += [p['trial_id'] for seg_i in variable['locations']]
+                    data[variable_key]['locations'] += copy.copy(variable['locations'])
+                    data[variable_key]['t'] = np.asarray(data[variable_key]['t'])
 
-                        # loop over sections
-                        for sec_i,sec in enumerate(tree):
 
-                            self.data[str(f)][path_key][tree_key].append([])
-                            
-                            # loop over segments
-                            for seg_i,seg in enumerate(sec):
-
-                                self.data[str(f)][path_key][tree_key][sec_i].append(np.array(self.rec[path_key][tree_key][sec_i][seg_i]))
-
-                self.data[str(f)][path_key]['t'] = np.array(path['t'])
-
-        # clear synapses for repeated simulations
-        self.nc=[]
-
-def save_data(data, file_name): # save data
-    p = data['p']
-    # delete cell hoc object (can't be pickled)
-    if p['cell']:
-        p['cell']=[]
-    # check if folder exists with experiment name
+        return data
     
-    if os.path.isdir(p['data_folder']) is False:
-        print 'making new directory to save data'
-        os.mkdir(p['data_folder'])
+    def _save_data(self, data, file_name): # save data
+        '''
+        '''
 
-    with open(p['data_folder']+'data_'+
-        file_name+
-        '.pkl', 'wb') as output:
-        print 'saving data'
-        pickle.dump(data, output,protocol=pickle.HIGHEST_PROTOCOL)
+        p = data.values()[0]['p']
+        
+        # check if folder exists with experiment name
+        if os.path.isdir(p['data_folder']) is False:
+            print 'making new directory to save data'
+            os.mkdir(p['data_folder'])
+
+        # save data as pickle file
+        with open(p['data_folder']+file_name+'.pkl', 'wb') as output:
+            
+            print 'saving data'
+            pickle.dump(data, output,protocol=pickle.HIGHEST_PROTOCOL)
 
 # procedures to be initialized if called as a script
 if __name__ =="__main__":
-    plot_sections(None,None)
-
+    pass

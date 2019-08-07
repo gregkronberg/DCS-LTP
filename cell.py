@@ -2,8 +2,6 @@
 create cells and activate subsets of synapses
 """
 # imports
-# from mpi4py import MPI
-# import multiprocessing 
 import numpy as np
 import matplotlib.pyplot as plt
 from neuron import h
@@ -263,16 +261,27 @@ class CellMigliore2005:
     
     """
     def __init__(self,p):
-        # initialize geometry
-        # self.geometry(p)
-        # insert membrane mechanisms
-        # self.mechanisms(p)
+        '''
+        '''
         pass
 
     def geometry(self,p):
-        """ create cell geometry at hoc top level
+        '''create cell geometry at hoc top level
+        ===Args===
+        -p : parameter dictionary
         
-        """
+        ===Out===
+        -geo : geometry structure containing hoc section objects
+                -geo{tree}[section][segment]
+        -syns : structure containing synapse objects
+                -syns{tree}[section][segment]{synapse type}
+                -synapse types include ampa, nmda, clopath
+        
+        ===Updates===
+        -hoc objects are created based on the geometry in the loaded hoc file
+        
+        ===Comments===
+        '''
         print 'loading cell geometry:', self.__class__.__name__
         # load cell geometry into hoc interpreter
         h.load_file('geo5038804.hoc')  
@@ -295,28 +304,38 @@ class CellMigliore2005:
         # set soma as origin for distance measurements
         h.distance(sec = self.geo['soma'][0])
 
-    def mechanisms(self,p):
-        """ insert membrane mechanisms
+        return self.geo, self.syns
 
+    def mechanisms(self,p):
+        """ insert membrane mechanisms into cell geometry
+        
+        ==Args==
+        -p : parameter dictionary
+
+        ==Out==
+        -geo : geometry structure containing hoc section objects
+                -geo{tree}[section][segment].mechanism
+        -syns : structure of containing synapse mechanisms
+                -syns{tree}[section][segment]{synapse type}
+        ==Updates==
+        -range mechanisms and their parameters are updated according to the parameters in p
+        ==Comments==
         self.syns is updated to store an object for each synapse.  It is organized as ['tree']['synapse type'][section][segment].  Note that the last index will depend on how the cell is discretized as the number segments changes in each sections 
 
         the parameters for each membrane mechanism  are store in a dictionary called p.  See the param module for details.
         """
-        print 'loading cell mechanisms'
+        print 'loading cell range mechanisms'
+        
         # loop over trees
         for tree_key,tree in self.geo.iteritems():
             
-            # create sub-dictionary for different types of synapses
+            # list to store synapse mechanisms
             self.syns[tree_key] = []
-            # {
-            # 'ampa' : [],
-            # 'nmda' : [],
-            # 'clopath' : []
-            # }
 
-            # loop over sections
+            # loop over sections in tree
             for sec_i,sec in enumerate(tree):
-                # add list to store synapses for each section
+                
+                # add dimension for each section
                 self.syns[tree_key].append([])
 
                 # common passive biophysics for all sections
@@ -330,8 +349,6 @@ class CellMigliore2005:
                 # axial resistance (ohm cm)         
                 sec.Ra = p['RaAll'] 
                                         
-
-
                 # axon active bipophysics
                 if tree_key == 'axon':
                     # voltage gated sodium
@@ -352,7 +369,8 @@ class CellMigliore2005:
                     sec.ek = p['ek']
                     sec.Ra = p['RaAx']
 
-                    for seg_i,seg in enumerate(sec):
+
+                    for seg_i, seg in enumerate(sec):
                         self.syns[tree_key][sec_i].append({})
                     
                 # soma active biophysics
@@ -435,8 +453,8 @@ class CellMigliore2005:
                         'clopath':[]})
 
                         for syn_key,syn in self.syns[tree_key][sec_i][seg_i].iteritems():
+                            
                             if syn_key is 'ampa':
-                                # print syn_key
                                 
                                 # adapting exponential synapse based on model in Varela et al. 1997
                                 self.syns[tree_key][sec_i][seg_i][syn_key] = h.FDSExp2Syn_D3(sec(seg.x))
@@ -497,6 +515,57 @@ class CellMigliore2005:
                             seg.vhalfl_kap = p['vhalfl_kap']
                             seg.vhalfn_kap = p['vhalfn_kap']
                             seg.gkabar_kap = p['KMULTP']*(1+p['ka_grad']*seg_dist/100.)
+
+    def _activate_synapses(self, p, stim, syns):
+        '''
+        ==Args==
+        -p : parameter dictionary
+                -must contain p['syn_idx'], a zipped list of tuples
+
+        -stim  : nested list of stim objects
+                -[segment][burst], with the first index matching entries in p['syn_idx']
+
+        -syns  : structure containing synapse objects
+                -syns{tree}[section][segment]{synapse type}
+                -synapse types include ampa, nmda, clopath
+        ==Out==
+        -nc    : structure containing hoc NetCon objects
+                -nc[segment]{synapse type}[burst number]
+                -segment index matches p['syn_idx']
+        ==Updates==
+        -NetCon objects are created
+
+        ==Comments==
+        '''
+
+        # for storing NetCon objects nc[segment]{synapse type}[burst number]
+        self.nc = []
+
+        # iterate over segments to be activated
+        for seg_i, seg in enumerate(p['syn_idx']):
+
+            # add dimension for segments
+            self.nc.append({})
+
+            # get segment location info
+            tree, sec_num, seg_num = seg
+
+            # iterate over synapse types
+            for syntype_key,syntype in syns[tree][sec_num][seg_num].iteritems():
+
+                # create list for storing NetCon objects, one for each burst in stim
+                self.nc[seg_i][syntype_key]=[]
+
+                # iterate over bursts in stim
+                for burst_i, burst in enumerate(stim[seg_i]):
+
+                    # create netcon object
+                    netcon = h.NetCon(burst, syntype, 0, 0, p['w_idx'][seg_i])
+
+                    # add netcon object to list
+                    self.nc[seg_i][syntype_key].append(netcon)
+
+        return self.nc
 
     def set_branch_nseg(self, geo, sec_idx, seg_L):
         """ set number of segments for branch that was selected to activate synapses

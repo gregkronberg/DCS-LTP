@@ -137,7 +137,11 @@ def _four_compartment():
     # voltage dynamics for each comparment
     #````````````````````````````````````````````````````````````````````
     eqs_compartment = '''
-    du/dt = int(not_refractory)*(I_L + I_exp + I_axial + I_syn + I_field)/C  + ((t-lastspike)<spike_hold_time2)*((t-lastspike)>spike_hold_time)*(1-int(not_refractory))*(reset-u)/t_reset + ((t-lastspike)>spike_hold_time2)*(1-int(not_refractory))*(I_L + I_exp + I_axial + I_syn + I_field)/C  : volt 
+    du/dt = int(not_refractory)*(I_L + I_exp + I_axial + I_syn + I_field)/C  
+
+        + ((t-lastspike)<spike_hold_time2)*((t-lastspike)>spike_hold_time)*(1-int(not_refractory))*(reset-u)/t_reset 
+
+        + ((t-lastspike)>spike_hold_time2)*(1-int(not_refractory))*(I_L + I_exp + I_axial + I_syn + I_field)/C  : volt 
 
     # du/dt = int(not_refractory)*(I_L + I_exp + I_axial + I_syn +I_field)/C  + ((t-lastspike)>spike_hold_time)*(1-int(not_refractory))*(reset-u)/t_reset : volt
 

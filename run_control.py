@@ -1,5 +1,3 @@
-
-
 """
 run control
 """
@@ -9,13 +7,8 @@ from mpi4py import MPI
 from neuron import h
 import numpy as np
 import matplotlib.pyplot as plt
-# import matplotlib.gridspec as gridspec
-# import cell
-# import itertools as it
-# import stims
-# import pickle
 import param
-import cell
+import neurons
 import run
 import time
 import uuid
@@ -23,14 +16,15 @@ import analysis
 import sys
 import copy
 import pickle
-import analysis_experiments as ae
-
-h.load_file("stdrun.hoc")
+import stims
+import datetime
+import itertools
 
 # 
 class Experiment:
     """ Impliment experimental procedures.  
     """
+    
     def __init__(self, **kwargs):
         """ choose experiment to run
 
@@ -44,2256 +38,1594 @@ class Experiment:
 
             # run experiment
             experiment(**kwargs) 
-    #%%
-    def quick_run(self, **kwargs):
-        """ Activate a single pathway with a single TBS burst at varying distance from soma: 0-300, 100-400, 200-500, 300-600, 0-200, 100-300, 200-400, 300-500, 400-600
 
-        6, 8, 10, 12 synapses are randomly distributed within these distance ranges with conductance 0.0015 uS/cm2.  This is chosen to be close to threshold by empirical testing
         """
-        p_update = {
-        'experiment' : kwargs['experiment'], 
-        'trials' : 1,
-        'field':[0.],
-        'plot_variables':['v','gbar','ica_calH', 'ina_na3', 'ina_naxn'],
-        'path_combo':['1'],
-        'clopath_A_m':3E-5, # depression magnitude parameter (mV^-1)
-        'clopath_tetam':-70,#-41, # depression threshold (mV)
-        'clopath_tetap':-65,#-38, # potentiation threshold (mV)
-        'clopath_tau_r':8,#-38, # potentiation threshold (mV)
-        'clopath_tau_0':30,#-38, # potentiation threshold (mV)
-        'clopath_tau_y': 5, # time constant (ms) for low pass filter post membrane potential for potentiation
-        'clopath_A_p': 38E-5, # amplitude for potentiation (mV^-2)
-        }
-
-        # set up synaptic pathway parameters
-        paths_update = {'1':{
-        'trees': ['apical_tuft','apical_trunk'],
-        'syn_num': 1,
-        'nsyns': 1.,
-        'syn_dist': [0,200],
-        'pulses': 4.,
-        'pulse_freq': 100.,
-        'bursts': 1.,
-        'burst_freq': 5.,
-        'warmup': 50,
-        'w_mean': .0015,
-        }}
-
-        # setup cell and updated parameter structures
-        P, cell1 = setup_parameters(
-            default_p='migliore_2005',
-            cell_class='CellMigliore2005',
-            p_update=p_update,
-            paths_update=paths_update,)
-
-        # iterate over trials
-        for trial_i, trial in enumerate(range(P.p['trials'])):
-
-            # create list of active synapses, weights, delays
-            # stored in P.p['seg_idx', 'w_list', 'sequence_delays'], 
-            update_synapse_parameters(P, P.p, P.paths, cell1)
-
-            # store trial number
-            P.p['trial']=trial
-                            
-            # create unique identifier for each trial
-            P.p['trial_id'] = str(uuid.uuid4())
-                            
-            # start timer
-            start = time.time() 
-            
-            # run simulation
-            sim = run.Run(p=P.p, cell=cell1) 
-
-            # end timer
-            end = time.time() 
-
-            # print trial and simulation time
-            print 'trial'+ str(P.p['trial']) + ' duration:' + str(end -start) 
-            
-            # set file name to save data
-            file_name = str(
-            P.p['experiment']+
-            '_trial_'+str(P.p['trial'])+
-            '_dist_'+str(P.p['p_path']['1']['syn_dist'])+
-            '_id_'+P.p['trial_id']
-            )
-
-            # save data for eahc trial
-            run.save_data(data=sim.data, file_name=file_name)
-
-            # data organized as {'polarity'}{'path number'}{'tree_variable'}[section][segment][data vector]
-            plt.figure()
-            plt.plot(sim.data['0.0']['1']['soma_v'][0][0])
-            plt.show()
-            # plot traces
-            analysis.PlotRangeVar().plot_trace(
-                data=sim.data, 
-                variables=P.p['plot_variables'],
-                x_variables=P.p['x_variables'],
-                file_name=file_name,
-                group_trees=P.p['group_trees'],
-                xlim=[0,P.p['tstop']],
-                 ylim=[-75,-40])
-
-    """
-    EXPERIMENT 1
-    Distance dependence of DCS effects
-    """
+        EXPERIMENT 1
+        Distance and synapse number dependence of DCS effects
+        """
+    
     def exp_1a1(self, **kwargs):
         """ Activate a single pathway with a single TBS burst at varying distance from soma: 0-300, 100-400, 200-500, 300-600, 0-200, 100-300, 200-400, 300-500, 400-600
 
-        6, 8, 10, 12 synapses are randomly distributed within these distance ranges with conductance 0.0015 uS/cm2.  This is chosen to be close to threshold by empirical testing
+        6, 8, 10, 12, 16,20 synapses are randomly distributed within these distance ranges with conductance 0.001 uS/cm2.  This is chosen to be close to threshold by empirical testing
+        
+        ==Args==
+        -experiment : string containing the name of the experiment, eg 'exp_1a1'
+        -trials :  integer number of trials to run
+        -syn_dist :  list, or nested list, containing synapse distance requirements for choose_seg_rand. eg [0, 200] chooses synapses between 0 and 200 um from soma
+        -syn_num :  list of number of synapses to be activated. note that synapses are chosen randomly with replacement, so the same synapse can be selected multiple times.  In this case the weight is multiplied by the number of times the synapse is selected
         """
+
+        # updates to global parameter dictionary 
         p_update = {
         'experiment' : kwargs['experiment'], 
         'trials' : kwargs['trials'],
         'field':[-20.,0.,20.],
-        'plot_variables':['v','gbar'],
-        'path_combo':['1'],
-        'clopath_A_m':3E-5, # depression magnitude parameter (mV^-1)
-        'clopath_tetam':-70,#-41, # depression threshold (mV)
-        'clopath_tetap':-65,#-38, # potentiation threshold (mV)
-        'clopath_tau_r':8,#-38, # potentiation threshold (mV)
-        'clopath_tau_0':30,#-38, # potentiation threshold (mV)
-        'clopath_tau_y': 5, # time constant (ms) for low pass filter post membrane potential for potentiation
-        'clopath_A_p': 38E-5, # amplitude for potentiation (mV^-2)
+        'rec_variables':[('v','range','v'),('input_times','syn','ampa'),('ica_calH','range','calH'), ('i','syn','nmda')],
+        'active_paths':['1',],
+        'gcalbar': 1.*.00125 ,          # L-type calcium conductance from Kim et al. 2015 (mho/cm2)
         }
 
         # set up synaptic pathway parameters
         paths_update = {'1':{
         'trees': ['apical_tuft','apical_trunk'],
-        'syn_num': 12,
+        'syn_num': 0,
         'nsyns': 1.,
         'syn_dist': kwargs['syn_dist'],
         'pulses': 4.,
         'pulse_freq': 100.,
         'bursts': 1.,
         'burst_freq': 5.,
+        'warmup': 10,
+        'w_mean': 1*.001,
+        'w_std':0.,
+        'w_rand':False,
+        'replace_syn':True,
+        'syn_frac':0.,
+        'noise':0,
+        },}
+
+        # setup cell and updated parameter structures
+        self.P, self.cell = self._standard_parameter_setup(
+            default_p='migliore_2005',
+            cell_class='CellMigliore2005',
+            p_update=p_update,
+            paths_update=paths_update,
+            load_fd=True)
+
+        # iterate over synapse number 
+        for syn_num in kwargs['syn_num']:
+            # update parameter dictionary
+            self.P.paths['1']['syn_num']=syn_num
+
+            # iterate over trials
+            for trial_i, trial in enumerate(range(self.P.p['trials'])):
+
+                # create list of active synapses, weights, delays
+                # stored in P.p['seg_idx', 'w_list', 'sequence_delays'], 
+                self.P = self._update_synapse_parameters(P=self.P, cell=self.cell, method='_choose_seg_rand')
+
+                self.run_obj = self._standard_run_and_save(P=self.P, cell=self.cell, trial=trial)
+
+    def exp_1a1_nablock(self, **kwargs):
+        """ repeat experiment 1a1 with sodium channels block in soma and axon
+
+        Activate a single pathway with a single TBS burst at varying distance from soma: 0-300, 100-400, 200-500, 300-600, 0-200, 100-300, 200-400, 300-500, 400-600
+
+        6, 8, 10, 12, 16,20 synapses are randomly distributed within these distance ranges with conductance 0.0015 uS/cm2.  This is chosen to be close to threshold by empirical testing
+        
+        ==Args==
+        -experiment : string containing the name of the experiment, eg 'exp_1a1'
+        -trials :  integer number of trials to run
+        -syn_dist :  list, or nested list, containing synapse distance requirements for choose_seg_rand. eg [0, 200] chooses synapses between 0 and 200 um from soma
+        -syn_num :  list of number of synapses to be activated. note that synapses are chosen randomly with replacement, so the same synapse can be selected multiple times.  In this case the weight is multiplied by the number of times the synapse is selected
+        """
+
+        # updates to global parameter dictionary 
+        p_update = {
+        'experiment' : kwargs['experiment'], 
+        'trials' : kwargs['trials'],
+        'field':[-20.,0.,20.],
+        'rec_variables':[('v','range','v'),('input_times','syn','ampa'),('ica_calH','range','calH'), ('i','syn','nmda')],
+        'active_paths':['1',],
+        'gcalbar': 1.*.00125 ,          # L-type calcium conductance from Kim et al. 2015 (mho/cm2)
+        }
+
+        # set up synaptic pathway parameters
+        paths_update = {'1':{
+        'trees': ['apical_tuft','apical_trunk'],
+        'syn_num': 0,
+        'nsyns': 1.,
+        'syn_dist': kwargs['syn_dist'],
+        'pulses': 4.,
+        'pulse_freq': 100.,
+        'bursts': 1.,
+        'burst_freq': 5.,
+        'warmup': 10,
+        'w_mean': 1*.001,
+        'w_std':0.,
+        'w_rand':False,
+        'replace_syn':True,
+        'syn_frac':0.,
+        'noise':0,
+        },}
+
+        # setup cell and updated parameter structures
+        self.P, self.cell = self._standard_parameter_setup(
+            default_p='migliore_2005',
+            cell_class='CellMigliore2005',
+            p_update=p_update,
+            paths_update=paths_update,
+            load_fd=True)
+
+        # iterate over synapse number 
+        for syn_num in kwargs['syn_num']:
+            # update parameter dictionary
+            self.P.paths['1']['syn_num']=syn_num
+
+            # iterate over trials
+            for trial_i, trial in enumerate(range(self.P.p['trials'])):
+
+                # create list of active synapses, weights, delays
+                # stored in P.p['seg_idx', 'w_list', 'sequence_delays'], 
+                self.P = self._update_synapse_parameters(P=self.P, cell=self.cell, method='_choose_seg_rand')
+
+                # set sodium conductnace to zero in soma and axon
+                for tree_key, tree in self.cell.geo.iteritems():
+                    if tree_key=='soma':
+                        for sec_i, sec in enumerate(tree):
+                            sec.gbar_na3=0.
+                    if tree_key=='axon':
+                        for sec_i, sec in enumerate(tree):
+                            sec.gbar_nax=0.       
+
+                self.run_obj = self._standard_run_and_save(P=self.P, cell=self.cell, trial=trial)
+
+    def exp_1a_dose(self, **kwargs):
+        ''' repeat experiment 1a1 with varying electric field intensity
+
+        6,8,10,12,14 synapses at .001 uS per synapse, distributed evenly between 0 and 300 um from soma
+        '''
+        # updates to global parameter dictionary 
+        p_update = {
+        'experiment' : kwargs['experiment'], 
+        'trials' : kwargs['trials'],
+        'field':[-20.,-15, -10, -5.,-2, -1., -0.5, 0., 0.5, 1.,2., 5.,10., 15., 20.],
+        # 'field':[-20.,-5., -1., -0.5, 0., 0.5, 1., 5., 20.],
+        'rec_variables':[('v','range','v'),('input_times','syn','ampa'),],
+        'active_paths':['1',],
+        'gcalbar': 1.*.00125 ,          # L-type calcium conductance from Kim et al. 2015 (mho/cm2)
+        }
+
+        # set up synaptic pathway parameters
+        paths_update = {'1':{
+        'trees': ['apical_tuft','apical_trunk'],
+        'syn_num': 0,
+        'nsyns': 1.,
+        'syn_dist': kwargs['syn_dist'],
+        'pulses': 4.,
+        'pulse_freq': 100.,
+        'bursts': 1.,
+        'burst_freq': 5.,
+        'warmup': 10,
+        'w_mean': 1*.001,
+        'w_std':0.,
+        'w_rand':False,
+        'replace_syn':True,
+        'syn_frac':0.,
+        'noise':0,
+        },}
+
+        # setup cell and updated parameter structures
+        self.P, self.cell = self._standard_parameter_setup(
+            default_p='migliore_2005',
+            cell_class='CellMigliore2005',
+            p_update=p_update,
+            paths_update=paths_update,
+            load_fd=True)
+
+        # iterate over synapse number 
+        for syn_num in kwargs['syn_num']:
+            # update parameter dictionary
+            self.P.paths['1']['syn_num']=syn_num
+
+            # iterate over trials
+            for trial_i, trial in enumerate(range(self.P.p['trials'])):
+
+                # create list of active synapses, weights, delays
+                # stored in P.p['seg_idx', 'w_list', 'sequence_delays'], 
+                self.P = self._update_synapse_parameters(P=self.P, cell=self.cell, method='_choose_seg_rand')
+
+                self.run_obj = self._standard_run_and_save(P=self.P, cell=self.cell, trial=trial)
+
+    def exp_1a_basal(self, **kwargs):
+        ''' repeat experiment 1a1 with varying electric field intensity
+
+        6,8,10,12,14 synapses at .001 uS per synapse, distributed evenly between 0 and 300 um from soma
+        '''
+        # updates to global parameter dictionary 
+        p_update = {
+        'experiment' : kwargs['experiment'], 
+        'trials' : kwargs['trials'],
+        'field':[-20., 0., 20.],
+        'rec_variables':[('v','range','v'),('input_times','syn','ampa'),],
+        'active_paths':['1',],
+        'gcalbar': 1.*.00125 ,          # L-type calcium conductance from Kim et al. 2015 (mho/cm2)
+        }
+
+        # set up synaptic pathway parameters
+        paths_update = {'1':{
+        'trees': ['basal'],
+        'syn_num': 0,
+        'nsyns': 1.,
+        'syn_dist': kwargs['syn_dist'],
+        'pulses': 4.,
+        'pulse_freq': 100.,
+        'bursts': 1.,
+        'burst_freq': 5.,
+        'warmup': 10,
+        'w_mean': 1*.001,
+        'w_std':0.,
+        'w_rand':False,
+        'replace_syn':True,
+        'syn_frac':0.,
+        'noise':0,
+        },}
+
+        # setup cell and updated parameter structures
+        self.P, self.cell = self._standard_parameter_setup(
+            default_p='migliore_2005',
+            cell_class='CellMigliore2005',
+            p_update=p_update,
+            paths_update=paths_update,
+            load_fd=True)
+
+        # iterate over synapse number 
+        for syn_num in kwargs['syn_num']:
+            # update parameter dictionary
+            self.P.paths['1']['syn_num']=syn_num
+
+            # iterate over trials
+            for trial_i, trial in enumerate(range(self.P.p['trials'])):
+
+                # create list of active synapses, weights, delays
+                # stored in P.p['seg_idx', 'w_list', 'sequence_delays'], 
+                self.P = self._update_synapse_parameters(P=self.P, cell=self.cell, method='_choose_seg_rand')
+                # increase simulation duration
+                self.P.p['tstop']=100
+                self.P.p['field_off']=self.P.p['tstop']
+
+                self.run_obj = self._standard_run_and_save(P=self.P, cell=self.cell, trial=trial)
+
+    def exp_1a_apical(self, **kwargs):
+        ''' repeat experiment 1a1 with varying electric field intensity
+
+        6,8,10,12,14 synapses at .001 uS per synapse, distributed evenly between 0 and 300 um from soma
+        '''
+        # updates to global parameter dictionary 
+        p_update = {
+        'experiment' : kwargs['experiment'], 
+        'trials' : kwargs['trials'],
+        'field':[-20., 0., 20.],
+        'rec_variables':[('v','range','v'),('input_times','syn','ampa'),],
+        'active_paths':['1',],
+        'gcalbar': 1.*.00125 ,          # L-type calcium conductance from Kim et al. 2015 (mho/cm2)
+        }
+
+        # set up synaptic pathway parameters
+        paths_update = {'1':{
+        'trees': ['apical_trunk', 'apical_tuft'],
+        'syn_num': 0,
+        'nsyns': 1.,
+        'syn_dist': kwargs['syn_dist'],
+        'pulses': 4.,
+        'pulse_freq': 100.,
+        'bursts': 1.,
+        'burst_freq': 5.,
+        'warmup': 10,
+        'w_mean': 1*.001,
+        'w_std':0.,
+        'w_rand':False,
+        'replace_syn':True,
+        'syn_frac':0.,
+        'noise':0,
+        },}
+
+        # setup cell and updated parameter structures
+        self.P, self.cell = self._standard_parameter_setup(
+            default_p='migliore_2005',
+            cell_class='CellMigliore2005',
+            p_update=p_update,
+            paths_update=paths_update,
+            load_fd=True)
+
+        # iterate over synapse number 
+        for syn_num in kwargs['syn_num']:
+            # update parameter dictionary
+            self.P.paths['1']['syn_num']=syn_num
+
+            # iterate over trials
+            for trial_i, trial in enumerate(range(self.P.p['trials'])):
+
+                # create list of active synapses, weights, delays
+                # stored in P.p['seg_idx', 'w_list', 'sequence_delays'], 
+                self.P = self._update_synapse_parameters(P=self.P, cell=self.cell, method='_choose_seg_rand')
+                # increase simulation duration
+                self.P.p['tstop']=100
+                self.P.p['field_off']=self.P.p['tstop']
+
+                self.run_obj = self._standard_run_and_save(P=self.P, cell=self.cell, trial=trial)
+    
+    def exp_1a_dose_basal(self, **kwargs):
+        ''' repeat experiment 1a1 with varying electric field intensity
+
+        6,8,10,12,14 synapses at .001 uS per synapse, distributed evenly between 0 and 300 um from soma
+        '''
+        # updates to global parameter dictionary 
+        p_update = {
+        'experiment' : kwargs['experiment'], 
+        'trials' : kwargs['trials'],
+        'field':[-20.,-15, -10, -5.,-2, -1., -0.5, 0., 0.5, 1.,2., 5.,10., 15., 20.],
+        'rec_variables':[('v','range','v'),('input_times','syn','ampa'),],
+        'active_paths':['1',],
+        'gcalbar': 1.*.00125 ,          # L-type calcium conductance from Kim et al. 2015 (mho/cm2)
+        }
+
+        # set up synaptic pathway parameters
+        paths_update = {'1':{
+        'trees': ['basal'],
+        'syn_num': 0,
+        'nsyns': 1.,
+        'syn_dist': kwargs['syn_dist'],
+        'pulses': 4.,
+        'pulse_freq': 100.,
+        'bursts': 1.,
+        'burst_freq': 5.,
+        'warmup': 10,
+        'w_mean': 1*.001,
+        'w_std':0.,
+        'w_rand':False,
+        'replace_syn':True,
+        'syn_frac':0.,
+        'noise':0,
+        },}
+
+        # setup cell and updated parameter structures
+        self.P, self.cell = self._standard_parameter_setup(
+            default_p='migliore_2005',
+            cell_class='CellMigliore2005',
+            p_update=p_update,
+            paths_update=paths_update,
+            load_fd=True)
+
+        # iterate over synapse number 
+        for syn_num in kwargs['syn_num']:
+            # update parameter dictionary
+            self.P.paths['1']['syn_num']=syn_num
+
+            # iterate over trials
+            for trial_i, trial in enumerate(range(self.P.p['trials'])):
+
+                # create list of active synapses, weights, delays
+                # stored in P.p['seg_idx', 'w_list', 'sequence_delays'], 
+                self.P = self._update_synapse_parameters(P=self.P, cell=self.cell, method='_choose_seg_rand')
+                # increase simulation duration
+                self.P.p['tstop']=100
+
+                self.run_obj = self._standard_run_and_save(P=self.P, cell=self.cell, trial=trial)
+    
+    def exp_1a_polarization_shapeplot(self, **kwargs):
+        ''' repeat experiment 1a1 with varying electric field intensity
+
+        6,8,10,12,14 synapses at .001 uS per synapse, distributed evenly between 0 and 300 um from soma
+        '''
+        # updates to global parameter dictionary 
+        p_update = {
+        'experiment' : kwargs['experiment'], 
+        'trials' : 1,
+        'field':[-20., 0.,20.],
+        'rec_variables':[('v','range','v'),],
+        'active_paths':[],
+        'gcalbar': 1.*.00125 ,          # L-type calcium conductance from Kim et al. 2015 (mho/cm2)
+        }
+
+        # set up synaptic pathway parameters
+        paths_update = {'1':{
+        'trees': ['apical_tuft','apical_trunk'],
+        'syn_num': 0,
+        'nsyns': 1.,
+        'syn_dist': [0,300],
+        'pulses': 4.,
+        'pulse_freq': 100.,
+        'bursts': 1.,
+        'burst_freq': 5.,
+        'warmup': 10,
+        'w_mean': 1*.001,
+        'w_std':0.,
+        'w_rand':False,
+        'replace_syn':True,
+        'syn_frac':0.,
+        'noise':0,
+        },}
+
+        # setup cell and updated parameter structures
+        self.P, self.cell = self._standard_parameter_setup(
+            default_p='migliore_2005',
+            cell_class='CellMigliore2005',
+            p_update=p_update,
+            paths_update=paths_update,
+            load_fd=True)
+
+
+        # create list of active synapses, weights, delays
+        # stored in P.p['seg_idx', 'w_list', 'sequence_delays'], 
+        self.P = self._update_synapse_parameters(P=self.P, cell=self.cell, method='_choose_seg_rand')
+
+        self.P.p['rec_idx'] = self.P._create_loc_list(geo=self.cell.geo)
+
+        self.run_obj = self._standard_run_and_save(P=self.P, cell=self.cell, trial=0)
+
+    def exp_1a_ACS(self, **kwargs):
+        """ Activate a single pathway with a single TBS burst at varying distance from soma: 0-300, 100-400, 200-500, 300-600, 0-200, 100-300, 200-400, 300-500, 400-600
+
+        6, 8, 10, 12, 16,20 synapses are randomly distributed within these distance ranges with conductance 0.001 uS/cm2.  This is chosen to be close to threshold by empirical testing
+        
+        ==Args==
+        -experiment : string containing the name of the experiment, eg 'exp_1a1'
+        -trials :  integer number of trials to run
+        -syn_dist :  list, or nested list, containing synapse distance requirements for choose_seg_rand. eg [0, 200] chooses synapses between 0 and 200 um from soma
+        -syn_num :  list of number of synapses to be activated. note that synapses are chosen randomly with replacement, so the same synapse can be selected multiple times.  In this case the weight is multiplied by the number of times the synapse is selected
+        """
+
+        # updates to global parameter dictionary 
+        p_update = {
+        'experiment' : kwargs['experiment'], 
+        'trials' : kwargs['trials'],
+        'field':[0.],
+        'ac_field':20.,
+        'ac_field_freq':5.,
+        'ac_field_phase':np.pi/2,
+        'ac_field_on':10.,
+        'ac_field_off':300.,
+        'ac_field_angle':0.,
+
+        'rec_variables':[('v','range','v'),('input_times','syn','ampa'),],
+        'active_paths':['1',],
+        'gcalbar': 1.*.00125 ,          # L-type calcium conductance from Kim et al. 2015 (mho/cm2)
+        }
+
+        # set up synaptic pathway parameters
+        paths_update = {'1':{
+        'trees': ['apical_tuft','apical_trunk'],
+        'syn_num': 0,
+        'nsyns': 1.,
+        'syn_dist': kwargs['syn_dist'],
+        'pulses': 4.,
+        'pulse_freq': 100.,
+        'bursts': 2.,
+        'burst_freq': 5.,
         'warmup': 50,
-        'w_mean': .0015,
-        }}
+        'w_mean': 1*.001,
+        'w_std':0.,
+        'w_rand':False,
+        'replace_syn':True,
+        'syn_frac':0.,
+        'noise':0,
+        },}
 
         # setup cell and updated parameter structures
-        P, cell1 = setup_parameters(
+        self.P, self.cell = self._standard_parameter_setup(
             default_p='migliore_2005',
             cell_class='CellMigliore2005',
             p_update=p_update,
-            paths_update=paths_update,)
-
-        # iterate over trials
-        for trial_i, trial in enumerate(range(P.p['trials'])):
-
-            # create list of active synapses, weights, delays
-            # stored in P.p['seg_idx', 'w_list', 'sequence_delays'], 
-            update_synapse_parameters(P, P.p, P.paths, cell1)
-
-            # store trial number
-            P.p['trial']=trial
-                            
-            # create unique identifier for each trial
-            P.p['trial_id'] = str(uuid.uuid4())
-                            
-            # start timer
-            start = time.time() 
-            
-            # run simulation
-            sim = run.Run(p=P.p, cell=cell1) 
-
-            # end timer
-            end = time.time() 
-
-            # print trial and simulation time
-            print 'trial'+ str(P.p['trial']) + ' duration:' + str(end -start) 
-            
-            # set file name to save data
-            file_name = str(
-            P.p['experiment']+
-            '_trial_'+str(P.p['trial'])+
-            '_dist_'+str(P.p['p_path']['1']['syn_dist'])+
-            '_id_'+P.p['trial_id']
-            )
-
-            # save data for eahc trial
-            run.save_data(data=sim.data, file_name=file_name)
-
-            # plot traces
-            analysis.PlotRangeVar().plot_trace(
-                data=sim.data, 
-                variables=P.p['plot_variables'],
-                x_variables=P.p['x_variables'],
-                file_name=file_name,
-                group_trees=P.p['group_trees'],
-                xlim=[P.p['warmup']-5,P.p['tstop']],
-                 ylim=[-75,-40])
-    
-    def exp_1a(self, **kwargs):
-        """ 
-        activate a varying number of synapses at varying frequency with varying distance from the soma.  Synapses are chosen from a window of 50 um, with the window moving along the apical dendrite.  As number of synapses is increased, multiple synapses may impinge on the same compartment/segment, effectively increasing the weight in that segment.  The threshold for generating a somatic or dendritic spike (in number of synapses) is measured as a function of mean distance from the soma and frequency of synaptic activity.  
-
-        """
-        print 'running', kwargs['experiment'], 'on worker', pc.id()
-        print kwargs
-        w_mean = .001 # weight of single synapse uS
-        trees = kwargs['trees']
-        nsyns = kwargs['nsyns']
-        syn_nums = kwargs['syn_num']
-        syn_dist = kwargs['syn_dist']
-        trials = 20
-        self.kwargs = {
-        'experiment' : 'exp_1a', 
-        'trees' : trees,
-        'nsyns':nsyns,
-        'syn_num':[],
-        'syn_dist': syn_dist,
-        'num_sec':1,
-        'seg_L' : 4.,
-        'seg_spacing':20,
-        'max_seg':[],
-        'branch':False,
-        'full_path':False,
-        'branch_distance':[],
-        'branch_seg_distance':[],
-        'sequence_delay': 0,
-        'sequence_direction':'in',
-        'trials' : trials,
-        'w_mean' : [],
-        'w_std' : [.002],
-        'w_rand' : False, 
-        'syn_frac' : .2,
-        'field':[-20.,0.,20.],
-        'KMULT':1.*.03,
-        'KMULTP':1.*.03,
-        'ka_grad':1.,
-        'SOMAM': 1.5,
-        'AXONM': 50.,
-        'gna':.04,
-        'dgna':1.*-.000025,
-        'pulses':4,
-        'pulse_freq':100,
-        'group_trees':False,
-        'plot_variables':['v','gbar'],
-        'cell':[],
-        'tstop':70,
-        'clopath_tau_r':8,
-        'gna_inact': 0.
-        }
-
-        # update kwargs
-        for key, val in kwargs.iteritems():
-            self.kwargs[key]=val
+            paths_update=paths_update,
+            load_fd=True)
         
-        # instantiate default parameter class
-        self.p_class = param.Default()
-
-        # reference to default parameters
-        self.p = self.p_class.p
-
-        # update parameters
-        for key, val in self.kwargs.iteritems():        # update parameters
-            self.p[key] = val
-
-        # data and figure folder
-        self.p['data_folder'] = 'Data/'+self.p['experiment']+'/'
-        self.p['fig_folder'] =  'png figures/'+self.p['experiment']+'/'
-
-        # load cell and store in parameter dictionary
-        cell1 = cell.CellMigliore2005(self.p)
-        cell1.geometry(self.p)
-        # insert mechanisms
-        cell1.mechanisms(self.p)
-        
-        # measure distance of each segment from the soma and store in parameter dictionary
-        self.p_class.seg_distance(cell1)
-
-        self.p['morpho'] = self.p_class.create_morpho(cell1.geo)
-
-        threshold=-30
-
-        # iterate over frequency
-        # iterate over synapse number
-        # iterate over trials
-        # iterate over all segments in tree
-        for freq_i, freq in enumerate(kwargs['stim_freqs']):
-            self.p['tstop'] = (self.p['pulses']*1000/freq)+self.p['warmup']
-            self.p['pulse_freq'] = freq
-            self.p['field_off'] = self.p['tstop']
-            for syn_num_i, syn_num in enumerate(syn_nums):
-                for trial_i, trial in enumerate(range(self.p['trials'])):
-                    self.p['syn_num']=syn_num
-                    self.p_class.choose_seg_rand(trees=self.p['trees'], syns=cell1.syns, syn_frac=0., seg_dist=self.p['seg_dist'], syn_num=syn_num, distance=self.p['syn_dist'], replace=True)
-
-                    self.p['w_mean'] = self.p['nsyns']*w_mean
-
-                    self.p_class.set_weights(seg_idx=self.p['seg_idx'], sec_idx=self.p['sec_idx'], sec_list=self.p['sec_list'], seg_list=self.p['seg_list'], w_mean=self.p['w_mean'], w_std=self.p['w_std'], w_rand=self.p['w_rand'])
-
-                    self.p_class.set_branch_sequence_ordered(seg_idx=self.p['seg_idx'], delay=self.p['sequence_delay'], direction=self.p['sequence_direction'])
-
-                    print 'syn_num:', self.p['syn_num']
-                    print 'nsyn:',self.p['nsyns'], 'w (nS):',self.p['w_mean'] 
-                    print 'distance from soma:', self.p['syn_dist']
-
-                    # store trial number
-                    self.p['trial']=trial
-                                    
-                    # create unique identifier for each trial
-                    self.p['trial_id'] = str(uuid.uuid4())
-                                    
-                    # start timer
-                    start = time.time() 
-                    
-                    # print cell1.syns
-                    # run simulation
-                    sim = run.Run(p=self.p, cell=cell1) 
-
-                    # end timer
-                    end = time.time() 
-
-                    # print trial and simulation time
-                    print 'trial'+ str(self.p['trial']) + ' duration:' + str(end -start) 
-                    
-                    # set file name to save data
-                    file_name = str(
-                    self.p['experiment']+
-                    '_dist_'+str(self.p['syn_dist'][-1])+
-                    '_freq_'+str(self.p['pulse_freq'])+
-                    '_syn_num_'+str(self.p['syn_num'])+
-                    '_trial_'+str(self.p['trial'])+
-                    '_id_'+self.p['trial_id']
-                    )
-
-                    # save data for eahc trial
-                    run.save_data(data=sim.data, file_name=file_name)
-
-                    # plot traces
-                    analysis.PlotRangeVar().plot_trace(data=sim.data, 
-                        trees=self.p['trees'], 
-                        sec_idx=self.p['sec_idx'], 
-                        seg_idx=self.p['seg_idx'],
-                        variables=self.p['plot_variables'],
-                        x_variables=self.p['x_variables'],
-                        file_name=file_name,
-                        group_trees=self.p['group_trees'],
-                        xlim=[self.p['warmup']-5,self.p['tstop']],
-                        ylim=[])
-
-    def exp_1b(self, **kwargs):
-        """ 
-        activate a varying number of synapses with varying distance from the soma.  Synapses are chosen from a window of 200 um, with the window moving along the apical dendrite.  As number of synapses is increased, multiple synapses may impinge on the same compartment/segment, effectively increasing the weight in that segment.  The threshold for generating a somatic or dendritic spike (in number of synapses) is measured as a function of mean distance from the soma and frequency of synaptic activity.  
-
-        Similar to 1a, with larger distance window for synapses to be activated
-
-        """
-        print 'running', kwargs['experiment'], 'on worker', pc.id()
-        print kwargs
-        w_mean = .001 # weight of single synapse uS
-        trees = kwargs['trees']
-        nsyns = kwargs['nsyns']
-        syn_nums = kwargs['syn_num']
-        syn_dist = kwargs['syn_dist']
-        trials = 20
-        self.kwargs = {
-        'experiment' : 'exp_1b', 
-        'trees' : trees,
-        'nsyns':nsyns,
-        'syn_num':[],
-        'syn_dist': syn_dist,
-        'num_sec':1,
-        'seg_L' : 4.,
-        'seg_spacing':20,
-        'max_seg':[],
-        'branch':False,
-        'full_path':False,
-        'branch_distance':[],
-        'branch_seg_distance':[],
-        'sequence_delay': 0,
-        'sequence_direction':'in',
-        'trials' : trials,
-        'w_mean' : [],
-        'w_std' : [.002],
-        'w_rand' : False, 
-        'syn_frac' : .2,
-        'field':[-20.,0.,20.],
-        'KMULT':1.*.03,
-        'KMULTP':1.*.03,
-        'ka_grad':1.,
-        'SOMAM': 1.5,
-        'AXONM': 50.,
-        'gna':.04,
-        'dgna':1.*-.000025,
-        'pulses':4,
-        'pulse_freq':100,
-        'group_trees':False,
-        'plot_variables':['v','gbar'],
-        'cell':[],
-        'tstop':70,
-        'clopath_tau_r':8,
-        'gna_inact': 0.
-        }
-
-        # update kwargs
-        for key, val in kwargs.iteritems():
-            self.kwargs[key]=val
-        
-        # instantiate default parameter class
-        self.p_class = param.Default()
-
-        # reference to default parameters
-        self.p = self.p_class.p
-
-        # update parameters
-        for key, val in self.kwargs.iteritems():        # update parameters
-            self.p[key] = val
-
-        # data and figure folder
-        self.p['data_folder'] = 'Data/'+self.p['experiment']+'/'
-        self.p['fig_folder'] =  'png figures/'+self.p['experiment']+'/'
-
-        # load cell and store in parameter dictionary
-        cell1 = cell.CellMigliore2005(self.p)
-        cell1.geometry(self.p)
-        # insert mechanisms
-        cell1.mechanisms(self.p)
-        
-        # measure distance of each segment from the soma and store in parameter dictionary
-        self.p_class.seg_distance(cell1)
-
-        self.p['morpho'] = self.p_class.create_morpho(cell1.geo)
-
-        threshold=-30
-
-        # iterate over frequency
-        # iterate over synapse number
-        # iterate over trials
-        # iterate over all segments in tree
-        for freq_i, freq in enumerate(kwargs['stim_freqs']):
-            self.p['tstop'] = (self.p['pulses']*1000/freq)+self.p['warmup']
-            self.p['pulse_freq'] = freq
-            self.p['field_off'] = self.p['tstop']
-            for syn_num_i, syn_num in enumerate(syn_nums):
-                for trial_i, trial in enumerate(range(self.p['trials'])):
-                    self.p['syn_num']=syn_num
-                    self.p_class.choose_seg_rand(trees=self.p['trees'], syns=cell1.syns, syn_frac=0., seg_dist=self.p['seg_dist'], syn_num=syn_num, distance=self.p['syn_dist'], replace=True)
-
-                    self.p['w_mean'] = self.p['nsyns']*w_mean
-
-                    self.p_class.set_weights(seg_idx=self.p['seg_idx'], sec_idx=self.p['sec_idx'], sec_list=self.p['sec_list'], seg_list=self.p['seg_list'], w_mean=self.p['w_mean'], w_std=self.p['w_std'], w_rand=self.p['w_rand'])
-
-                    self.p_class.set_branch_sequence_ordered(seg_idx=self.p['seg_idx'], delay=self.p['sequence_delay'], direction=self.p['sequence_direction'])
-
-                    print 'syn_num:', self.p['syn_num']
-                    print 'nsyn:',self.p['nsyns'], 'w (nS):',self.p['w_mean'] 
-                    print 'distance from soma:', self.p['syn_dist']
-
-                    # store trial number
-                    self.p['trial']=trial
-                                    
-                    # create unique identifier for each trial
-                    self.p['trial_id'] = str(uuid.uuid4())
-                                    
-                    # start timer
-                    start = time.time() 
-                    
-                    # print cell1.syns
-                    # run simulation
-                    sim = run.Run(p=self.p, cell=cell1) 
-
-                    # end timer
-                    end = time.time() 
-
-                    # print trial and simulation time
-                    print 'trial'+ str(self.p['trial']) + ' duration:' + str(end -start) 
-                    
-                    # set file name to save data
-                    file_name = str(
-                    self.p['experiment']+
-                    '_dist_'+str(self.p['syn_dist'][-1])+
-                    '_freq_'+str(self.p['pulse_freq'])+
-                    '_syn_num_'+str(self.p['syn_num'])+
-                    '_trial_'+str(self.p['trial'])+
-                    '_id_'+self.p['trial_id']
-                    )
-
-                    # save data for eahc trial
-                    run.save_data(data=sim.data, file_name=file_name)
-
-                    # plot traces
-                    analysis.PlotRangeVar().plot_trace(data=sim.data, 
-                        trees=self.p['trees'], 
-                        sec_idx=self.p['sec_idx'], 
-                        seg_idx=self.p['seg_idx'],
-                        variables=self.p['plot_variables'],
-                        x_variables=self.p['x_variables'],
-                        file_name=file_name,
-                        group_trees=self.p['group_trees'],
-                        xlim=[self.p['warmup']-5,self.p['tstop']],
-                        ylim=[])
-
-    def exp_1c(self, **kwargs):
-        """ 
-        activate a varying number of synapses in proximal (0-200/0-300 um) and distal regions (400-600/300-600 um) simultameously.  Synapses are chosen from a window of 200 or 300 um.  As number of synapses is increased, multiple synapses may impinge on the same compartment/segment, effectively increasing the weight in that segment.  The threshold for generating a somatic or dendritic spike (in number of synapses) is measured as a function of nnumber of synapses. Does pairing with proximal inputs (e.g. 0-200 um) cause distal inputs (eg 400-600 um) to come under greater control from the soma? 
-
-        Similar to 1a and 1b, now pairing two distance windows (proximal and distal)
-
-        """
-        print kwargs
-        w_mean = .001 # weight of single synapse uS
-        trees = kwargs['trees']
-        nsyns = kwargs['nsyns']
-        syn_nums = kwargs['syn_num']
-        syn_dist = kwargs['syn_dist']
-        trials = kwargs['trials']
-        self.kwargs = {
-        'experiment' : 'exp_1c', 
-        'trees' : trees,
-        'nsyns':nsyns,
-        'syn_num':[],
-        'syn_dist': syn_dist,
-        'num_sec':1,
-        'seg_L' : 4.,
-        'seg_spacing':20,
-        'max_seg':[],
-        'branch':False,
-        'full_path':False,
-        'branch_distance':[],
-        'branch_seg_distance':[],
-        'sequence_delay': 0,
-        'sequence_direction':'in',
-        'trials' : trials,
-        'w_mean' : [],
-        'w_std' : [.002],
-        'w_rand' : False, 
-        'syn_frac' : .2,
-        'field':[-20.,0.,20.],
-        'KMULT':1.*.03,
-        'KMULTP':1.*.03,
-        'ka_grad':1.,
-        'SOMAM': 1.5,
-        'AXONM': 50.,
-        'gna':.04,
-        'dgna':1.*-.000025,
-        'pulses':4,
-        'pulse_freq':100,
-        'group_trees':False,
-        'plot_variables':['v','gbar'],
-        'cell':[],
-        'tstop':70,
-        'clopath_tau_r':8,
-        'gna_inact': 0.
-        }
-
-        # update kwargs
-        for key, val in kwargs.iteritems():
-            self.kwargs[key]=val
-        
-        # instantiate default parameter class
-        self.p_class = param.Default()
-
-        # reference to default parameters
-        self.p = self.p_class.p
-
-        # update parameters
-        for key, val in self.kwargs.iteritems():        # update parameters
-            self.p[key] = val
-
-        # data and figure folder
-        self.p['data_folder'] = 'Data/'+self.p['experiment']+'/'
-        self.p['fig_folder'] =  'png figures/'+self.p['experiment']+'/'
-
-        # load cell and store in parameter dictionary
-        cell1 = cell.CellMigliore2005(self.p)
-        cell1.geometry(self.p)
-        # insert mechanisms
-        cell1.mechanisms(self.p)
-        
-        # measure distance of each segment from the soma and store in parameter dictionary
-        self.p_class.seg_distance(cell1)
-
-        self.p['morpho'] = self.p_class.create_morpho(cell1.geo)
-
-        threshold=-30
-
-        # iterate over frequency
-        for freq_i, freq in enumerate(kwargs['stim_freqs']):
-            # update simulation duration based bipolar pulse protocol
-            self.p['tstop'] = (self.p['pulses']*1000/freq)+self.p['warmup']
-            self.p['pulse_freq'] = freq
-            self.p['field_off'] = self.p['tstop']
-            # iterate over synapse number
-            for syn_num_i, syn_num in enumerate(syn_nums):
-                # iterate over trials
-                for trial_i, trial in enumerate(range(self.p['trials'])):
-                    # update synapse number in parameter dictionary
-                    self.p['syn_num']=syn_num
-                    # choose random segments based on distance requirement
-                    idx = self.p_class.choose_seg_rand(trees=self.p['trees'], syns=cell1.syns, syn_frac=0., seg_dist=self.p['seg_dist'], syn_num=syn_num, distance=self.p['syn_dist'], replace=True)
-                    for key, val in idx.iteritems():
-                        self.p[key]=val
-
-                    # update weight based on number of synapses per segment (always 1 in this experiment)
-                    self.p['w_mean'] = self.p['nsyns']*w_mean
-
-                    # create nested list of weights to match seg_idx structure
-                    self.p['w_list'] = self.p_class.set_weights(seg_idx=self.p['seg_idx'], sec_idx=self.p['sec_idx'], sec_list=self.p['sec_list'], seg_list=self.p['seg_list'], w_mean=self.p['w_mean'], w_std=self.p['w_std'], w_rand=self.p['w_rand'])['w_list']
-
-                    # create a list of time delays for each synapse, same organization as seg_idx 
-                    self.p_class.set_branch_sequence_ordered(seg_idx=self.p['seg_idx'], delay=self.p['sequence_delay'], direction=self.p['sequence_direction'])
-
-                    print 'syn_num:', self.p['syn_num']
-                    print 'nsyn:',self.p['nsyns'], 'w (nS):',self.p['w_mean'] 
-                    print 'distance from soma:', self.p['syn_dist']
-
-                    # store trial number
-                    self.p['trial']=trial
-                                    
-                    # create unique identifier for each trial
-                    self.p['trial_id'] = str(uuid.uuid4())
-                                    
-                    # start timer
-                    start = time.time() 
-                    
-                    # print cell1.syns
-                    # run simulation
-                    sim = run.Run(p=self.p, cell=cell1) 
-
-                    # end timer
-                    end = time.time() 
-
-                    # print trial and simulation time
-                    print 'trial'+ str(self.p['trial']) + ' duration:' + str(end -start) 
-                    
-                    # set file name to save data
-                    file_name = str(
-                    self.p['experiment']+
-                    '_dist_'+str(self.p['syn_dist'][-1])+
-                    '_freq_'+str(self.p['pulse_freq'])+
-                    '_syn_num_'+str(self.p['syn_num'])+
-                    '_trial_'+str(self.p['trial'])+
-                    '_id_'+self.p['trial_id']
-                    )
-
-                    # save data for eahc trial
-                    run.save_data(data=sim.data, file_name=file_name)
-
-                    # plot traces
-                    analysis.PlotRangeVar().plot_trace(data=sim.data, 
-                        trees=self.p['trees'], 
-                        sec_idx=self.p['sec_idx'], 
-                        seg_idx=self.p['seg_idx'],
-                        variables=self.p['plot_variables'],
-                        x_variables=self.p['x_variables'],
-                        file_name=file_name,
-                        group_trees=self.p['group_trees'],
-                        xlim=[self.p['warmup']-5,self.p['tstop']],
-                        ylim=[])
-
-    """
-    EXPERIMENT 2
-
-    Shapeplots for spike initiation as a function of synapse/segment location
-    Recreate figure 1 from Bono and Clopath 2017
-    """
-    def exp_2c(self, **kwargs):
-        """ active each segment with varying weights (number of synapses). monitor spike initiation in soma/dendrite as a function of distance from soma
-
-        """
-        w_mean = .001 # weight of single synapse uS
-        trees = ['basal']
-        self.kwargs = {
-        'experiment' : 'exp_2c', 
-        'trees' : ['basal'],
-        'nsyns':range(4,26,2),
-        'num_sec':1,
-        'seg_L' : 4.,
-        'seg_spacing':20,
-        'max_seg':[],
-        'branch':False,
-        'full_path':False,
-        'branch_distance':[],
-        'branch_seg_distance':[],
-        'sequence_delay': 0,
-        'sequence_direction':'in',
-        'trials' : 1,
-        'w_mean' : [],
-        'w_std' : [.002],
-        'w_rand' : False, 
-        'syn_frac' : .2,
-        'field':[-20.,0.,20.],
-        'KMULT':1.*.03,
-        'KMULTP':1.*.03,
-        'ka_grad':1.,
-        'SOMAM': 1.5,
-        'AXONM': 50.,
-        'gna':.04,
-        'dgna':1.*-.000025,
-        'pulses':1,
-        'pulse_freq':100,
-        'group_trees':False,
-        'plot_variables':['v','gbar'],
-        'cell':[],
-        'tstop':40
-        }
-
-        # instantiate default parameter class
-        self.p_class = param.Default()
-
-        # reference to default parameters
-        self.p = self.p_class.p
-
-        # update parameters
-        for key, val in self.kwargs.iteritems():        # update parameters
-            self.p[key] = val
-
-        # data and figure folder
-        self.p['data_folder'] = 'Data/'+self.p['experiment']+'/'
-        self.p['fig_folder'] =  'png figures/'+self.p['experiment']+'/'
-
-        # load cell and store in parameter dictionary
-        cell1 = cell.CellMigliore2005(self.p)
-        cell1.geometry(self.p)
-        # insert mechanisms
-        cell1.mechanisms(self.p)
-        # measure distance of each segment from the soma and store in parameter dictionary
-        self.p_class.seg_distance(cell1)
-
-        self.p['morpho'] = self.p_class.create_morpho(cell1.geo)
-
-        for tree_key_morph, tree_morph in self.p['morpho'].iteritems():
-            for sec_i_morph, sec_morph in enumerate(tree_morph):
-                for seg_i_morph, seg_morph in enumerate(sec_morph):
-                    pass
-
-
-        spike_analysis = analysis.Spikes()
-        threshold=-30
-
-        # iterate over all segments in tree
-        for trial_i, trial in enumerate(range(self.p['trials'])):
-            for tree_key, tree in cell1.geo.iteritems():
-                if tree_key in trees:
-                    self.p['trees'] = [tree_key]
-                    for sec_i, sec in enumerate(tree):
-                        for seg_i, seg in enumerate(sec):
-                            sec_list = {tree_key:[sec_i]}
-                            seg_list = {tree_key:[seg_i]}
-                            print sec_list, seg_list
-                            distance_from_soma = self.p['seg_dist'][tree_key][sec_i][seg_i]
-
-                            self.p_class.choose_seg_manual(trees=self.p['trees'], sec_list=sec_list, seg_list=seg_list)
-
-                            for nsyn_i, nsyn in enumerate(self.p['nsyns']):
-
-                                self.p['w_mean'] = nsyn*w_mean
-
-                                self.p_class.set_weights(seg_idx=self.p['seg_idx'], w_mean=self.p['w_mean'], w_std=self.p['w_std'], w_rand=self.p['w_rand'])
-
-                                self.p_class.set_branch_sequence_ordered(seg_idx=self.p['seg_idx'], delay=self.p['sequence_delay'], direction=self.p['sequence_direction'])
-
-                                print self.p['sec_idx']
-                                print self.p['seg_idx']
-                                print 'nsyn:',nsyn, 'w (nS):',self.p['w_mean'] 
-                                print 'distance from soma:', distance_from_soma
-
-                                # store trial number
-                                self.p['trial']=trial
-                                
-                                # create unique identifier for each trial
-                                self.p['trial_id'] = str(uuid.uuid4())
-                                
-                                # start timer
-                                start = time.time() 
-                                
-                                # print cell1.syns
-                                # run simulation
-                                sim = run.Run(p=self.p, cell=cell1) 
-
-                                # end timer
-                                end = time.time() 
-
-                                # print trial and simulation time
-                                print 'trial'+ str(self.p['trial']) + ' duration:' + str(end -start) 
-                                
-                                # set file name to save data
-                                file_name = str(
-                                self.p['experiment']+
-                                '_weight_'+str(self.p['w_mean'])+
-                                '_trial_'+str(self.p['trial'])+
-                                '_dist_'+str(distance_from_soma)+
-                                '_id_'+self.p['trial_id']
-                                )
-
-                                # save data for eahc trial
-                                run.save_data(data=sim.data, file_name=file_name)
-
-                                # plot traces
-                                analysis.PlotRangeVar().plot_trace(data=sim.data, 
-                                    trees=self.p['trees'], 
-                                    sec_idx=self.p['sec_idx'], 
-                                    seg_idx=self.p['seg_idx'],
-                                    variables=self.p['plot_variables'],
-                                    x_variables=self.p['x_variables'],
-                                    file_name=file_name,
-                                    group_trees=self.p['group_trees'],
-                                    xlim=[self.p['warmup']-5,self.p['tstop']],
-                                    ylim=[])
-                                
-                                spike_count=0
-                                for f_i, f in enumerate(self.p['field']):
-                                    # if threshold crossed, continue
-                                    dend_spike = spike_analysis.detect_spikes(sim.data[str(f)][tree_key+'_v'][0][0], threshold=threshold)['times'][0]
-
-                                    soma_spike = spike_analysis.detect_spikes(sim.data[str(f)]['soma'+'_v'][0][0], threshold=threshold)['times'][0]
-
-                                    if len(dend_spike)>0 or len(soma_spike)>0:
-                                        spike_count+=1
-
-                                print 'spike count:', spike_count
-                                if spike_count ==len(self.p['field']):
-                                    print 'spike detected for all polarities'
-                                    break
-                                
-    def exp_2d(self, **kwargs):
-        """ Apply a single theta burst for each segment, one segment at a time.  Step through increasing number of synapses (weight) to detect thresholds
-
-        Simulations are run in parallel.  See the functions _f_parallel and _run_parallel
-
-        """
-        w_mean = .001 # weight of single synapse uS
-        trees = ['apical_tuft','apical_trunk','basal']
-        nsyns = kwargs['nsyns']
-        self.kwargs = {
-        'experiment' : 'exp_2d', 
-        'trees' : trees,
-        'nsyns':nsyns,
-        'num_sec':1,
-        'seg_L' : 4.,
-        'seg_spacing':20,
-        'max_seg':[],
-        'branch':False,
-        'full_path':False,
-        'branch_distance':[],
-        'branch_seg_distance':[],
-        'sequence_delay': 0,
-        'sequence_direction':'in',
-        'trials' : 1,
-        'w_mean' : [],
-        'w_std' : [.002],
-        'w_rand' : False, 
-        'syn_frac' : .2,
-        'field':[-20.,0.,20.],
-        'KMULT':1.*.03,
-        'KMULTP':1.*.03,
-        'ka_grad':1.,
-        'SOMAM': 1.5,
-        'AXONM': 50.,
-        'gna':.04,
-        'dgna':1.*-.000025,
-        'pulses':4,
-        'pulse_freq':100,
-        'group_trees':False,
-        'plot_variables':['v','gbar'],
-        'cell':[],
-        'tstop':70
-        }
-
-        # update kwargs
-        for key, val in kwargs.iteritems():
-            self.kwargs[key]=val
-        # instantiate default parameter class
-        self.p_class = param.Default()
-
-        # reference to default parameters
-        self.p = self.p_class.p
-
-        # update parameters
-        for key, val in self.kwargs.iteritems():        # update parameters
-            self.p[key] = val
-
-        # data and figure folder
-        self.p['data_folder'] = 'Data/'+self.p['experiment']+'/'
-        self.p['fig_folder'] =  'png figures/'+self.p['experiment']+'/'
-
-        # load cell and store in parameter dictionary
-        cell1 = cell.CellMigliore2005(self.p)
-        cell1.geometry(self.p)
-        # insert mechanisms
-        cell1.mechanisms(self.p)
-        # measure distance of each segment from the soma and store in parameter dictionary
-        self.p_class.seg_distance(cell1)
-
-        self.p['morpho'] = self.p_class.create_morpho(cell1.geo)
-
-        for tree_key_morph, tree_morph in self.p['morpho'].iteritems():
-            for sec_i_morph, sec_morph in enumerate(tree_morph):
-                for seg_i_morph, seg_morph in enumerate(sec_morph):
-                    pass
-
-
-        spike_analysis = analysis.Spikes()
-        threshold=-30
-
-        # iterate over all segments in tree
-        for trial_i, trial in enumerate(range(self.p['trials'])):
-            for tree_key, tree in cell1.geo.iteritems():
-                if tree_key in trees:
-                    self.p['trees'] = [tree_key]
-                    for sec_i, sec in enumerate(tree):
-                        for seg_i, seg in enumerate(sec):
-                            sec_list = {tree_key:[sec_i]}
-                            seg_list = {tree_key:[seg_i]}
-                            print sec_list, seg_list
-                            distance_from_soma = self.p['seg_dist'][tree_key][sec_i][seg_i]
-
-                            self.p_class.choose_seg_manual(trees=self.p['trees'], sec_list=sec_list, seg_list=seg_list)
-
-                            for nsyn_i, nsyn in enumerate(self.p['nsyns']):
-
-                                self.p['w_mean'] = nsyn*w_mean
-
-                                self.p_class.set_weights(seg_idx=self.p['seg_idx'], w_mean=self.p['w_mean'], w_std=self.p['w_std'], w_rand=self.p['w_rand'])
-
-                                self.p_class.set_branch_sequence_ordered(seg_idx=self.p['seg_idx'], delay=self.p['sequence_delay'], direction=self.p['sequence_direction'])
-
-                                print self.p['sec_idx']
-                                print self.p['seg_idx']
-                                print 'nsyn:',nsyn, 'w (nS):',self.p['w_mean'] 
-                                print 'distance from soma:', distance_from_soma
-
-                                # store trial number
-                                self.p['trial']=trial
-                                
-                                # create unique identifier for each trial
-                                self.p['trial_id'] = str(uuid.uuid4())
-                                
-                                # start timer
-                                start = time.time() 
-                                
-                                # print cell1.syns
-                                # run simulation
-                                sim = run.Run(p=self.p, cell=cell1) 
-
-                                # end timer
-                                end = time.time() 
-
-                                # print trial and simulation time
-                                print 'trial'+ str(self.p['trial']) + ' duration:' + str(end -start) 
-                                
-                                # set file name to save data
-                                file_name = str(
-                                self.p['experiment']+
-                                '_weight_'+str(self.p['w_mean'])+
-                                '_trial_'+str(self.p['trial'])+
-                                '_dist_'+str(distance_from_soma)+
-                                '_id_'+self.p['trial_id']
-                                )
-
-                                # save data for eahc trial
-                                run.save_data(data=sim.data, file_name=file_name)
-
-                                # plot traces
-                                analysis.PlotRangeVar().plot_trace(data=sim.data, 
-                                    trees=self.p['trees'], 
-                                    sec_idx=self.p['sec_idx'], 
-                                    seg_idx=self.p['seg_idx'],
-                                    variables=self.p['plot_variables'],
-                                    x_variables=self.p['x_variables'],
-                                    file_name=file_name,
-                                    group_trees=self.p['group_trees'],
-                                    xlim=[self.p['warmup']-5,self.p['tstop']],
-                                    ylim=[])
-                                
-                                spike_count=0
-                                for f_i, f in enumerate(self.p['field']):
-                                    # if threshold crossed, continue
-                                    dend_spike = spike_analysis.detect_spikes(sim.data[str(f)][tree_key+'_v'][0][0], threshold=threshold)['times'][0]
-
-                                    soma_spike = spike_analysis.detect_spikes(sim.data[str(f)]['soma'+'_v'][0][0], threshold=threshold)['times'][0]
-
-                                    if len(dend_spike)>0 or len(soma_spike)>0:
-                                        spike_count+=1
-
-                                print 'spike count:', spike_count
-                                if spike_count ==len(self.p['field']):
-                                    print 'spike detected for all polarities'
-                                    break
-
-    """
-    EXPERIMENT 3
-
-    Frequency dependence (compare 20 Hz to TBS) and dose response
-
-    -for all 3a experiments, the number of synapses (8) and their weights (0.0015 uS) was selected so that single pulses were just subthreshold.  This gave a variable number of spies during the plasticity induction trains
-    """
-    def exp_3a1(self, **kwargs):
-        """ 20 Hz simulation (40 pulses, 2 seconds) with sodium channel inactivation.  Track backpropagation of action potentials
-        """
-        # 
+        phases = [0, np.pi, None]
+        # iterate over synapse number 
+        for syn_num in kwargs['syn_num']:
+            # update parameter dictionary
+            self.P.paths['1']['syn_num']=syn_num
+
+            # iterate over trials
+            for trial_i, trial in enumerate(range(self.P.p['trials'])):
+                
+                # create list of active synapses, weights, delays
+                # stored in P.p['seg_idx', 'w_list', 'sequence_delays'], 
+                self.P = self._update_synapse_parameters(P=self.P, cell=self.cell, method='_choose_seg_rand')
+
+                # iterate over peak and trough phases
+                for phase in phases:
+                    if phase is not None:
+                        self.P.p['ac_field_phase']=phase
+                        self.P.p['ac_field']=p_update['ac_field']
+                    else:
+                        self.P.p['ac_field']=0
+                        self.P.p['ac_field_phase']=0
+
+                    self.run_obj = self._standard_run_and_save(P=self.P, cell=self.cell, trial=trial,)
+
+    def exp_1a_apical_full_duration(self, **kwargs):
+        ''' repeat experiment 1a1 with varying electric field intensity
+
+        6,8,10,12,14 synapses at .001 uS per synapse, distributed evenly between 0 and 300 um from soma
+        '''
+        # updates to global parameter dictionary 
         p_update = {
         'experiment' : kwargs['experiment'], 
         'trials' : kwargs['trials'],
-        'field':[-20.,0.,20.],
-        'plot_variables':['v','gbar'],
-        'path_combo':'1',
-        'clopath_A_m':40E-5, # depression magnitude parameter (mV^-1)
-        'clopath_tetam':-70,#-41, # depression threshold (mV)
-        'clopath_tetap':-65,#-38, # potentiation threshold (mV)
-        'clopath_tau_r':8,#-38, # potentiation threshold (mV)
-        'clopath_tau_0':30,#-38, # potentiation threshold (mV)
-        'clopath_tau_y': 5, # time constant (ms) for low pass filter post membrane potential for potentiation
-        'clopath_A_p': 38E-5, # amplitude for potentiation (mV^-2)
+        'field':[-20., 0., 20.],
+        'rec_variables':[('v','range','v'),('input_times','syn','ampa'),],
+        'active_paths':['1',],
+        'gcalbar': 1.*.00125 ,          # L-type calcium conductance from Kim et al. 2015 (mho/cm2)
         }
 
-        # set up two pathways
+        # set up synaptic pathway parameters
         paths_update = {'1':{
-        'trees': ['apical_tuft','apical_trunk'],
-        'syn_num': 8,
+        'trees': ['apical_trunk', 'apical_tuft'],
+        'syn_num': 0,
         'nsyns': 1.,
-        'syn_dist': [0,300],
-        'pulses': 40.,
+        'syn_dist': kwargs['syn_dist'],
+        'pulses': 4.,
+        'pulse_freq': 100.,
+        'bursts': 15.,
+        'burst_freq': 5.,
+        'warmup': 10,
+        'w_mean': 1*.001,
+        'w_std':0.,
+        'w_rand':False,
+        'replace_syn':True,
+        'syn_frac':0.,
+        'noise':0,
+        },}
+
+        # setup cell and updated parameter structures
+        self.P, self.cell = self._standard_parameter_setup(
+            default_p='migliore_2005',
+            cell_class='CellMigliore2005',
+            p_update=p_update,
+            paths_update=paths_update,
+            load_fd=True)
+
+        # iterate over synapse number 
+        for syn_num in kwargs['syn_num']:
+            # update parameter dictionary
+            self.P.paths['1']['syn_num']=syn_num
+
+            # iterate over trials
+            for trial_i, trial in enumerate(range(self.P.p['trials'])):
+
+                # create list of active synapses, weights, delays
+                # stored in P.p['seg_idx', 'w_list', 'sequence_delays'], 
+                self.P = self._update_synapse_parameters(P=self.P, cell=self.cell, method='_choose_seg_rand')
+                # increase simulation duration
+                # self.P.p['tstop']=100
+                self.P.p['field_off']=self.P.p['tstop']
+
+                self.run_obj = self._standard_run_and_save(P=self.P, cell=self.cell, trial=trial)
+
+    def exp_1a_apical_full_duration_20Hz(self, **kwargs):
+        ''' repeat experiment 1a1 with varying electric field intensity
+
+        6,8,10,12,14 synapses at .001 uS per synapse, distributed evenly between 0 and 300 um from soma
+        '''
+        # updates to global parameter dictionary 
+        p_update = {
+        'experiment' : kwargs['experiment'], 
+        'trials' : kwargs['trials'],
+        'field':[-20., 0., 20.],
+        'rec_variables':[('v','range','v'),('input_times','syn','ampa'),],
+        'active_paths':['1',],
+        'gcalbar': 1.*.00125 ,          # L-type calcium conductance from Kim et al. 2015 (mho/cm2)
+        }
+
+        # set up synaptic pathway parameters
+        paths_update = {'1':{
+        'trees': ['apical_trunk', 'apical_tuft'],
+        'syn_num': 0,
+        'nsyns': 1.,
+        'syn_dist': kwargs['syn_dist'],
+        'pulses': 60.,
         'pulse_freq': 20.,
-        'bursts': 1,
-        'burst_freq': 5.,
-        'warmup': 30,
-        'w_mean': .0015,
-        }}
-
-        # setup cell and updated parameter structures
-        P, cell1 = setup_parameters(
-            default_p='migliore_2005',
-            cell_class='CellMigliore2005',
-            p_update=p_update,
-            paths_update=paths_update)
-
-        # iterate over trials
-        for trial_i, trial in enumerate(range(P.p['trials'])):
-
-            update_synapse_parameters(P, P.p, P.paths, cell1=cell1)
-
-            # store trial number
-            P.p['trial']=trial
-                            
-            # create unique identifier for each trial
-            P.p['trial_id'] = str(uuid.uuid4())
-                            
-            # start timer
-            start = time.time() 
-            
-            # print cell1.syns
-            # run simulation
-            sim = run.Run(p=P.p, cell=cell1) 
-
-            # end timer
-            end = time.time() 
-
-            # print trial and simulation time
-            print 'trial'+ str(P.p['trial']) + ' duration:' + str(end -start) 
-            
-            # set file name to save data
-            file_name = str(
-            P.p['experiment']+
-            '_trial_'+str(P.p['trial'])+
-            '_id_'+P.p['trial_id']
-            )
-
-            # save data for eahc trial
-            run.save_data(data=sim.data, file_name=file_name)
-
-            # plot traces
-            analysis.PlotRangeVar().plot_trace(data=sim.data, 
-                        variables=P.p['plot_variables'],
-                        x_variables=P.p['x_variables'],
-                        file_name=file_name,
-                        group_trees=P.p['group_trees'],
-                        xlim=[P.p['warmup']-5,P.p['tstop']],
-                        ylim=[-75,-40])
-
-    def exp_3a1_basal(self, **kwargs):
-        """ 20 Hz simulation (40 pulses, 2 seconds) with sodium channel inactivation.  Track backpropagation of action potentials
-        """
-        # 
-        p_update = {
-        'experiment' : kwargs['experiment'], 
-        'trials' : kwargs['trials'],
-        'field':[-20.,0.,20.],
-        'plot_variables':['v','gbar'],
-        'path_combo':'1',
-        'clopath_A_m':100E-5, # depression magnitude parameter (mV^-1)
-        'clopath_tetam':-70,#-41, # depression threshold (mV)
-        'clopath_tetap':-67,#-38, # potentiation threshold (mV)
-        'clopath_tau_r':8,#-38, # potentiation threshold (mV)
-        'clopath_tau_0':20,#-38, # potentiation threshold (mV)
-        'clopath_tau_y': 3, # time constant (ms) for low pass filter post membrane potential for potentiation
-        'clopath_A_p': 38E-5, # amplitude for potentiation (mV^-2)
-        }
-
-        # set up two pathways
-        paths_update = {'1':{
-        'trees': ['basal'],
-        'syn_num': 8,
-        'nsyns': 1.,
-        'syn_dist': [0,300],
-        'pulses': 40.,
-        'pulse_freq': 20.,
-        'bursts': 1,
-        'burst_freq': 5.,
-        'warmup': 30,
-        'w_mean': .0015,
-        }}
-
-        # setup cell and updated parameter structures
-        P, cell1 = setup_parameters(
-            default_p='migliore_2005',
-            cell_class='CellMigliore2005',
-            p_update=p_update,
-            paths_update=paths_update)
-
-        # iterate over trials
-        for trial_i, trial in enumerate(range(P.p['trials'])):
-
-            update_synapse_parameters(P, P.p, P.paths, cell1=cell1)
-
-            # store trial number
-            P.p['trial']=trial
-                            
-            # create unique identifier for each trial
-            P.p['trial_id'] = str(uuid.uuid4())
-                            
-            # start timer
-            start = time.time() 
-            
-            # print cell1.syns
-            # run simulation
-            sim = run.Run(p=P.p, cell=cell1) 
-
-            # end timer
-            end = time.time() 
-
-            # print trial and simulation time
-            print 'trial'+ str(P.p['trial']) + ' duration:' + str(end -start) 
-            
-            # set file name to save data
-            file_name = str(
-            P.p['experiment']+
-            '_trial_'+str(P.p['trial'])+
-            '_id_'+P.p['trial_id']
-            )
-
-            # save data for eahc trial
-            run.save_data(data=sim.data, file_name=file_name)
-
-            # plot traces
-            analysis.PlotRangeVar().plot_trace(data=sim.data, 
-                        variables=P.p['plot_variables'],
-                        x_variables=P.p['x_variables'],
-                        file_name=file_name,
-                        group_trees=P.p['group_trees'],
-                        xlim=[P.p['warmup']-5,P.p['tstop']],
-                        ylim=[-75,-40])
-    
-    def exp_3a2(self, **kwargs):
-        """ TBS simulation (40 pulses, 2 seconds) in full pyramidal cell with parameters from Migliore et al. 2005.  Track backpropagation of action potentials
-        """
-        trials = 1
-        p_update = {
-        'experiment' : kwargs['experiment'], 
-        'trials' : kwargs['trials'],
-        'field':[-20.,0.,20.],
-        'plot_variables':['v','gbar'],
-        'path_combo':['1'],
-        'clopath_A_m':3E-5, # depression magnitude parameter (mV^-1)
-        'clopath_tetam':-70,#-41, # depression threshold (mV)
-        'clopath_tetap':-65,#-38, # potentiation threshold (mV)
-        'clopath_tau_r':8,#-38, # potentiation threshold (mV)
-        'clopath_tau_0':30,#-38, # potentiation threshold (mV)
-        'clopath_tau_y': 5, # time constant (ms) for low pass filter post membrane potential for potentiation
-        'clopath_A_p': 38E-5, # amplitude for potentiation (mV^-2)
-        }
-
-        # set up synaptic pathway parameters
-        paths_update = {'1':{
-        'trees': ['apical_tuft','apical_trunk'],
-        'syn_num': 8,
-        'nsyns': 1.,
-        'syn_dist': [0,300],
-        'pulses': 4.,
-        'pulse_freq': 100.,
-        'bursts': 10.,
-        'burst_freq': 5.,
-        'warmup': 30,
-        'w_mean': .0015,
-        }}
-
-        # setup cell and updated parameter structures
-        P, cell1 = setup_parameters(
-            default_p='migliore_2005',
-            cell_class='CellMigliore2005',
-            p_update=p_update,
-            paths_update=paths_update,)
-
-        # iterate over trials
-        for trial_i, trial in enumerate(range(P.p['trials'])):
-
-            # create list of active synapses, weights, delays
-            # stored in P.p['seg_idx', 'w_list', 'sequence_delays'], 
-            update_synapse_parameters(P, P.p, P.paths, cell1)
-
-            # store trial number
-            P.p['trial']=trial
-                            
-            # create unique identifier for each trial
-            P.p['trial_id'] = str(uuid.uuid4())
-                            
-            # start timer
-            start = time.time() 
-            
-            # run simulation
-            print P.p['p_path']['1']['pulses']
-            sim = run.Run(p=P.p, cell=cell1) 
-
-            # end timer
-            end = time.time() 
-
-            # print trial and simulation time
-            print 'trial'+ str(P.p['trial']) + ' duration:' + str(end -start) 
-            
-            # set file name to save data
-            file_name = str(
-            P.p['experiment']+
-            '_trial_'+str(P.p['trial'])+
-            '_id_'+P.p['trial_id']
-            )
-
-            # save data for eahc trial
-            run.save_data(data=sim.data, file_name=file_name)
-
-            # plot traces
-            analysis.PlotRangeVar().plot_trace(
-                data=sim.data, 
-                variables=P.p['plot_variables'],
-                x_variables=P.p['x_variables'],
-                file_name=file_name,
-                group_trees=P.p['group_trees'],
-                xlim=[P.p['warmup']-5,P.p['tstop']],
-                 ylim=[-75,-40])
-
-    def exp_3a2_dose(self, **kwargs):
-        """ TBS simulation (40 pulses, 2 seconds) in full pyramidal cell with parameters from Migliore et al. 2005.  Sweep across field intensities to get dose response
-        """
-        # trials = 1
-        p_update = {
-        'experiment' : kwargs['experiment'], 
-        'trials' : kwargs['trials'],
-        'field':[-20.,-5.,-1.,-0.5, 0.,0.5, 1., 5., 20.],
-        'plot_variables':['v','gbar'],
-        'path_combo':['1'],
-        'clopath_A_m':100E-5, # depression magnitude parameter (mV^-1)
-        'clopath_tetam':-70,#-41, # depression threshold (mV)
-        'clopath_tetap':-67,#-38, # potentiation threshold (mV)
-        'clopath_tau_r':8,#-38, # potentiation threshold (mV)
-        'clopath_tau_0':20,#-38, # potentiation threshold (mV)
-        'clopath_tau_y': 3, # time constant (ms) for low pass filter post membrane potential for potentiation
-        'clopath_A_p': 38E-5, # amplitude for potentiation (mV^-2)
-        }
-
-        # set up synaptic pathway parameters
-        paths_update = {'1':{
-        'trees': ['apical_tuft','apical_trunk'],
-        'syn_num': 8,
-        'nsyns': 1.,
-        'syn_dist': [0,300],
-        'pulses': 4.,
-        'pulse_freq': 100.,
-        'bursts': 10.,
-        'burst_freq': 5.,
-        'warmup': 30,
-        'w_mean': .0015,
-        }}
-
-        # setup cell and updated parameter structures
-        P, cell1 = setup_parameters(
-            default_p='migliore_2005',
-            cell_class='CellMigliore2005',
-            p_update=p_update,
-            paths_update=paths_update,)
-
-        # iterate over trials
-        for trial_i, trial in enumerate(range(P.p['trials'])):
-
-            # create list of active synapses, weights, delays
-            # stored in P.p['seg_idx', 'w_list', 'sequence_delays'], 
-            update_synapse_parameters(P, P.p, P.paths, cell1)
-
-            # store trial number
-            P.p['trial']=trial
-                            
-            # create unique identifier for each trial
-            P.p['trial_id'] = str(uuid.uuid4())
-                            
-            # start timer
-            start = time.time() 
-            
-            # run simulation
-            # print P.p['p_path']['1']['pulses']
-            sim = run.Run(p=P.p, cell=cell1) 
-
-            # end timer
-            end = time.time() 
-
-            # print trial and simulation time
-            print 'trial'+ str(P.p['trial']) + ' duration:' + str(end -start) 
-            
-            # set file name to save data
-            file_name = str(
-            P.p['experiment']+
-            '_trial_'+str(P.p['trial'])+
-            '_id_'+P.p['trial_id']
-            )
-
-            # save data for eahc trial
-            run.save_data(data=sim.data, file_name=file_name)
-
-            # plot traces
-            # analysis.PlotRangeVar().plot_trace(
-            #     data=sim.data, 
-            #     variables=P.p['plot_variables'],
-            #     x_variables=P.p['x_variables'],
-            #     file_name=file_name,
-            #     group_trees=P.p['group_trees'],
-            #     xlim=[P.p['warmup']-5,P.p['tstop']],
-            #      ylim=[-75,-40])
-    
-    def exp_3a2_basal(self, **kwargs):
-        """ TBS simulation (40 pulses, 2 seconds) in full pyramidal cell with parameters from Migliore et al. 2005.  Track backpropagation of action potentials
-        """
-        trials = 1
-        p_update = {
-        'experiment' : kwargs['experiment'], 
-        'trials' : kwargs['trials'],
-        'field':[-20.,0.,20.],
-        'plot_variables':['v','gbar'],
-        'path_combo':['1'],
-        'clopath_A_m':100E-5, # depression magnitude parameter (mV^-1)
-        'clopath_tetam':-70,#-41, # depression threshold (mV)
-        'clopath_tetap':-67,#-38, # potentiation threshold (mV)
-        'clopath_tau_r':8,#-38, # potentiation threshold (mV)
-        'clopath_tau_0':20,#-38, # potentiation threshold (mV)
-        'clopath_tau_y': 3, # time constant (ms) for low pass filter post membrane potential for potentiation
-        'clopath_A_p': 38E-5, # amplitude for potentiation (mV^-2)
-        }
-
-        # set up synaptic pathway parameters
-        paths_update = {'1':{
-        'trees': ['basal'],
-        'syn_num': 8,
-        'nsyns': 1.,
-        'syn_dist': [0,300],
-        'pulses': 4.,
-        'pulse_freq': 100.,
-        'bursts': 10.,
-        'burst_freq': 5.,
-        'warmup': 30,
-        'w_mean': .0015,
-        }}
-
-        # setup cell and updated parameter structures
-        P, cell1 = setup_parameters(
-            default_p='migliore_2005',
-            cell_class='CellMigliore2005',
-            p_update=p_update,
-            paths_update=paths_update,)
-
-        print 'trials:', P.p['trials']
-        # iterate over trials
-        for trial_i, trial in enumerate(range(P.p['trials'])):
-
-            # create list of active synapses, weights, delays
-            # stored in P.p['seg_idx', 'w_list', 'sequence_delays'], 
-            update_synapse_parameters(P, P.p, P.paths, cell1)
-
-            # store trial number
-            P.p['trial']=trial
-                            
-            # create unique identifier for each trial
-            P.p['trial_id'] = str(uuid.uuid4())
-                            
-            # start timer
-            start = time.time() 
-            
-            # run simulation
-            # print P.p['p_path']['1']['pulses']
-            sim = run.Run(p=P.p, cell=cell1) 
-
-            # end timer
-            end = time.time() 
-
-            # print trial and simulation time
-            print 'trial'+ str(P.p['trial']) + ' duration:' + str(end -start) 
-            
-            # set file name to save data
-            file_name = str(
-            P.p['experiment']+
-            '_trial_'+str(P.p['trial'])+
-            '_id_'+P.p['trial_id']
-            )
-
-            # save data for eahc trial
-            run.save_data(data=sim.data, file_name=file_name)
-
-            # plot traces
-            analysis.PlotRangeVar().plot_trace(
-                data=sim.data, 
-                variables=P.p['plot_variables'],
-                x_variables=P.p['x_variables'],
-                file_name=file_name,
-                group_trees=P.p['group_trees'],
-                xlim=[P.p['warmup']-5,P.p['tstop']],
-                 ylim=[-75,-40])
-
-    def exp_3a3(self, **kwargs):
-        """ 1 Hz simulation (40 pulses, 40 seconds) in full pyramidal cell with parameters from Migliore et al. 2005.  Track backpropagation of action potentials
-        """
-        trials = 1
-        p_update = {
-        'experiment' : kwargs['experiment'], 
-        'trials' : kwargs['trials'],
-        'field':[-20.,0.,20.],
-        'plot_variables':['v','gbar'],
-        'path_combo':['1'],
-        'clopath_A_m':3E-5, # depression magnitude parameter (mV^-1)
-        'clopath_tetam':-70,#-41, # depression threshold (mV)
-        'clopath_tetap':-65,#-38, # potentiation threshold (mV)
-        'clopath_tau_r':8,#-38, # potentiation threshold (mV)
-        'clopath_tau_0':30,#-38, # potentiation threshold (mV)
-        'clopath_tau_y': 5, # time constant (ms) for low pass filter post membrane potential for potentiation
-        'clopath_A_p': 38E-5, # amplitude for potentiation (mV^-2)
-        }
-
-        # set up synaptic pathway parameters
-        paths_update = {'1':{
-        'trees': ['apical_tuft','apical_trunk'],
-        'syn_num': 8,
-        'nsyns': 1.,
-        'syn_dist': [0,300],
-        'pulses': 40.,
-        'pulse_freq': 1.,
         'bursts': 1.,
-        'burst_freq': 1.,
-        'warmup': 30,
-        'w_mean': .0015,
-        }}
+        'burst_freq': 5.,
+        'warmup': 10,
+        'w_mean': 1*.001,
+        'w_std':0.,
+        'w_rand':False,
+        'replace_syn':True,
+        'syn_frac':0.,
+        'noise':0,
+        },}
 
         # setup cell and updated parameter structures
-        P, cell1 = setup_parameters(
+        self.P, self.cell = self._standard_parameter_setup(
             default_p='migliore_2005',
             cell_class='CellMigliore2005',
             p_update=p_update,
-            paths_update=paths_update,)
+            paths_update=paths_update,
+            load_fd=True)
 
-        # iterate over trials
-        for trial_i, trial in enumerate(range(P.p['trials'])):
+        # iterate over synapse number 
+        for syn_num in kwargs['syn_num']:
+            # update parameter dictionary
+            self.P.paths['1']['syn_num']=syn_num
 
-            # create list of active synapses, weights, delays
-            # stored in P.p['seg_idx', 'w_list', 'sequence_delays'], 
-            update_synapse_parameters(P, P.p, P.paths, cell1)
+            # iterate over trials
+            for trial_i, trial in enumerate(range(self.P.p['trials'])):
 
-            # store trial number
-            P.p['trial']=trial
-                            
-            # create unique identifier for each trial
-            P.p['trial_id'] = str(uuid.uuid4())
-                            
-            # start timer
-            start = time.time() 
-            
-            # run simulation
-            print P.p['p_path']['1']['pulses']
-            sim = run.Run(p=P.p, cell=cell1) 
+                # create list of active synapses, weights, delays
+                # stored in P.p['seg_idx', 'w_list', 'sequence_delays'], 
+                self.P = self._update_synapse_parameters(P=self.P, cell=self.cell, method='_choose_seg_rand')
+                # increase simulation duration
+                # self.P.p['tstop']=100
+                self.P.p['field_off']=self.P.p['tstop']
 
-            # end timer
-            end = time.time() 
+                self.run_obj = self._standard_run_and_save(P=self.P, cell=self.cell, trial=trial)
 
-            # print trial and simulation time
-            print 'trial'+ str(P.p['trial']) + ' duration:' + str(end -start) 
-            
-            # set file name to save data
-            file_name = str(
-            P.p['experiment']+
-            '_trial_'+str(P.p['trial'])+
-            '_id_'+P.p['trial_id']
-            )
+    def exp_1a_basal_full_duration(self, **kwargs):
+        ''' repeat experiment 1a1 with varying electric field intensity
 
-            # save data for eahc trial
-            run.save_data(data=sim.data, file_name=file_name)
+        6,8,10,12,14 synapses at .001 uS per synapse, distributed evenly between 0 and 300 um from soma
+        '''
+        # updates to global parameter dictionary 
+        p_update = {
+        'experiment' : kwargs['experiment'], 
+        'trials' : kwargs['trials'],
+        'field':[-20., 0., 20.],
+        'rec_variables':[('v','range','v'),('input_times','syn','ampa'),],
+        'active_paths':['1',],
+        'gcalbar': 1.*.00125 ,          # L-type calcium conductance from Kim et al. 2015 (mho/cm2)
+        }
 
-            # plot traces
-            analysis.PlotRangeVar().plot_trace(
-                data=sim.data, 
-                variables=P.p['plot_variables'],
-                x_variables=P.p['x_variables'],
-                file_name=file_name,
-                group_trees=P.p['group_trees'],
-                xlim=[P.p['warmup']-5,P.p['tstop']],
-                 ylim=[-75,-40])
+        # set up synaptic pathway parameters
+        paths_update = {'1':{
+        'trees': ['basal'],
+        'syn_num': 0,
+        'nsyns': 1.,
+        'syn_dist': kwargs['syn_dist'],
+        'pulses': 4.,
+        'pulse_freq': 100.,
+        'bursts': 15.,
+        'burst_freq': 5.,
+        'warmup': 10,
+        'w_mean': 1*.001,
+        'w_std':0.,
+        'w_rand':False,
+        'replace_syn':True,
+        'syn_frac':0.,
+        'noise':0,
+        },}
+
+        # setup cell and updated parameter structures
+        self.P, self.cell = self._standard_parameter_setup(
+            default_p='migliore_2005',
+            cell_class='CellMigliore2005',
+            p_update=p_update,
+            paths_update=paths_update,
+            load_fd=True)
+
+        # iterate over synapse number 
+        for syn_num in kwargs['syn_num']:
+            # update parameter dictionary
+            self.P.paths['1']['syn_num']=syn_num
+
+            # iterate over trials
+            for trial_i, trial in enumerate(range(self.P.p['trials'])):
+
+                # create list of active synapses, weights, delays
+                # stored in P.p['seg_idx', 'w_list', 'sequence_delays'], 
+                self.P = self._update_synapse_parameters(P=self.P, cell=self.cell, method='_choose_seg_rand')
+                # increase simulation duration
+                # self.P.p['tstop']=100
+                self.P.p['field_off']=self.P.p['tstop']
+
+                self.run_obj = self._standard_run_and_save(P=self.P, cell=self.cell, trial=trial)
+
+    def exp_1a_basal_full_duration_20Hz(self, **kwargs):
+        ''' repeat experiment 1a1 with varying electric field intensity
+
+        6,8,10,12,14 synapses at .001 uS per synapse, distributed evenly between 0 and 300 um from soma
+        '''
+        # updates to global parameter dictionary 
+        p_update = {
+        'experiment' : kwargs['experiment'], 
+        'trials' : kwargs['trials'],
+        'field':[-20., 0., 20.],
+        'rec_variables':[('v','range','v'),('input_times','syn','ampa'),],
+        'active_paths':['1',],
+        'gcalbar': 1.*.00125 ,          # L-type calcium conductance from Kim et al. 2015 (mho/cm2)
+        }
+
+        # set up synaptic pathway parameters
+        paths_update = {'1':{
+        'trees': ['basal'],
+        'syn_num': 0,
+        'nsyns': 1.,
+        'syn_dist': kwargs['syn_dist'],
+        'pulses': 60.,
+        'pulse_freq': 20.,
+        'bursts': 1.,
+        'burst_freq': 5.,
+        'warmup': 10,
+        'w_mean': 1*.001,
+        'w_std':0.,
+        'w_rand':False,
+        'replace_syn':True,
+        'syn_frac':0.,
+        'noise':0,
+        },}
+
+        # setup cell and updated parameter structures
+        self.P, self.cell = self._standard_parameter_setup(
+            default_p='migliore_2005',
+            cell_class='CellMigliore2005',
+            p_update=p_update,
+            paths_update=paths_update,
+            load_fd=True)
+
+        # iterate over synapse number 
+        for syn_num in kwargs['syn_num']:
+            # update parameter dictionary
+            self.P.paths['1']['syn_num']=syn_num
+
+            # iterate over trials
+            for trial_i, trial in enumerate(range(self.P.p['trials'])):
+
+                # create list of active synapses, weights, delays
+                # stored in P.p['seg_idx', 'w_list', 'sequence_delays'], 
+                self.P = self._update_synapse_parameters(P=self.P, cell=self.cell, method='_choose_seg_rand')
+                # increase simulation duration
+                # self.P.p['tstop']=100
+                self.P.p['field_off']=self.P.p['tstop']
+
+                self.run_obj = self._standard_run_and_save(P=self.P, cell=self.cell, trial=trial)
+
+    def exp_1a_poisson(self, **kwargs):
+        ''' repeat experiment 1a1 with varying electric field intensity
+
+        6,8,10,12,14 synapses at .001 uS per synapse, distributed evenly between 0 and 300 um from soma
+        '''
+        # updates to global parameter dictionary 
+        p_update = {
+        'experiment' : kwargs['experiment'], 
+        'trials' : kwargs['trials'],
+        'field':[-20., 0., 20.],
+        'rec_variables':[('v','range','v'),('input_times','syn','ampa'),],
+        'active_paths':['1',],
+        'gcalbar': 1.*.00125 ,          # L-type calcium conductance from Kim et al. 2015 (mho/cm2)
+        }
+
+        # set up synaptic pathway parameters
+        paths_update = {'1':{
+        'trees': ['apical_trunk', 'apical_tuft'],
+        'syn_num': 0,
+        'nsyns': 1.,
+        'syn_dist': kwargs['syn_dist'],
+        'pulses': 10.,
+        'pulse_freq': 20.,
+        'bursts': 1.,
+        'burst_freq': 5.,
+        'warmup': 10,
+        'w_mean': 1*.001,
+        'w_std':0.,
+        'w_rand':False,
+        'replace_syn':True,
+        'syn_frac':0.,
+        'noise':0.9,
+        'mod_freq':5,
+        'mod_amp':38,
+        'mean_rate':40
+        },}
+
+        # setup cell and updated parameter structures
+        self.P, self.cell = self._standard_parameter_setup(
+            default_p='migliore_2005',
+            cell_class='CellMigliore2005',
+            p_update=p_update,
+            paths_update=paths_update,
+            load_fd=True)
+
+        # iterate over synapse number 
+        for syn_num in kwargs['syn_num']:
+            # update parameter dictionary
+            self.P.paths['1']['syn_num']=syn_num
+
+            # iterate over trials
+            for trial_i, trial in enumerate(range(self.P.p['trials'])):
+
+                # create list of active synapses, weights, delays
+                # stored in P.p['seg_idx', 'w_list', 'sequence_delays'], 
+                self.P = self._update_synapse_parameters(P=self.P, cell=self.cell, method='_choose_seg_rand')
+                # increase simulation duration
+                self.P.p['tstop']=3000
+                self.P.p['field_off']=self.P.p['tstop']
+                self.P.p['p_path']['1']['dt']=self.P.p['dt']
+                self.P.p['p_path']['1']['tstop']=self.P.p['tstop']
+
+
+                run_kwargs={'uncage_method':'_poisson'}
+                self.run_obj = self._standard_run_and_save(P=self.P, cell=self.cell, trial=trial, **run_kwargs)
+        
+        '''
+        EXPERIMENT 4 
+        two pathway associativity and specificity
+        '''
     
-    def exp_3b1(self, **kwargs):
-        """ 20 Hz simulation (40 pulses, 2 seconds) with reduced cylindrical model
-        """
-        # 
-        # kwargs['trials']=1
-        p_update = {
-        'experiment' : kwargs['experiment'], 
-        'trials' : kwargs['trials'],
-        'field':[-5.,0.,5.],
-        'plot_variables':['v','gbar'],
-        'path_combo':'1',
-        'nseg':1,
-        'clopath_A_m':4E-5, # depression magnitude parameter (mV^-1)
-        'clopath_tetam':-70,#-41, # depression threshold (mV)
-        'clopath_tetap':-65,#-38, # potentiation threshold (mV)
-        'clopath_tau_r':8,#-38, # potentiation threshold (mV)
-        'clopath_tau_0':30,#-38, # potentiation threshold (mV)
-        'clopath_tau_y': 5, # time constant (ms) for low pass filter post membrane potential for potentiation
-        'clopath_A_p': 38E-5, # amplitude for potentiation (mV^-2)
-        }
-
-        # set up two pathways
-        paths_update = {'1':{
-        'trees': ['apical_dist'],
-        'syn_num': 10,
-        'nsyns': 1.,
-        'syn_dist': [0,2000],
-        'pulses': 0.,
-        'pulse_freq': 20.,
-        'bursts': 0,
-        'burst_freq': 5.,
-        'warmup': 30,
-        'w_mean': .0015,
-        }}
-
-        # setup cell and updated parameter structures
-        P, cell1 = setup_parameters(
-            default_p='migliore_2005',
-            cell_class='PyramidalCylinder',
-            p_update=p_update,
-            paths_update=paths_update,
-            load_fd=False)
-
-        # iterate over trials
-        for trial_i, trial in enumerate(range(P.p['trials'])):
-
-            update_synapse_parameters(P, P.p, P.paths, cell1=cell1)
-
-            # store trial number
-            P.p['trial']=trial
-                            
-            # create unique identifier for each trial
-            P.p['trial_id'] = str(uuid.uuid4())
-                            
-            # start timer
-            start = time.time() 
-            
-            # print cell1.syns
-            # run simulation
-
-            sim = run.Run(p=P.p, cell=cell1) 
-
-            # end timer
-            end = time.time() 
-
-            # print trial and simulation time
-            print 'trial'+ str(P.p['trial']) + ' duration:' + str(end -start) 
-            
-            # set file name to save data
-            file_name = str(
-            P.p['experiment']+
-            '_trial_'+str(P.p['trial'])+
-            '_id_'+P.p['trial_id']
-            )
-
-            # save data for eahc trial
-            run.save_data(data=sim.data, file_name=file_name)
-
-            # plot traces
-            analysis.PlotRangeVar().plot_trace(data=sim.data, 
-                        variables=P.p['plot_variables'],
-                        x_variables=P.p['x_variables'],
-                        file_name=file_name,
-                        group_trees=P.p['group_trees'],
-                        xlim=[P.p['warmup']-5,P.p['tstop']],
-                        ylim=[-75,-40])
-
-    def exp_3b3(self, **kwargs):
-        """ 1 Hz simulation (40 pulses, 40 seconds) with reduced cylindrical model
-        """
-        # 
-        kwargs['trials']=1
-        p_update = {
-        'experiment' : kwargs['experiment'], 
-        'trials' : kwargs['trials'],
-        'field':[-5.,0.,5.],
-        'plot_variables':['v','gbar'],
-        'path_combo':'1',
-        'nseg':1,
-        'clopath_A_m':4E-5, # depression magnitude parameter (mV^-1)
-        'clopath_tetam':-70,#-41, # depression threshold (mV)
-        'clopath_tetap':-65,#-38, # potentiation threshold (mV)
-        'clopath_tau_r':8,#-38, # potentiation threshold (mV)
-        'clopath_tau_0':30,#-38, # potentiation threshold (mV)
-        'clopath_tau_y': 5, # time constant (ms) for low pass filter post membrane potential for potentiation
-        'clopath_A_p': 38E-5, # amplitude for potentiation (mV^-2)
-        }
-
-        # set up two pathways
-        paths_update = {'1':{
-        'trees': ['apical_dist'],
-        'syn_num': 10,
-        'nsyns': 1.,
-        'syn_dist': [0,2000],
-        'pulses': 40.,
-        'pulse_freq': 1.,
-        'bursts': 1,
-        'burst_freq': 5.,
-        'warmup': 30,
-        'w_mean': .0015,
-        }}
-
-        # setup cell and updated parameter structures
-        P, cell1 = setup_parameters(
-            default_p='migliore_2005',
-            cell_class='PyramidalCylinder',
-            p_update=p_update,
-            paths_update=paths_update,
-            load_fd=False)
-
-        # iterate over trials
-        for trial_i, trial in enumerate(range(P.p['trials'])):
-
-            update_synapse_parameters(P, P.p, P.paths, cell1=cell1)
-
-            # store trial number
-            P.p['trial']=trial
-                            
-            # create unique identifier for each trial
-            P.p['trial_id'] = str(uuid.uuid4())
-                            
-            # start timer
-            start = time.time() 
-            
-            # print cell1.syns
-            # run simulation
-
-            sim = run.Run(p=P.p, cell=cell1) 
-
-            # end timer
-            end = time.time() 
-
-            # print trial and simulation time
-            print 'trial'+ str(P.p['trial']) + ' duration:' + str(end -start) 
-            
-            # set file name to save data
-            file_name = str(
-            P.p['experiment']+
-            '_trial_'+str(P.p['trial'])+
-            '_id_'+P.p['trial_id']
-            )
-
-            # save data for eahc trial
-            run.save_data(data=sim.data, file_name=file_name)
-
-            # plot traces
-            analysis.PlotRangeVar().plot_trace(data=sim.data, 
-                        variables=P.p['plot_variables'],
-                        x_variables=P.p['x_variables'],
-                        file_name=file_name,
-                        group_trees=P.p['group_trees'],
-                        xlim=[P.p['warmup']-5,P.p['tstop']],
-                        ylim=[-75,-40])
-
-    def exp_3c1(self, **kwargs):
-        """ Measure membrane polarization and create shapeplot
-        """
-        # 
-        p_update = {
-        'experiment' : kwargs['experiment'], 
-        'trials' : kwargs['trials'],
-        'field':[-20.,0.,20.],
-        'plot_variables':['v','gbar'],
-        'path_combo':'1',
-        'clopath_A_m':40E-5, # depression magnitude parameter (mV^-1)
-        'clopath_tetam':-70,#-41, # depression threshold (mV)
-        'clopath_tetap':-65,#-38, # potentiation threshold (mV)
-        'clopath_tau_r':8,#-38, # potentiation threshold (mV)
-        'clopath_tau_0':30,#-38, # potentiation threshold (mV)
-        'clopath_tau_y': 5, # time constant (ms) for low pass filter post membrane potential for potentiation
-        'clopath_A_p': 38E-5, # amplitude for potentiation (mV^-2)
-        }
-
-        # set up two pathways
-        paths_update = {'1':{
-        'trees': ['basal','apical_tuft','apical_trunk'],
-        'syn_num': [],
-        'syn_frac':1.,
-        'replace_syn':False,
-        'nsyns': 0.,
-        'syn_dist': [],
-        'pulses': 0.,
-        'pulse_freq': 20.,
-        'bursts': 1,
-        'burst_freq': 5.,
-        'warmup': 30,
-        'w_mean': .0015,
-        }}
-
-        # setup cell and updated parameter structures
-        P, cell1 = setup_parameters(
-            default_p='migliore_2005',
-            cell_class='CellMigliore2005',
-            p_update=p_update,
-            paths_update=paths_update)
-
-        # iterate over trials
-        for trial_i, trial in enumerate(range(P.p['trials'])):
-
-            update_synapse_parameters(P, P.p, P.paths, cell1=cell1)
-
-            P.p['tstop']=50
-            # store trial number
-            P.p['trial']=trial
-                            
-            # create unique identifier for each trial
-            P.p['trial_id'] = str(uuid.uuid4())
-                            
-            # start timer
-            start = time.time() 
-            
-            # print cell1.syns
-            # run simulation
-            sim = run.Run(p=P.p, cell=cell1) 
-
-            # end timer
-            end = time.time() 
-
-            # print trial and simulation time
-            print 'trial'+ str(P.p['trial']) + ' duration:' + str(end -start) 
-            
-            # set file name to save data
-            file_name = str(
-            P.p['experiment']+
-            '_trial_'+str(P.p['trial'])+
-            '_id_'+P.p['trial_id']
-            )
-
-            # save data for eahc trial
-            run.save_data(data=sim.data, file_name=file_name)
-
-            # plot traces
-            # analysis.PlotRangeVar().plot_trace(data=sim.data, 
-            #             variables=P.p['plot_variables'],
-            #             x_variables=P.p['x_variables'],
-            #             file_name=file_name,
-            #             group_trees=P.p['group_trees'],
-            #             xlim=[P.p['warmup']-5,P.p['tstop']],
-            #             ylim=[-75,-40])
-    """
-    Experiment 4
-
-    Pathway specificity, associativity
-    """
     def exp_4a1(self, **kwargs):
-        """ TBS stimulation in two pathways, same parameters as in exp_3 series.  Only run two bursts, since not comparing to 20 Hz.
+        """ two pathway experiments
 
-        Path 1: TBS 
-        Path 2: single pulses at 5 Hz, timed to arrive between the 2nd and 3rd pulse in each TBS burst
+        both pathways are distributed 0-300 um from soma.  pathway 1 receives a theta burst, path 2 receives a single pulse timed to the second pulse of the theta burst
+
+        4,5,6,8,10,12,16,20 synapses at 0-200 or 0-300 um from soma
+        
+        ==Args==
+        -experiment : string containing the name of the experiment, eg 'exp_1a1'
+        -trials :  integer number of trials to run
+        -syn_dist :  list, or nested list, containing synapse distance requirements for choose_seg_rand. eg [0, 200] chooses synapses between 0 and 200 um from soma
+        -syn_num :  list of number of synapses to be activated. note that synapses are chosen randomly with replacement, so the same synapse can be selected multiple times.  In this case the weight is multiplied by the number of times the synapse is selected
         """
-        trials = 1
+
+        # updates to global parameter dictionary 
         p_update = {
         'experiment' : kwargs['experiment'], 
         'trials' : kwargs['trials'],
         'field':[-20.,0.,20.],
-        'plot_variables':['v','gbar'],
-        'path_combo':['1','2'],
-        'clopath_A_m':100E-5, # depression magnitude parameter (mV^-1)
-        'clopath_tetam':-70,#-41, # depression threshold (mV)
-        'clopath_tetap':-67,#-38, # potentiation threshold (mV)
-        'clopath_tau_r':8,#-38, # potentiation threshold (mV)
-        'clopath_tau_0':20,#-38, # potentiation threshold (mV)
-        'clopath_tau_y': 3, # time constant (ms) for low pass filter post membrane potential for potentiation
-        'clopath_A_p': 38E-5, # amplitude for potentiation (mV^-2)
+        'rec_variables':[('v','range','v'),('input_times','syn','ampa'),('ica_calH','range','calH'), ('i','syn','nmda')],
+        'active_paths':['1','2'],
+        'gcalbar': 1.*.00125 ,          # L-type calcium conductance from Kim et al. 2015 (mho/cm2)
         }
 
         # set up synaptic pathway parameters
         paths_update = {'1':{
         'trees': ['apical_tuft','apical_trunk'],
-        'syn_num': 5,
+        'syn_num': 0,
         'nsyns': 1.,
-        'syn_dist': [0,300],
+        'syn_dist': [],#kwargs['syn_dist'],
         'pulses': 4.,
         'pulse_freq': 100.,
         'bursts': 1.,
         'burst_freq': 5.,
-        'warmup': 30,
-        'w_mean': .0015,
+        'warmup': 10,
+        'w_mean': 1*.001,
+        'w_std':0.,
+        'w_rand':False,
+        'replace_syn':True,
+        'syn_frac':0.,
+        'noise':0,
         },
         '2':{
         'trees': ['apical_tuft','apical_trunk'],
-        'syn_num': 5,
+        'syn_num': 0,
         'nsyns': 1.,
-        'syn_dist': [0,300],
+        'syn_dist': [],#kwargs['syn_dist'],
         'pulses': 1.,
         'pulse_freq': 100.,
         'bursts': 1.,
         'burst_freq': 5.,
-        'warmup': 45,
-        'w_mean': .0015,
+        'warmup': 20,
+        'w_mean': 1*.001,
+        'w_std':0.,
+        'w_rand':False,
+        'replace_syn':True,
+        'syn_frac':0.,
+        'noise':0,
         }}
 
         # setup cell and updated parameter structures
-        P, cell1 = setup_parameters(
+        self.P, self.cell = self._standard_parameter_setup(
             default_p='migliore_2005',
             cell_class='CellMigliore2005',
             p_update=p_update,
-            paths_update=paths_update,)
+            paths_update=paths_update,
+            load_fd=True)
 
-        # iterate over trials
-        for trial_i, trial in enumerate(range(P.p['trials'])):
-
-            # create list of active synapses, weights, delays
-            # stored in P.p['seg_idx', 'w_list', 'sequence_delays'], 
-            update_synapse_parameters(P, P.p, P.paths, cell1)
-
-            # store trial number
-            P.p['trial']=trial
-                            
-            # create unique identifier for each trial
-            P.p['trial_id'] = str(uuid.uuid4())
-                            
-            # start timer
-            start = time.time() 
-            
-            # run simulation
-            print P.p['p_path']['1']['pulses']
-            sim = run.Run(p=P.p, cell=cell1) 
-
-            # end timer
-            end = time.time() 
-
-            # print trial and simulation time
-            print 'trial'+ str(P.p['trial']) + ' duration:' + str(end -start) 
-            
-            # set file name to save data
-            file_name = str(
-            P.p['experiment']+
-            '_trial_'+str(P.p['trial'])+
-            '_id_'+P.p['trial_id']
-            )
-
-            # save data for eahc trial
-            run.save_data(data=sim.data, file_name=file_name)
-
-            # plot traces
-            analysis.PlotRangeVar().plot_trace(
-                data=sim.data, 
-                variables=P.p['plot_variables'],
-                x_variables=P.p['x_variables'],
-                file_name=file_name,
-                group_trees=P.p['group_trees'],
-                xlim=[P.p['warmup']-5,P.p['tstop']],
-                 ylim=[-75,-20])
-    
-    def exp_4a2(self, **kwargs):
-        """ Control experiment for exp_4a1
-
-        Path 1: no input 
-        Path 2: single pulse at 5 Hz, timed to arrive between the 2nd and 3rd pulse in each TBS burst
-        """
-        trials = 1
-        p_update = {
-        'experiment' : kwargs['experiment'], 
-        'trials' : kwargs['trials'],
-        'field':[-20.,0.,20.],
-        'plot_variables':['v','gbar'],
-        'path_combo':['1','2'],
-        'clopath_A_m':100E-5, # depression magnitude parameter (mV^-1)
-        'clopath_tetam':-70,#-41, # depression threshold (mV)
-        'clopath_tetap':-67,#-38, # potentiation threshold (mV)
-        'clopath_tau_r':8,#-38, # potentiation threshold (mV)
-        'clopath_tau_0':20,#-38, # potentiation threshold (mV)
-        'clopath_tau_y': 3, # time constant (ms) for low pass filter post membrane potential for potentiation
-        'clopath_A_p': 38E-5, # amplitude for potentiation (mV^-2)
-        }
-
-        # set up synaptic pathway parameters
-        paths_update = {'1':{
-        'trees': ['apical_tuft','apical_trunk'],
-        'syn_num': 5,
-        'nsyns': 1.,
-        'syn_dist': [0,300],
-        'pulses': 0.,
-        'pulse_freq': 100.,
-        'bursts': 1.,
-        'burst_freq': 5.,
-        'warmup': 30,
-        'w_mean': .0015,
-        },
-        '2':{
-        'trees': ['apical_tuft','apical_trunk'],
-        'syn_num': 5,
-        'nsyns': 1.,
-        'syn_dist': [0,300],
-        'pulses': 1.,
-        'pulse_freq': 100.,
-        'bursts': 1.,
-        'burst_freq': 5.,
-        'warmup': 45,
-        'w_mean': .0015,
-        }}
-
-        # setup cell and updated parameter structures
-        P, cell1 = setup_parameters(
-            default_p='migliore_2005',
-            cell_class='CellMigliore2005',
-            p_update=p_update,
-            paths_update=paths_update,)
-
-        print 'trials on this worker:',P.p['trials']
-        # iterate over trials
-        for trial_i, trial in enumerate(range(P.p['trials'])):
-
-            # create list of active synapses, weights, delays
-            # stored in P.p['seg_idx', 'w_list', 'sequence_delays'], 
-            update_synapse_parameters(P, P.p, P.paths, cell1)
-
-            # store trial number
-            P.p['trial']=trial
-                            
-            # create unique identifier for each trial
-            P.p['trial_id'] = str(uuid.uuid4())
-                            
-            # start timer
-            start = time.time() 
-            
-            # run simulation
-            print P.p['p_path']['1']['pulses']
-            sim = run.Run(p=P.p, cell=cell1) 
-
-            # end timer
-            end = time.time() 
-
-            # print trial and simulation time
-            print 'trial'+ str(P.p['trial']) + ' duration:' + str(end -start) 
-            
-            # set file name to save data
-            file_name = str(
-            P.p['experiment']+
-            '_trial_'+str(P.p['trial'])+
-            '_id_'+P.p['trial_id']
-            )
-
-            # save data for eahc trial
-            run.save_data(data=sim.data, file_name=file_name)
-
-            # plot traces
-            analysis.PlotRangeVar().plot_trace(
-                data=sim.data, 
-                variables=P.p['plot_variables'],
-                x_variables=P.p['x_variables'],
-                file_name=file_name,
-                group_trees=P.p['group_trees'],
-                xlim=[P.p['warmup']-5,P.p['tstop']],
-                 ylim=[-75,-20])
-
-    def exp_4a(self, **kwargs):
-        """ Associative plasticity experiment
-
-        Activate a strong (100 Hz burst) and weak (single pulse in the middle of burst) pathway (separately or together).
-        Vary which pathways are active (strong only, weak only, strong+weak)
-        Vary the distance from soma of each pathway (0-200,200-400,400-600 um).
-        Vary the number of synapses in each pathway (10, 20, 40).
-        Synapse locations are generated randomly with param.choose_seg_rand(). Multiple synapses can be placed on the same segment.  The weight is then multiplied by the number of "synapses"
-
-        Keyword Arguments:
-        syn_num= number of synapses for each pathway [iterable conditions][strong path, weak path]
-
-        syn_dist= dist requirement for each path [pathway][min distance, max distance]
-
-        path_combos= list of path combinations, e.g. ['strong', 'weak', 'strong_weak']
-
-        trials= number of trials for each set of conditions
-
-        Conditions that are specific to each path (e.g. stimulation parameters, seg_idx) are set up in the 'paths' dictionary locally.  Each entry in the local paths dictionary is transferred to the global parameter dictionary 'p'. Each path is organized as p{'p_path'}{'path_key'}{'parameters'}, where path_key is the name of the path e.g. 'strong', or '1'
-        """
-        print 'running', kwargs['experiment'], 'on worker', pc.id()
-        print kwargs
-
-        # update cell-wide parameters
-        # weight of single synapse uS
-        kwargs['w_mean'] = .001
-        kwargs['plot_variables']=['v','gbar'] 
-
-        # instantiate default parameter class
-        self.p_class = param.Default()
-
-        # reference to default parameters
-        self.p = self.p_class.p
-
-        # update parameters
-        for key, val in kwargs.iteritems():        # update parameters
-            self.p[key] = val
-
-        # load cell and store in parameter dictionary
-        cell1 = cell.CellMigliore2005(self.p)
-        cell1.geometry(self.p)
-        # insert mechanisms
-        cell1.mechanisms(self.p)
-        # measure distance of each segment from the soma and store in parameter dictionary
-        self.p_class.seg_distance(cell1)
-        # create morphology structure
-        self.p['morpho'] = self.p_class.create_morpho(cell1.geo)
-
-        # data and figure folder
-        self.p['data_folder'] = 'Data/'+self.p['experiment']+'/'
-        self.p['fig_folder'] =  'png figures/'+self.p['experiment']+'/'
-
-        # set up two pathways
-        paths={}
-        paths['strong']={
-        'sequence_delay':0,
-        'sequence_direction': 'in',
-        'trees': ['apical_tuft','apical_trunk'],
-        'syn_num': [],
-        'syn_dist': kwargs['syn_dist'][0],
-        'pulses': 4.,
-        'pulse_freq': 100.,
-        'bursts': 1,
-        'burst_freq': 5.,
-        'warmup': self.p['warmup'],
-        'noise': 0
-        }
-        paths['weak']={
-        'sequence_delay':0,
-        'sequence_direction': 'in',
-        'trees': ['apical_tuft','apical_trunk'],
-        'syn_num': [],
-        'syn_dist': kwargs['syn_dist'][1],
-        'pulses': 1.,
-        'pulse_freq': 100.,
-        'bursts': 1, 
-        'burst_freq': 5.,
-        'warmup': self.p['warmup'] + 1.5*1000/paths['strong']['pulse_freq'],
-        'noise': 0
-        }
-        # iterate through different numbers of synapses and distance requirements
-        # kwargs{'syn_num'}[condition number][path number (strong, then weak)]
-        # kwargs{'syn_dist'}[condition number][path number (strong, then weak)][min distance, max distance]
-        for syn_num_i, syn_num in enumerate(kwargs['syn_num']):
-            # FIXME update self.p['syn_num']
-            # update parameters for each pathway
-            paths['strong']['syn_num']= syn_num[0]
-            paths['weak']['syn_num']= syn_num[1]
-            self.p['syn_num']=syn_num
-
-            # iterae over path combinations
-            for combo_i, combo in enumerate(kwargs['path_combos']):
-                self.p['path_combo']=combo
-                # update tstop for each combination
-                tstops=[]
-                for path_key, path in paths.iteritems():
-                    tstops.append((path['pulses']*1000/path['pulse_freq'])+path['warmup'])
-                self.p['tstop'] = max(tstops)
-                self.p['field_off'] = self.p['tstop']
+        for syn_dist in kwargs['syn_dist']:
+            # iterate over synapse number 
+            for syn_num in kwargs['syn_num']:
+                # update parameter dictionary
+                self.P.paths['1']['syn_num']=syn_num
+                self.P.paths['2']['syn_num']=syn_num
+                # update parameter dictionary
+                self.P.paths['1']['syn_dist']=syn_dist
+                self.P.paths['2']['syn_dist']=syn_dist
 
                 # iterate over trials
-                for trial_i, trial in enumerate(range(kwargs['trials'])):
-                    self.p['p_path']={}
-                    
-                    # update pathways and add to global p structure
-                    for path_key, path in paths.iteritems():
+                for trial_i, trial in enumerate(range(self.P.p['trials'])):
 
-                        print path_key, ' warmup:', path['warmup']
-                        
-                        # if path is included in current combination
-                        if path_key in combo:
-                            
-                            # choose active segments for this pathway
-                            seg_dic = self.p_class.choose_seg_rand(trees=path['trees'], syns=cell1.syns, syn_frac=0., seg_dist=self.p['seg_dist'], syn_num=path['syn_num'], distance=path['syn_dist'], replace=True)
-                            path.update(seg_dic)
-                            
-                            # set weights for each segment in this pathway
-                            w_dic = self.p_class.set_weights(seg_idx=path['seg_idx'], sec_idx=path['sec_idx'], sec_list=path['sec_list'], seg_list=path['seg_list'], w_mean=self.p['w_mean'], w_std=self.p['w_std'], w_rand=self.p['w_rand'])
-                            path.update(w_dic)
+                    # create list of active synapses, weights, delays
+                    # stored in P.p['seg_idx', 'w_list', 'sequence_delays'], 
+                    self.P = self._update_synapse_parameters(P=self.P, cell=self.cell, method='_choose_seg_rand')
 
-                            # set delays for branch sequences in this pathway 
-                            delay_dic = self.p_class.set_branch_sequence_ordered(seg_idx=path['seg_idx'], delay=path['sequence_delay'], direction=path['sequence_direction'])
-                            path.update(delay_dic)
+                    self.run_obj = self._standard_run_and_save(P=self.P, cell=self.cell, trial=trial)
 
-                            # update p_path dictionary in global p dictionary
-                            self.p['p_path'][path_key]=copy.copy(path)
+    def exp_4a2(self, **kwargs):
+        """ weak pathway only
 
-                    print combo, self.p['syn_num']
-
-                    # store trial number
-                    self.p['trial']=trial
-                                    
-                    # create unique identifier for each trial
-                    self.p['trial_id'] = str(uuid.uuid4())
-                                    
-                    # start timer
-                    start = time.time() 
-                    
-                    # print cell1.syns
-                    # run simulation
-                    sim = run.Run(p=self.p, cell=cell1) 
-
-                    # end timer
-                    end = time.time() 
-
-                    # print trial and simulation time
-                    print 'trial'+ str(self.p['trial']) + ' duration:' + str(end -start) 
-                    
-                    # set file name to save data
-                    file_name = str(
-                    self.p['experiment']+
-                    '_'+self.p['path_combo']+
-                    '_dist_'+str(self.p['syn_dist'])+
-                    '_freq_'+str(self.p['pulse_freq'])+
-                    '_syn_num_'+str(syn_num)+
-                    '_trial_'+str(self.p['trial'])+
-                    '_id_'+self.p['trial_id']
-                    )
-
-                    # save data for eahc trial
-                    run.save_data(data=sim.data, file_name=file_name)
-
-                    # plot traces
-                    analysis.PlotRangeVar().plot_trace(data=sim.data, 
-                        variables=self.p['plot_variables'],
-                        x_variables=self.p['x_variables'],
-                        file_name=file_name,
-                        group_trees=self.p['group_trees'],
-                        xlim=[self.p['warmup']-5,self.p['tstop']],
-                        ylim=[])
-
-def setup_parameters(default_p, p_update, paths_update, cell_class, load_fd=True, data_folder='Data/',**kwargs):
-    '''
-    ===Args===
-    -default_p  : string specifying default parameters.  calls the corresponding method in param.Default
-    -p_update   : dictionary of global parameters that are specific to the current experiment. will be used to update the corresponding entries in the default dictionary specified by default_p
-    -paths_update   : dictionary path-specific parameters.  Organized as paths_update{path name}{parameters}
-    -cell       : string specifying the cell class to be instantiated from cell module as cell.CellClass()
-
-    ===Out===
-    -P  : default parameter class containing methods for specifying parameters
-    -p  : updated parameter dictionary
-    -paths  : updated path-specific parameter dictionary as paths{path name}{parameters}
-    -cell   : cell class instance
-
-    ===Updates===
-    ===Comments===
-    '''
-    # instantiate default parameter class
-    P = param.Default()
-
-    # load parameters from migliore model
-    getattr(P, default_p)()
-
-    # reference to default parameters
-    p = P.p
-    paths = P.paths
-
-    # load facilitation depression parameters
-    if load_fd:
-        P.load_fd_parameters(p=p, filename='Data/fd_parameters.pkl')
-
-    # update parameter dictionaries
-    p.update(p_update)
-    for key, val in paths_update.iteritems():
-        if key in paths:
-            paths[key].update(val)
-        else:
-            paths[key]=copy.copy(paths.values()[0])
-            paths[key].update(val)
-
-    # for key, val in paths.iteritems():
-    #     val.update(paths_update[key])
-
-    # data and figure folder
-    p['data_folder'] = data_folder+p['experiment']+'/'
-    p['fig_folder'] =  'png figures/'+p['experiment']+'/'
-
-    # load cell and store in parameter dictionary
-    cell1 = getattr(cell, cell_class)(p)
-    cell1.geometry(p)
-    # insert mechanisms
-    cell1.mechanisms(p)
-    
-    # measure distance of each segment from the soma and store in parameter dictionary
-    P.seg_distance(cell1)
-
-    # create morphology for shape plots
-    p['morpho'] = P.create_morpho(cell1.geo)
-
-    # update simulation duration
-    p['tstop']  = p['warmup'] + 1000*(p['bursts']-1)/p['burst_freq'] + 1000*(p['pulses']+1)/p['pulse_freq'] 
-    p['field_off'] = p['tstop']
-
-    return P, cell1
-
-def update_synapse_parameters(p_class, p, paths, cell1,**kwargs):
-    ''' update parameter dictionaries for each pathway before running simulation
-
-    ===Args===
-    -p_class    : instance of default parameter class, containing parameter dictionaries and methods for updating parameters for simulations
-    -p          : full parameter dictionary
-    -paths      : parameter dictionary for separate synaptic pathways, organized as paths{path name}{parameters}
-    cell1       : instance of cell class containing geometry and synapse structures (contain all hoc section and synapse objects)
-
-    ===Out===
-
-    ===Updates===
-    -p          : updated path dictionaries are added to the main parameter dictionary p (organized as p['p_path']{path name}{parameters})
-    -paths      : active synapses and their activity patterns are set and updated for each path
-
-    ===Comments===
-    -p  : p should have an entry called 'path_combo', which is a list of paths to be activated during the current simulation
-    '''
-    
-    # update tstop for each combination
-    tstops=[]
-    warmups=[]
-    for path_key, path in paths.iteritems():
-        if path_key in p['path_combo']:
-
-            warmups.append(path['warmup'])
-            tstops.append(path['warmup'] + 1000*(path['bursts']-1)/path['burst_freq'] + 1000*(path['pulses']+1)/path['pulse_freq'] )
-
-    p['tstop'] = max(tstops)
-    p['warmup'] = min(warmups)
-    p['field_off'] = p['tstop']
-
-    p['p_path']={}
-    
-    # update pathways and add to global p structure
-    for path_key, path in paths.iteritems():
-
-        # print path_key, ' warmup:', path['warmup']
+        single pulse applied to compare with experiment 4a1
         
-        # if path is included in current combination
-        if path_key in p['path_combo']:
-            
-            # choose active segments for this pathway
-            seg_dic = p_class.choose_seg_rand(trees=path['trees'], syns=cell1.syns, syn_frac=path['syn_frac'], seg_dist=p['seg_dist'], syn_num=path['syn_num'], distance=path['syn_dist'], replace=path['replace_syn'])
-            path.update(seg_dic)
-            
-            # set weights for each segment in this pathway
-            w_dic = p_class.set_weights(seg_idx=path['seg_idx'], sec_idx=path['sec_idx'], sec_list=path['sec_list'], seg_list=path['seg_list'], w_mean=path['w_mean'], w_std=p['w_std'], w_rand=p['w_rand'])
-            path.update(w_dic)
+        ==Args==
+        -experiment : string containing the name of the experiment, eg 'exp_1a1'
+        -trials :  integer number of trials to run
+        -syn_dist :  list, or nested list, containing synapse distance requirements for choose_seg_rand. eg [0, 200] chooses synapses between 0 and 200 um from soma
+        -syn_num :  list of number of synapses to be activated. note that synapses are chosen randomly with replacement, so the same synapse can be selected multiple times.  In this case the weight is multiplied by the number of times the synapse is selected
+        """
 
-            # set delays for branch sequences in this pathway 
-            delay_dic = p_class.set_branch_sequence_ordered(seg_idx=path['seg_idx'], delay=path['sequence_delay'], direction=path['sequence_direction'])
-            path.update(delay_dic)
+        # updates to global parameter dictionary 
+        p_update = {
+        'experiment' : kwargs['experiment'], 
+        'trials' : kwargs['trials'],
+        'field':[-20.,0.,20.],
+        'rec_variables':[('v','range','v'),('input_times','syn','ampa'),('ica_calH','range','calH'), ('i','syn','nmda')],
+        'active_paths':['2'],
+        'gcalbar': 1.*.00125 ,          # L-type calcium conductance from Kim et al. 2015 (mho/cm2)
+        }
 
+        # set up synaptic pathway parameters
+        paths_update = {
+        '2':{
+        'trees': ['apical_tuft','apical_trunk'],
+        'syn_num': 0,
+        'nsyns': 1.,
+        'syn_dist': [],#kwargs['syn_dist'],
+        'pulses': 1.,
+        'pulse_freq': 100.,
+        'bursts': 1.,
+        'burst_freq': 5.,
+        'warmup': 20,
+        'w_mean': 1*.001,
+        'w_std':0.,
+        'w_rand':False,
+        'replace_syn':True,
+        'syn_frac':0.,
+        'noise':0,
+        }}
+
+        # setup cell and updated parameter structures
+        self.P, self.cell = self._standard_parameter_setup(
+            default_p='migliore_2005',
+            cell_class='CellMigliore2005',
+            p_update=p_update,
+            paths_update=paths_update,
+            load_fd=True)
+
+        for syn_dist in kwargs['syn_dist']:
+            # iterate over synapse number 
+            for syn_num in kwargs['syn_num']:
+                # update parameter dictionary
+                # self.P.paths['1']['syn_num']=syn_num
+                self.P.paths['2']['syn_num']=syn_num
+                # update parameter dictionary
+                # self.P.paths['1']['syn_dist']=syn_dist
+                self.P.paths['2']['syn_dist']=syn_dist
+
+                # iterate over trials
+                for trial_i, trial in enumerate(range(self.P.p['trials'])):
+
+                    # create list of active synapses, weights, delays
+                    # stored in P.p['seg_idx', 'w_list', 'sequence_delays'], 
+                    self.P = self._update_synapse_parameters(P=self.P, cell=self.cell, method='_choose_seg_rand')
+
+                    self.run_obj = self._standard_run_and_save(P=self.P, cell=self.cell, trial=trial)
+
+    def exp_4a1_poisson(self, **kwargs):
+        ''' repeat experiment 1a1 with varying electric field intensity
+
+        6,8,10,12,14 synapses at .001 uS per synapse, distributed evenly between 0 and 300 um from soma
+        '''
+        # updates to global parameter dictionary 
+        p_update = {
+        'experiment' : kwargs['experiment'], 
+        'trials' : kwargs['trials'],
+        'field':[20.,-1.,  0.,1.,20.],
+        'rec_variables':[('v','range','v'),('input_times','syn','ampa'),],
+        'active_paths':['1','2'],
+        'gcalbar': 1.*.00125 ,          # L-type calcium conductance from Kim et al. 2015 (mho/cm2)
+        }
+
+        # set up synaptic pathway parameters
+        paths_update = {'1':{
+        'trees': ['apical_trunk', 'apical_tuft'],
+        'syn_num': 0,
+        'nsyns': 1.,
+        'syn_dist': kwargs['syn_dist'],
+        'pulses': 10.,
+        'pulse_freq': 20.,
+        'bursts': 1.,
+        'burst_freq': 5.,
+        'warmup': 10,
+        'w_mean': 1.5*.001,
+        'w_std':0.,
+        'w_rand':False,
+        'replace_syn':True,
+        'syn_frac':0.,
+        'noise':98./100.,
+        'mod_freq':5,
+        'mod_amp':0,
+        'mean_rate':10
+        },
+        '2':{
+        'trees': ['apical_trunk', 'apical_tuft'],
+        'syn_num': 0,
+        'nsyns': 1.,
+        'syn_dist': kwargs['syn_dist'],
+        'pulses': 10.,
+        'pulse_freq': 20.,
+        'bursts': 1.,
+        'burst_freq': 5.,
+        'warmup': 10,
+        'w_mean': 1.5*.001,
+        'w_std':0.,
+        'w_rand':False,
+        'replace_syn':True,
+        'syn_frac':0.,
+        'noise':198./200.,
+        'mod_freq':5,
+        'mod_amp':0,
+        'mean_rate':2
+        },}
+
+        # setup cell and updated parameter structures
+        self.P, self.cell = self._standard_parameter_setup(
+            default_p='migliore_2005',
+            cell_class='CellMigliore2005',
+            p_update=p_update,
+            paths_update=paths_update,
+            load_fd=True)
+
+        self.P.paths['1']['mean_rate']=kwargs['path_1_mean_rate']
+        self.P.paths['2']['mean_rate']=kwargs['path_2_mean_rate']
+        # iterate over synapse number 
+        for syn_num in kwargs['syn_num']:
+            # update parameter dictionary
+            self.P.paths['1']['syn_num']=20
+            self.P.paths['2']['syn_num']=50
+            
+
+            # iterate over trials
+            for trial_i, trial in enumerate(range(self.P.p['trials'])):
+
+                # create list of active synapses, weights, delays
+                # stored in P.p['seg_idx', 'w_list', 'sequence_delays'], 
+                self.P = self._update_synapse_parameters(P=self.P, cell=self.cell, method='_choose_seg_rand')
+                # increase simulation duration
+                self.P.p['tstop']=1000
+                self.P.p['field_off']=self.P.p['tstop']
+                self.P.p['p_path']['1']['dt']=self.P.p['dt']
+                self.P.p['p_path']['1']['tstop']=self.P.p['tstop']
+                self.P.p['p_path']['2']['dt']=self.P.p['dt']
+                self.P.p['p_path']['2']['tstop']=self.P.p['tstop']
+
+
+                run_kwargs={'uncage_method':'_poisson'}
+                self.run_obj = self._standard_run_and_save(P=self.P, cell=self.cell, trial=trial, **run_kwargs)
+        
+        '''
+        EXPERIMENT 4 
+        two pathway associativity and specificity
+        '''
+
+    def exp_4a1_nablock(self, **kwargs):
+        """ two pathway experiments
+
+        both pathways are distributed 0-300 um from soma.  pathway 1 receives a theta burst, path 2 receives a single pulse timed to the second pulse of the theta burst
+
+        4,5,6,8,10,12,16,20 synapses at 0-200 or 0-300 um from soma
+        
+        ==Args==
+        -experiment : string containing the name of the experiment, eg 'exp_1a1'
+        -trials :  integer number of trials to run
+        -syn_dist :  list, or nested list, containing synapse distance requirements for choose_seg_rand. eg [0, 200] chooses synapses between 0 and 200 um from soma
+        -syn_num :  list of number of synapses to be activated. note that synapses are chosen randomly with replacement, so the same synapse can be selected multiple times.  In this case the weight is multiplied by the number of times the synapse is selected
+        """
+
+        # updates to global parameter dictionary 
+        p_update = {
+        'experiment' : kwargs['experiment'], 
+        'trials' : kwargs['trials'],
+        'field':[-20.,0.,20.],
+        'rec_variables':[('v','range','v'),('input_times','syn','ampa'),('ica_calH','range','calH'), ('i','syn','nmda')],
+        'active_paths':['1','2'],
+        'gcalbar': 1.*.00125 ,          # L-type calcium conductance from Kim et al. 2015 (mho/cm2)
+        }
+
+        # set up synaptic pathway parameters
+        paths_update = {'1':{
+        'trees': ['apical_tuft','apical_trunk'],
+        'syn_num': 0,
+        'nsyns': 1.,
+        'syn_dist': [],#kwargs['syn_dist'],
+        'pulses': 4.,
+        'pulse_freq': 100.,
+        'bursts': 1.,
+        'burst_freq': 5.,
+        'warmup': 10,
+        'w_mean': 1*.001,
+        'w_std':0.,
+        'w_rand':False,
+        'replace_syn':True,
+        'syn_frac':0.,
+        'noise':0,
+        },
+        '2':{
+        'trees': ['apical_tuft','apical_trunk'],
+        'syn_num': 0,
+        'nsyns': 1.,
+        'syn_dist': [],#kwargs['syn_dist'],
+        'pulses': 1.,
+        'pulse_freq': 100.,
+        'bursts': 1.,
+        'burst_freq': 5.,
+        'warmup': 20,
+        'w_mean': 1*.001,
+        'w_std':0.,
+        'w_rand':False,
+        'replace_syn':True,
+        'syn_frac':0.,
+        'noise':0,
+        }}
+
+        # setup cell and updated parameter structures
+        self.P, self.cell = self._standard_parameter_setup(
+            default_p='migliore_2005',
+            cell_class='CellMigliore2005',
+            p_update=p_update,
+            paths_update=paths_update,
+            load_fd=True)
+
+        for syn_dist in kwargs['syn_dist']:
+            # iterate over synapse number 
+            for syn_num in kwargs['syn_num']:
+                # update parameter dictionary
+                self.P.paths['1']['syn_num']=syn_num
+                self.P.paths['2']['syn_num']=syn_num
+                # update parameter dictionary
+                self.P.paths['1']['syn_dist']=syn_dist
+                self.P.paths['2']['syn_dist']=syn_dist
+
+                # iterate over trials
+                for trial_i, trial in enumerate(range(self.P.p['trials'])):
+
+                    # create list of active synapses, weights, delays
+                    # stored in P.p['seg_idx', 'w_list', 'sequence_delays'], 
+                    self.P = self._update_synapse_parameters(P=self.P, cell=self.cell, method='_choose_seg_rand')
+                        # set sodium conductnace to zero in soma and axon
+                    for tree_key, tree in self.cell.geo.iteritems():
+                        if tree_key=='soma':
+                            for sec_i, sec in enumerate(tree):
+                                sec.gbar_na3=0.
+                        if tree_key=='axon':
+                            for sec_i, sec in enumerate(tree):
+                                sec.gbar_nax=0. 
+
+                    self.run_obj = self._standard_run_and_save(P=self.P, cell=self.cell, trial=trial)
+
+    def exp_4a2_nablock(self, **kwargs):
+        """ weak pathway only
+
+        single pulse applied to compare with experiment 4a1
+        
+        ==Args==
+        -experiment : string containing the name of the experiment, eg 'exp_1a1'
+        -trials :  integer number of trials to run
+        -syn_dist :  list, or nested list, containing synapse distance requirements for choose_seg_rand. eg [0, 200] chooses synapses between 0 and 200 um from soma
+        -syn_num :  list of number of synapses to be activated. note that synapses are chosen randomly with replacement, so the same synapse can be selected multiple times.  In this case the weight is multiplied by the number of times the synapse is selected
+        """
+
+        # updates to global parameter dictionary 
+        p_update = {
+        'experiment' : kwargs['experiment'], 
+        'trials' : kwargs['trials'],
+        'field':[-20.,0.,20.],
+        'rec_variables':[('v','range','v'),('input_times','syn','ampa'),('ica_calH','range','calH'), ('i','syn','nmda')],
+        'active_paths':['2'],
+        'gcalbar': 1.*.00125 ,          # L-type calcium conductance from Kim et al. 2015 (mho/cm2)
+        }
+
+        # set up synaptic pathway parameters
+        paths_update = {
+        '2':{
+        'trees': ['apical_tuft','apical_trunk'],
+        'syn_num': 0,
+        'nsyns': 1.,
+        'syn_dist': [],#kwargs['syn_dist'],
+        'pulses': 1.,
+        'pulse_freq': 100.,
+        'bursts': 1.,
+        'burst_freq': 5.,
+        'warmup': 20,
+        'w_mean': 1*.001,
+        'w_std':0.,
+        'w_rand':False,
+        'replace_syn':True,
+        'syn_frac':0.,
+        'noise':0,
+        }}
+
+        # setup cell and updated parameter structures
+        self.P, self.cell = self._standard_parameter_setup(
+            default_p='migliore_2005',
+            cell_class='CellMigliore2005',
+            p_update=p_update,
+            paths_update=paths_update,
+            load_fd=True)
+
+        for syn_dist in kwargs['syn_dist']:
+            # iterate over synapse number 
+            for syn_num in kwargs['syn_num']:
+                # update parameter dictionary
+                # self.P.paths['1']['syn_num']=syn_num
+                self.P.paths['2']['syn_num']=syn_num
+                # update parameter dictionary
+                # self.P.paths['1']['syn_dist']=syn_dist
+                self.P.paths['2']['syn_dist']=syn_dist
+
+                # iterate over trials
+                for trial_i, trial in enumerate(range(self.P.p['trials'])):
+
+                    # create list of active synapses, weights, delays
+                    # stored in P.p['seg_idx', 'w_list', 'sequence_delays'], 
+                    self.P = self._update_synapse_parameters(P=self.P, cell=self.cell, method='_choose_seg_rand')
+
+                    # set sodium conductnace to zero in soma and axon
+                    for tree_key, tree in self.cell.geo.iteritems():
+                        if tree_key=='soma':
+                            for sec_i, sec in enumerate(tree):
+                                sec.gbar_na3=0.
+                        if tree_key=='axon':
+                            for sec_i, sec in enumerate(tree):
+                                sec.gbar_nax=0. 
+
+                    self.run_obj = self._standard_run_and_save(P=self.P, cell=self.cell, trial=trial)
+        '''
+        EXPERIMENT 5
+        classic stdp experiments
+        '''
+    
+    def exp_5a1(self, **kwargs):
+        ''' reproduce classic stdp experiments in full model
+
+        stdp experiments with delays of 10 or -10 between soma injection and epsp onset repeated 6 times at varying frequency (1,5,10,20,30,50) with 5 synapses at 0-200 um from soma
+
+        adjust clopath parameters to qualitatively reproduce
+        '''
+        # updates to global parameter dictionary 
+        p_update = {
+        'experiment' : kwargs['experiment'], 
+        'trials' : kwargs['trials'],
+        'field':[0.],
+        'rec_variables':[('v','range','v'),('input_times','syn','ampa'),('ica_calH','range','calH'), ('i','syn','nmda')],
+        'active_paths':['1',],
+        'gcalbar': 1.*.00125 ,          # L-type calcium conductance from Kim et al. 2015 (mho/cm2)
+        'iclamp_amp': 1, # current injection in nA
+        'iclamp_dur':5, # current injection duration ms
+        'iclamp_loc': ('soma', 0,0), # location of current injection (tree, section, segment)
+        'stdp_dt':kwargs['stdp_dt'], # offset between soma current injection and synaptic input (ms). positive=synaptic first, negative=soma first
+        }
+
+        # set up synaptic pathway parameters
+        paths_update = {'1':{
+        'trees': ['apical_tuft','apical_trunk'],
+        'syn_num': 6,
+        'nsyns': 1.,
+        'syn_dist': kwargs['syn_dist'],
+        'pulses': 6.,
+        'pulse_freq': 100.,
+        'bursts': 1.,
+        'burst_freq': 5.,
+        'warmup': 10,
+        'w_mean': 1*.001, # mean synaptic weight (microsiemens or micro-ohms)
+        'w_std':0.,
+        'w_rand':False,
+        'replace_syn':True,
+        'syn_frac':0.,
+        'noise':0,
+        },}
+
+        # setup cell and updated parameter structures
+        self.P, self.cell = self._standard_parameter_setup(
+            default_p='migliore_2005',
+            cell_class='CellMigliore2005',
+            p_update=p_update,
+            paths_update=paths_update,
+            load_fd=True)
+
+        for pulse_freq in kwargs['pulse_freqs']:
+            for stdp_dt in kwargs['stdp_dt']:
+                self.P.p['stdp_dt']=stdp_dt
+                self.P.paths['1']['pulse_freq']=pulse_freq
+                self.P.p['iclamp_delays'] = []
+                for pulse_i, pulse in enumerate(range(int(self.P.paths['1']['pulses']))):
+                    self.P.p['iclamp_delays'].append(self.P.paths['1']['warmup'] + self.P.p['stdp_dt'] + 1000*pulse_i/(self.P.paths['1']['pulse_freq']))
+                # iterate over synapse number 
+                for syn_num in kwargs['syn_num']:
+	                # update parameter dictionary
+	                self.P.paths['1']['syn_num']=syn_num
+
+	                # iterate over trials
+	                for trial_i, trial in enumerate(range(self.P.p['trials'])):
+
+	                    # create list of active synapses, weights, delays
+	                    # stored in P.p['seg_idx', 'w_list', 'sequence_delays'], 
+	                    self.P = self._update_synapse_parameters(P=self.P, cell=self.cell, method='_choose_seg_rand')
+
+	                    self.iclamp = stims.Intracellular()._insert_IClamp(cell=self.cell, location=self.P.p['iclamp_loc'], p=self.P.p)
+
+	                    self.run_obj = self._standard_run_and_save(P=self.P, cell=self.cell, trial=trial)
+    
+    def exp_5a2(self, **kwargs):
+        ''' reproduce classic stdp experiments in full model
+
+        stdp experiments at 20 Hz with varying delays (+/- 1, 2.5,5,7.5, 10,15,20,25) between soma injection and epsp onset repeated 6 times at varying frequency with 5 synapses at 0-200 um from soma
+
+        adjust clopath parameters to qualitatively reproduce
+        '''
+        # updates to global parameter dictionary 
+        p_update = {
+        'experiment' : kwargs['experiment'], 
+        'trials' : kwargs['trials'],
+        'field':[0.],
+        'rec_variables':[('v','range','v'),('input_times','syn','ampa'),('ica_calH','range','calH'), ('i','syn','nmda')],
+        'active_paths':['1',],
+        'gcalbar': 1.*.00125 ,          # L-type calcium conductance from Kim et al. 2015 (mho/cm2)
+        'iclamp_amp': 1, # current injection in nA
+        'iclamp_dur':5, # current injection duration ms
+        'iclamp_loc': ('soma', 0,0), # location of current injection (tree, section, segment)
+        'stdp_dt':kwargs['stdp_dt'], # offset between soma current injection and synaptic input (ms). positive=synaptic first, negative=soma first
+        }
+
+        # set up synaptic pathway parameters
+        paths_update = {'1':{
+        'trees': ['apical_tuft','apical_trunk'],
+        'syn_num': 6,
+        'nsyns': 1.,
+        'syn_dist': kwargs['syn_dist'],
+        'pulses': 6.,
+        'pulse_freq': 100.,
+        'bursts': 1.,
+        'burst_freq': 5.,
+        'warmup': 10,
+        'w_mean': 1*.001, # mean synaptic weight (microsiemens or micro-ohms)
+        'w_std':0.,
+        'w_rand':False,
+        'replace_syn':True,
+        'syn_frac':0.,
+        'noise':0,
+        },}
+
+        # setup cell and updated parameter structures
+        self.P, self.cell = self._standard_parameter_setup(
+            default_p='migliore_2005',
+            cell_class='CellMigliore2005',
+            p_update=p_update,
+            paths_update=paths_update,
+            load_fd=True)
+
+        for pulse_freq in kwargs['pulse_freqs']:
+            for stdp_dt in kwargs['stdp_dt']:
+                self.P.p['stdp_dt']=stdp_dt
+                self.P.paths['1']['pulse_freq']=pulse_freq
+                self.P.p['iclamp_delays'] = []
+                for pulse_i, pulse in enumerate(range(int(self.P.paths['1']['pulses']))):
+                    self.P.p['iclamp_delays'].append(self.P.paths['1']['warmup'] + self.P.p['stdp_dt'] + 1000*pulse_i/(self.P.paths['1']['pulse_freq']))
+                # iterate over synapse number 
+                for syn_num in kwargs['syn_num']:
+                    # update parameter dictionary
+                    self.P.paths['1']['syn_num']=syn_num
+
+                    # iterate over trials
+                    for trial_i, trial in enumerate(range(self.P.p['trials'])):
+
+                        # create list of active synapses, weights, delays
+                        # stored in P.p['seg_idx', 'w_list', 'sequence_delays'], 
+                        self.P = self._update_synapse_parameters(P=self.P, cell=self.cell, method='_choose_seg_rand')
+
+                        self.iclamp = stims.Intracellular()._insert_IClamp(cell=self.cell, location=self.P.p['iclamp_loc'], p=self.P.p)
+
+                        self.run_obj = self._standard_run_and_save(P=self.P, cell=self.cell, trial=trial)
+
+    def _standard_parameter_setup(self, default_p, p_update, paths_update, cell_class, load_fd=True, data_folder='Data/',**kwargs):
+	    ''' setup parameter dictionary and load cell instance
+
+	    ===Args===
+	    -default_p  : string specifying default parameters.  calls the corresponding method in param.Default
+	    -p_update   : dictionary of global parameters that are specific to the current experiment. will be used to update the corresponding entries in the default dictionary specified by default_p
+	    -paths_update   : dictionary path-specific parameters.  Organized as paths_update{path name}{parameters}
+	    -cell       : string specifying the cell class to be instantiated from cell module as cell.CellClass()
+
+	    ===Out===
+	    -P  : default parameter class containing methods for specifying parameters
+	    -p  : updated parameter dictionary
+                -morpho
+                -seg_dist
+	    -paths  : updated path-specific parameter dictionary as paths{path name}{parameters}
+	    -cell   : cell class instance
+
+	    ===Updates===
+	    -P.p['fd_parameters', 'data_folder', 'fig_folder', 'seg_dist', 'morpho']
+
+	    ===Comments===
+	    '''
+	    # instantiate default parameter class
+	    P = param.Param()
+
+	    # load parameters from specified default parameters
+	    getattr(P, default_p)()
+
+	    # reference to default parameters
+	    p = P.p
+	    paths = P.paths
+
+	    # load facilitation depression parameters
+	    if load_fd:
+	        P._load_fd_parameters(p=p, filename='Data/fd_parameters.pkl')
+
+	    # update global parameter dictionary
+	    p.update(p_update)
+	    # update path dictionaries
+	    for key, val in paths_update.iteritems():
+	        # if path already exists
+	        if key in paths:
+	        	# update
+	            paths[key].update(val)
+	        # if no paths exist
+	        elif not paths.values():
+	        	# create path from paths_update
+	            paths[key]=val
+	        # if other paths exist
+	        else:
+	        	# copy another path
+	            paths[key]=copy.copy(paths.values()[0])
+	            # update path
+	            paths[key].update(val)
+
+	    # data and figure folder
+	    p['data_folder'] = data_folder+p['experiment']+'/'
+	    p['fig_folder'] =  'png figures/'+p['experiment']+'/'
+
+	    # load cell and store in parameter dictionary
+	    cell = getattr(neurons, cell_class)(p)
+	    cell.geometry(p)
+	    # insert mechanisms
+	    cell.mechanisms(p)
+	    
+	    # measure distance of each segment from the soma and store in parameter dictionary
+	    p['seg_dist'] = P._seg_distance(cell)
+
+	    # create morphology for shape plots
+	    p['morpho'] = P._create_morpho(cell.geo)
+
+	    return P, cell
+
+    def _update_synapse_parameters(self, P, cell, method='_choose_seg_rand',**kwargs):
+        ''' update parameter dictionaries for each pathway before running simulation
+
+	    ===Args===
+	    -p_class    : instance of default parameter class, containing parameter dictionaries and methods for updating parameters for simulations
+	    -p          : full parameter dictionary
+	    -paths      : parameter dictionary for separate synaptic pathways, organized as paths{path name}{parameters}
+	    cell1       : instance of cell class containing geometry and synapse structures (contain all hoc section and synapse objects)
+
+	    ===Out===
+
+	    ===Updates===
+	    -p          : updated path dictionaries are added to the main parameter dictionary p (organized as p['p_path']{path name}{parameters})
+	    -paths      : active synapses and their activity patterns are set and updated for each path
+
+	    ===Comments===
+	    -p  : p should have an entry called 'path_combo', which is a list of paths to be activated during the current simulation
+        '''
+        p_class=P
+        p = P.p
+        paths=P.paths
+
+
+
+        # add path parameter dictionaries to global p dictionary
+        p['p_path']={}
+
+        # list of segments to record from
+        p['rec_idx']=[]
+
+        # update pathways and add to global p structure
+        for path_key, path in paths.iteritems():
+            path['syn_idx']=[]
+            path['sequence_delays']=[]
+            # if path is included in current combination
+            if path_key in p['active_paths']:
+
+                if method=='_choose_seg_rand':
+
+                    # choose active segments for this pathway
+                    path['syn_idx'], path['syn_counts'] = p_class._choose_seg_rand(p=p, p_path=path, syns=cell.syns, replace=path['replace_syn'])
+
+                # set weights for each segment in this pathway
+                path['w_idx'] = p_class._set_weights_normal(p_path=path)
+
+                # set delays for branch sequences in this pathway 
+                if 'delays' in path:
+                    path['sequence_delays'] = p_class._set_sequence_delays(syn_idx=path['syn_idx'], delay=path['delay'])
+                else:
+                    path['sequence_delays'] = p_class._set_sequence_delays(syn_idx=path['syn_idx'], delay=0)
+
+            # record all activated synapses
+            p['rec_idx'] += path['syn_idx']
             # update p_path dictionary in global p dictionary
             p['p_path'][path_key]=copy.copy(path)
+
+        # add soma and axon to rec_idx
+        p['rec_idx']+=[('soma',0,0),('axon',0,0)]
+
+        # update tstop based on synaptic inputs in each path
+        tstops=[]
+        warmups=[]
+        for path_key, path in paths.iteritems():
+            if path_key in p['active_paths']:
+                
+                max_delay  = max(path['sequence_delays'])
+                warmups.append(path['warmup'])
+                tstops.append(path['warmup'] + max_delay + 1000*(path['bursts']-1)/path['burst_freq'] + 1000*(path['pulses']+1)/path['pulse_freq'] )
+
+            else:
+                tstops = [70]
+                warmups= [10]
+
+        p['tstop'] = max(tstops)
+        p['warmup'] = min(warmups)
+        p['field_off'] = p['tstop']
+        # FIXME
+        p['field_on'] = p['warmup']-10
+
+        return P
+
+    def _standard_run_and_save(self, P, cell, trial, trial_id=None, **kwargs):
+        '''
+        '''
+        # store trial number
+        P.p['trial']=trial
+        
+        if trial_id is None:
+            trial_id = self._generate_trial_id()
+        # # create unique identifier for each trial
+        # uid = str(uuid.uuid1().int)[-5:]
+        # now = datetime.datetime.now()
+        # if trial_id is not None:
+        #     trial_id = '-'.join(['{:04d}'.format(now.year), '{:02d}'.format(now.month), '{:02d}'.format(now.day), '{:02d}'.format(now.hour), '{:02d}'.format(now.minute), '{:02d}'.format(now.second), '{:02d}'.format(now.microsecond), uid])
+        P.p['trial_id'] = trial_id#str(uuid.uuid4())
+                    
+        # start timer
+        start = time.time() 
+        
+        self.run_obj = run.Run()
+        self.run_obj._standard_run(p=P.p, cell=cell, **kwargs)
+
+        # end timer
+        end = time.time() 
+
+        # print trial and simulation time
+        print 'trial'+ str(P.p['trial']) + ' duration:' + str(end -start) 
+        
+        # set file name to save data
+        file_name = str(
+        	'data_'+
+        	P.p['experiment']+
+        	'_trial_'+str(P.p['trial'])+
+        	'_id_'+P.p['trial_id']
+        	)
+
+        # save data for eahc trial
+        self.run_obj._save_data(data=self.run_obj.data, file_name=file_name)
+
+        return self.run_obj
+
+    def _generate_trial_id(self, ):
+        '''
+        '''
+        # create unique identifier for each trial
+        uid = str(uuid.uuid1().int)[-5:]
+        now = datetime.datetime.now()
+        trial_id = '-'.join(['{:04d}'.format(now.year), '{:02d}'.format(now.month), '{:02d}'.format(now.day), '{:02d}'.format(now.hour), '{:02d}'.format(now.minute), '{:02d}'.format(now.second), '{:02d}'.format(now.microsecond), uid])
+        return trial_id
 
 class ExperimentsParallel:
     """ Organize parameters for distributing to multiple processors
@@ -2333,147 +1665,314 @@ class ExperimentsParallel:
         return self.parameters
 
     def exp_1a1(self, **kwargs):
+        '''
+        '''
         self.parameters = []
         n_workers = 9
-        trials_per_worker=20
+        trials_per_worker=10
         syn_dists = [[0,300],[100,400],[200,500],[300,600],[0,200],[100,300],[200,400],[300,500],[400,600],]
         for i in range(n_workers):
             self.parameters.append(
                 {'experiment':kwargs['experiment'],
                 'trials':trials_per_worker,
-                'syn_dist':syn_dists[i]})
+                'syn_dist':syn_dists[i],
+                'syn_num':[4,5,6,8,10,12,16,20]})
         return self.parameters
 
-    def exp_3a1(self, **kwargs):
+    def exp_1a1_nablock(self, **kwargs):
+        '''
+        '''
         self.parameters = []
-        n_workers = 10
-        trials_per_worker=1
+        n_workers = 9
+        trials_per_worker=10
+        syn_dists = [[0,300],[100,400],[200,500],[300,600],[0,200],[100,300],[200,400],[300,500],[400,600],]
         for i in range(n_workers):
             self.parameters.append(
                 {'experiment':kwargs['experiment'],
-                'trials':trials_per_worker})
+                'trials':trials_per_worker,
+                'syn_dist':syn_dists[i],
+                'syn_num':[4,5,6,8,10,12,16,20]})
         return self.parameters
 
-    def exp_3a1_basal(self, **kwargs):
+    def exp_1a_dose(self, **kwargs):
+        '''
+        '''
         self.parameters = []
         n_workers = 10
-        trials_per_worker=1
+        trials_per_worker=5
+        syn_dists = [0,300]
         for i in range(n_workers):
             self.parameters.append(
                 {'experiment':kwargs['experiment'],
-                'trials':trials_per_worker})
+                'trials':trials_per_worker,
+                'syn_dist':syn_dists,
+                'syn_num':[6,7,8,9,10,11,12]})
         return self.parameters
 
-    def exp_3a2(self, **kwargs):
+    def exp_1a_basal(self, **kwargs):
+        '''
+        '''
         self.parameters = []
         n_workers = 10
         trials_per_worker=1
+        syn_dists = [0,300]
         for i in range(n_workers):
             self.parameters.append(
                 {'experiment':kwargs['experiment'],
-                'trials':trials_per_worker})
+                'trials':trials_per_worker,
+                'syn_dist':syn_dists,
+                'syn_num':[4,5,6,7,8,9,10]})
         return self.parameters
 
-    def exp_3a2_basal(self, **kwargs):
+    def exp_1a_apical(self, **kwargs):
+        '''
+        '''
+        self.parameters = []
+        n_workers = 10
+        trials_per_worker=1
+        syn_dists = [0,300]
+        for i in range(n_workers):
+            self.parameters.append(
+                {'experiment':kwargs['experiment'],
+                'trials':trials_per_worker,
+                'syn_dist':syn_dists,
+                'syn_num':[6,7,8,9,10,11,12]})
+        return self.parameters
+
+    def exp_1a_apical_full_duration(self, **kwargs):
+        '''
+        '''
+        self.parameters = []
+        n_workers = 10
+        trials_per_worker=1
+        syn_dists = [0,300]
+        for i in range(n_workers):
+            self.parameters.append(
+                {'experiment':kwargs['experiment'],
+                'trials':trials_per_worker,
+                'syn_dist':syn_dists,
+                'syn_num':[6,8,10,12]})
+        return self.parameters
+
+    def exp_1a_apical_full_duration_20Hz(self, **kwargs):
+        '''
+        '''
+        self.parameters = []
+        n_workers = 10
+        trials_per_worker=1
+        syn_dists = [0,300]
+        for i in range(n_workers):
+            self.parameters.append(
+                {'experiment':kwargs['experiment'],
+                'trials':trials_per_worker,
+                'syn_dist':syn_dists,
+                'syn_num':[6,8,10,12]})
+        return self.parameters
+
+    def exp_1a_basal_full_duration(self, **kwargs):
+        '''
+        '''
+        self.parameters = []
+        n_workers = 10
+        trials_per_worker=1
+        syn_dists = [0,300]
+        for i in range(n_workers):
+            self.parameters.append(
+                {'experiment':kwargs['experiment'],
+                'trials':trials_per_worker,
+                'syn_dist':syn_dists,
+                'syn_num':[4,6,8,10]})
+        return self.parameters
+
+    def exp_1a_basal_full_duration_20Hz(self, **kwargs):
+        '''
+        '''
         self.parameters = []
         n_workers = 1
-        trials_per_worker=1
+        trials_per_worker=10
+        syn_dists = [0,300]
         for i in range(n_workers):
             self.parameters.append(
                 {'experiment':kwargs['experiment'],
-                'trials':trials_per_worker})
+                'trials':trials_per_worker,
+                'syn_dist':syn_dists,
+                'syn_num':[4,6,8,10]})
         return self.parameters
 
-    def exp_3a2_dose(self, **kwargs):
+    def exp_1a_dose_basal(self, **kwargs):
+        '''
+        '''
         self.parameters = []
-        n_workers = 1
-        trials_per_worker=1
+        n_workers = 10
+        trials_per_worker=5
+        syn_dists = [0,300]
         for i in range(n_workers):
             self.parameters.append(
                 {'experiment':kwargs['experiment'],
-                'trials':trials_per_worker})
+                'trials':trials_per_worker,
+                'syn_dist':syn_dists,
+                'syn_num':[5,6,7,8,9]})
         return self.parameters
 
-    def exp_3a3(self, **kwargs):
+    def exp_1a_ACS(self, **kwargs):
+        '''
+        '''
         self.parameters = []
         n_workers = 10
         trials_per_worker=1
+        syn_dists = [[0,300],]
         for i in range(n_workers):
             self.parameters.append(
                 {'experiment':kwargs['experiment'],
-                'trials':trials_per_worker})
+                'trials':trials_per_worker,
+                'syn_dist':syn_dists[0],
+                'syn_num':[6,7,8,9,10,11,12]})
         return self.parameters
 
-    def exp_3b1(self, **kwargs):
+    def exp_1a_poisson(self, **kwargs):
+        '''
+        '''
         self.parameters = []
         n_workers = 10
         trials_per_worker=1
+        syn_dists = [0,300]
         for i in range(n_workers):
             self.parameters.append(
                 {'experiment':kwargs['experiment'],
-                'trials':trials_per_worker})
+                'trials':trials_per_worker,
+                'syn_dist':syn_dists,
+                'syn_num':[15, 20, 25, 30, 35, 40]})
         return self.parameters
 
     def exp_4a1(self, **kwargs):
+        '''
+        '''
         self.parameters = []
-        n_workers = 10
-        trials_per_worker=3
+        n_workers = 9
+        trials_per_worker=2
+        syn_dists = [[0,200],[0,300]]#[[0,300],[100,400],[200,500],[300,600],[0,200],[100,300],[200,400],[300,500],[400,600],]
         for i in range(n_workers):
             self.parameters.append(
                 {'experiment':kwargs['experiment'],
-                'trials':trials_per_worker})
+                'trials':trials_per_worker,
+                'syn_dist':syn_dists,
+                'syn_num':[4,5,6,8,10,12,16,20]})
         return self.parameters
 
     def exp_4a2(self, **kwargs):
+        '''
+        '''
         self.parameters = []
-        n_workers = 10
-        trials_per_worker=1
+        n_workers = 9
+        trials_per_worker=2
+        syn_dists = [[0,200],[0,300]]#[[0,300],[100,400],[200,500],[300,600],[0,200],[100,300],[200,400],[300,500],[400,600],]
         for i in range(n_workers):
             self.parameters.append(
                 {'experiment':kwargs['experiment'],
-                'trials':trials_per_worker})
+                'trials':trials_per_worker,
+                'syn_dist':syn_dists,
+                'syn_num':[4,5,6,8,10,12,16,20]})
         return self.parameters
 
-    def exp_4a(self, **kwargs):
-        """ Associative plasticity experiment
-
-        Activate a strong (100 Hz burst) and weak (single pulse in the middle of burst) pathway (separately or together).
-        Vary which pathways are active (strong only, weak only, strong+weak)
-        Vary the distance from soma of each pathway (0-200,200-400,400-600 um).
-        Vary the number of synapses in each pathway (10, 20, 30, 40, 50).
-        Synapse locations are generated randomly with param.choose_seg_rand(). Multiple synapses can be placed on the same segment.  The weight is then multiplied by the number of "synapses"
-        
-        Keyword Arguments:
-        experiment= specifies which experiment to run in Experiments class
-
-        Return a list of parameter dictionaries.
-        Each dictionary contains a different synapse distance requirement (syn_dist), i.e. synapse distance varies across workers.  All other parameters that vary are passed as a list to each worker and are iteratede within each worker
-        """
-        experiment= kwargs['experiment']
-        syn_num = [[12, 12],]
-        paths = ['strong','weak']
-        path_combos = ['strong','weak','strong_weak']
-        syn_dists_strong = [[0,200],[200,400],[400,600]]
-        syn_dists_weak = [[0,200],[200,400],[400,600]]
-        # syn_dists_strong = [[0,200]]
-        # syn_dists_weak = [[0,200]]
-        trials=10
-        w_mean=.001
-        # distribute parameters
+    def exp_4a1_nablock(self, **kwargs):
+        '''
+        '''
         self.parameters = []
-        for syn_dist_i, syn_dist_val_strong in enumerate(syn_dists_strong):
-            for syn_dist_i, syn_dist_val_weak in enumerate(syn_dists_weak):
+        n_workers = 9
+        trials_per_worker=4
+        syn_dists = [[0,300]]#[[0,300],[100,400],[200,500],[300,600],[0,200],[100,300],[200,400],[300,500],[400,600],]
+        for i in range(n_workers):
+            self.parameters.append(
+                {'experiment':kwargs['experiment'],
+                'trials':trials_per_worker,
+                'syn_dist':syn_dists,
+                'syn_num':[4,5,6,8,10,12,16,20]})
+        return self.parameters
 
-                self.parameters.append({
-                    'experiment':experiment,
-                    'syn_num': syn_num,
-                    'paths': paths,
-                    'path_combos': path_combos,
-                    'trials': trials, 
-                    'w_mean': w_mean,
-                    'syn_dist': [syn_dist_val_strong, syn_dist_val_weak]
-                    })
+    def exp_4a2_nablock(self, **kwargs):
+        '''
+        '''
+        self.parameters = []
+        n_workers = 9
+        trials_per_worker=4
+        syn_dists = [[0,300]]#[[0,300],[100,400],[200,500],[300,600],[0,200],[100,300],[200,400],[300,500],[400,600],]
+        for i in range(n_workers):
+            self.parameters.append(
+                {'experiment':kwargs['experiment'],
+                'trials':trials_per_worker,
+                'syn_dist':syn_dists,
+                'syn_num':[4,5,6,8,10,12,16,20]})
+        return self.parameters
 
+    def exp_4a1_poisson(self, **kwargs):
+        '''
+        '''
+        self.parameters = []
+        n_workers = 10
+        trials_per_worker=1
+        syn_dists = [0,300]
+        path_1_mean_rate=[10,15]
+        path_2_mean_rate=[1,2,3,4,5]
+        rate_combos = list(itertools.product(path_1_mean_rate, path_2_mean_rate))
+        for i in range(n_workers):
+            self.parameters.append(
+                {'experiment':kwargs['experiment'],
+                'trials':trials_per_worker,
+                'syn_dist':syn_dists,
+                'path_1_mean_rate':rate_combos[i][0],
+                'path_2_mean_rate':rate_combos[i][1],
+                'syn_num':[40]})
+        return self.parameters
+    def exp_5a1(self, **kwargs):
+        '''
+        '''
+        self.parameters = []
+        n_workers = 10
+        trials_per_worker=1
+        syn_dists = [[0,200]]#[[0,300],[100,400],[200,500],[300,600],[0,200],[100,300],[200,400],[300,500],[400,600],]
+        for i in range(n_workers):
+            self.parameters.append(
+                {'experiment':kwargs['experiment'],
+                'trials':trials_per_worker,
+                'syn_dist':syn_dists[0],
+                'stdp_dt':[-10,10],
+                'pulse_freqs':[60],
+                'syn_num':[5]})
+        return self.parameters
+
+    def exp_5a2(self, **kwargs):
+        '''
+        '''
+        self.parameters = []
+        n_workers = 10
+        trials_per_worker=1
+        syn_dists = [[0,200]]#[[0,300],[100,400],[200,500],[300,600],[0,200],[100,300],[200,400],[300,500],[400,600],]
+        for i in range(n_workers):
+            self.parameters.append(
+                {'experiment':kwargs['experiment'],
+                'trials':trials_per_worker,
+                'syn_dist':syn_dists[0],
+                'stdp_dt':[-1,-2.5,-5,-7.5,-10,-15,-20,-25,1,2.5,5,7.5,10,15,20,25],
+                'pulse_freqs':[20],
+                'syn_num':[5]})
+        return self.parameters
+
+    def exp_5a3(self, **kwargs):
+        '''
+        '''
+        self.parameters = []
+        n_workers = 10
+        trials_per_worker=1
+        syn_dists = [[0,300]]#[[0,300],[100,400],[200,500],[300,600],[0,200],[100,300],[200,400],[300,500],[400,600],]
+        stdp_dts = [-10,10,-10,10,-10,10,-10,10,-10,10]
+        for i in range(n_workers):
+            self.parameters.append(
+                {'experiment':kwargs['experiment'],
+                'trials':trials_per_worker,
+                'syn_dist':syn_dists[0],
+                'stdp_dt':stdp_dts[i],
+                'pulse_freqs':[1,5,10,20,30,40,50],
+                'syn_num':[6,8,10]})
         return self.parameters
 
 # function to pass to parallel context message board
@@ -2546,18 +2045,6 @@ def _run_parallel(parameters):
     # # close parallel context 
     pc.done()
 
-
-
-
 if __name__ =="__main__":
-    Experiment(experiment='quick_run', load_fd=True, trials=1)
-    # _run_parallel(ExperimentsParallel('exp_1a1').parameters)
-    # kwargs = {'experiment':'exp_1a'}
-    # analysis.Experiment(**kwargs)
-    # kwargs = {'experiment':'exp_1c'}
-    # kwargs = Arguments('exp_1').kwargs
-    # x = Experiment(**kwargs)
-    # analysis.Experiment(**kwargs)
-    # plots = analysis.PlotRangeVar()
-    # plots.plot_all(x.p)
-    # analysis.Experiment(exp='exp_3')
+    # Experiment(experiment='exp_1a1', trials=1, syn_dist=[0,200], syn_num=[8])
+    _run_parallel(ExperimentsParallel('exp_4a1_poisson').parameters)

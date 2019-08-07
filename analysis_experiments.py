@@ -173,18 +173,18 @@ class Experiment:
         condition='polarity'
         condition_vals = ['-20.0','0.0','20.0']
         colors = ['blue', 'black', 'red']
-        weight_plot = analysis._plot_weights_mean(group_data=self.group_data, condition=condition, condition_vals=condition_vals, colors=colors)
-        plt.show()
+        weight_plot  = analysis._plot_weights_mean(group_data=self.group_data,condition_ax='path',condition_ax_vals=['1','1'], condition_trace=condition, condition_trace_vals=condition_vals, colors=colors, errorbar=True)
+        plt.show(block=False)
 
         plot_file_name = 'weight_plot_mean.png'
-        weight_plot.savefig(directory+plot_file_name, dpi=250)
+        weight_plot[0].savefig(directory+plot_file_name, dpi=250)
 
         # final weight change for each condition as bar graph
-        weight_plot_final = analysis._plot_weights_final(group_data=self.group_data, condition=condition, condition_vals=condition_vals, colors=colors)
-        plt.show()
+        # weight_plot_final = analysis._plot_weights_final(group_data=self.group_data, condition=condition, condition_vals=condition_vals, colors=colors)
+        # plt.show()
 
-        plot_file_name = 'weight_plot_final.png'
-        weight_plot_final.savefig(directory+plot_file_name, dpi=250)
+        # plot_file_name = 'weight_plot_final.png'
+        # weight_plot_final.savefig(directory+plot_file_name, dpi=250)
 
     def exp_3a1_basal(self, **kwargs):
 
@@ -236,18 +236,18 @@ class Experiment:
         condition='polarity'
         condition_vals = ['-20.0','0.0','20.0']
         colors = ['blue', 'black', 'red']
-        weight_plot = analysis._plot_weights_mean(group_data=self.group_data, condition=condition, condition_vals=condition_vals, colors=colors)
-        plt.show()
+        weight_plot  = analysis._plot_weights_mean(group_data=self.group_data,condition_ax='path',condition_ax_vals=['1','1'], condition_trace=condition, condition_trace_vals=condition_vals, colors=colors, errorbar=True)
+        plt.show(block=False)
 
         plot_file_name = 'weight_plot_mean.png'
-        weight_plot.savefig(directory+plot_file_name, dpi=250)
+        weight_plot[0].savefig(directory+plot_file_name, dpi=250)
 
         # final weight change for each condition as bar graph
-        weight_plot_final = analysis._plot_weights_final(group_data=self.group_data, condition=condition, condition_vals=condition_vals, colors=colors)
-        plt.show()
+        # weight_plot_final = analysis._plot_weights_final(group_data=self.group_data, condition=condition, condition_vals=condition_vals, colors=colors)
+        # plt.show()
 
-        plot_file_name = 'weight_plot_final.png'
-        weight_plot_final.savefig(directory+plot_file_name, dpi=250)
+        # plot_file_name = 'weight_plot_final.png'
+        # weight_plot_final.savefig(directory+plot_file_name, dpi=250)
 
     def exp_3a2(self, **kwargs):
 
@@ -295,18 +295,18 @@ class Experiment:
         condition='polarity'
         condition_vals = ['-20.0','0.0','20.0']
         colors = ['blue', 'black', 'red']
-        weight_plot = analysis._plot_weights_mean(group_data=self.group_data, condition=condition, condition_vals=condition_vals, colors=colors)
-        plt.show()
+        weight_plot = analysis._plot_weights_mean(group_data=self.group_data,condition_ax='path',condition_ax_vals=['1','1'], condition_trace=condition, condition_trace_vals=condition_vals, colors=colors, errorbar=True)
+        plt.show(block=False)
 
         plot_file_name = 'weight_plot_mean.png'
-        weight_plot.savefig(directory+plot_file_name, dpi=250)
+        weight_plot[0].savefig(directory+plot_file_name, dpi=250)
 
         # final weight change for each condition as bar graph
-        weight_plot_final = analysis._plot_weights_final(group_data=self.group_data, condition=condition, condition_vals=condition_vals, colors=colors)
-        plt.show()
+        # weight_plot_final = analysis._plot_weights_final(group_data=self.group_data, condition=condition, condition_vals=condition_vals, colors=colors)
+        # plt.show()
 
-        plot_file_name = 'weight_plot_final.png'
-        weight_plot_final.savefig(directory+plot_file_name, dpi=250)
+        # plot_file_name = 'weight_plot_final.png'
+        # weight_plot_final.savefig(directory+plot_file_name, dpi=250)
 
     def exp_3a2_dose(self, **kwargs):
 
@@ -417,18 +417,18 @@ class Experiment:
         condition='polarity'
         condition_vals = ['-20.0','0.0','20.0']
         colors = ['blue', 'black', 'red']
-        weight_plot = analysis._plot_weights_mean(group_data=self.group_data, condition=condition, condition_vals=condition_vals, colors=colors)
-        plt.show()
+        weight_plot  = analysis._plot_weights_mean(group_data=self.group_data,condition_ax='path',condition_ax_vals=['1','1'], condition_trace=condition, condition_trace_vals=condition_vals, colors=colors, errorbar=True)
+        plt.show(block=False)
 
         plot_file_name = 'weight_plot_mean.png'
-        weight_plot.savefig(directory+plot_file_name, dpi=250)
+        weight_plot[0].savefig(directory+plot_file_name, dpi=250)
 
         # final weight change for each condition as bar graph
-        weight_plot_final = analysis._plot_weights_final(group_data=self.group_data, condition=condition, condition_vals=condition_vals, colors=colors)
-        plt.show()
+        # weight_plot_final = analysis._plot_weights_final(group_data=self.group_data, condition=condition, condition_vals=condition_vals, colors=colors)
+        # plt.show()
 
-        plot_file_name = 'weight_plot_final.png'
-        weight_plot_final.savefig(directory+plot_file_name, dpi=250)
+        # plot_file_name = 'weight_plot_final.png'
+        # weight_plot_final.savefig(directory+plot_file_name, dpi=250)
     
     def exp_3a_find_clopath_range(self, **kwargs):
         ''' find clopath parameter combinations that qualitatively reproduce experimental results for 20 Hz and TBS LTP

@@ -1,897 +1,2911 @@
 """
 analysis
 
-data structure for each trial is organized as []['tree'][polarity][section][segment]
 """
-
 from __future__ import division
 import numpy as np
-# import scipy
-# import scipy.io
-# from scipy import stats
+from scipy import stats
+from scipy import signal
+import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
-import itertools as it
+import itertools 
 import os
 import glob
 import cPickle as pickle
 import param
-import cell
 import math
 import run_control
 import copy
+import matplotlib
 import matplotlib.patches as patches
 import matplotlib.lines as mlines
 from matplotlib.patches import Polygon
+from matplotlib.patches import Rectangle
 from matplotlib.collections import PatchCollection
 from matplotlib import cm as colormap
+import inspect
+from matplotlib.ticker import FormatStrFormatter
+import matplotlib.ticker as ticker
+import pdb
+import sys
+from sys import getsizeof, stderr
+from collections import deque
+
+# matplotlib.rc('text', usetex=True)
+# matplotlib.rcParams['text.latex.preamble']=[r'\boldmath']
+# try:
+#     from reprlib import repr
+# except ImportError:
+#     pass
 
 
-def _param2times(p_path, tree_key, sec_i, seg_i, t):
-        """ Get synaptic input times from parameter dictionary for a given segment
-        
-        ===Args===
-        -p_path     :   parameter dictionary for a given pathway
-            -must contain the following entries
-                -pulses : number of pulses per burst
-                -pulse_freq : frequency of inputs within a burst (Hz)
-                -bursts : number of bursts
-                -burst_freq : frequency of bursts (Hz)
-                -warmup : simulation warmup time to allow steady state (ms)
-                -delay : delay (after warmup) for current segment to allow sequences (ms). 
-                -delay of 0 corresponds to all input patterns starting after warmup 
-        -tree_key   : tree containing the desired segment
-        -sec_i      : section index containing the desired segment (matching indexing in p_path['seg_idx'])
-        -sec_i      : index of desired segment (matching indexing in p_path['seg_idx'])
-        -t          : time vector for the simulation
-        
-        ===Out===
-        -input_times : list of input times in ms, length (dim: number of input pulses)
-        -x           : boolean vector of input times with same length as t (dim: samples)
-        
-        ===Comments===
-        
-        """
-        # get parameters from dictionary
-        #```````````````````````````````````````````````````````````````
-        pulses = int(p_path['pulses'])
-        pulse_freq = p_path['pulse_freq']/1000
-        burst_freq = p_path['burst_freq']/1000
-        bursts  =int(p_path['bursts'])
-        warmup = p_path['warmup']
+#############################################################################
+# common functions
+#############################################################################
+def _default_figdf():
+        '''
+        '''
+        all_dict={
+        # hide the top and right axes boundaries
+            'fig_dpi':350,
+            'fig_boxoff':True,
+            # axes and tick labels
+            'fig_axes_linewidth':[4],
+            'fig_xlabel_fontsize':[25],#'xx-large',#[25],
+            'fig_ylabel_fontsize':[25],#'xx-large',#[25],
+            'fig_xlabel_fontweight':[1000],#'extra bold',
+            'fig_ylabel_fontweight':[1000],#'extra bold',
+            'fig_xtick_fontsize':[20],#'large',#[15],
+            'fig_ytick_fontsize':[20],#'large',#[15],
+            'fig_xtick_fontweight':[1000], #'extra bold',#'light', #1000, #'heavy',
+            'fig_ytick_fontweight':[1000],# 'extra bold',#'light', #1000,#'heavy',
+            # figure tight layout
+            'fig_tight_layout':True,
+        }
+        all_df = pd.DataFrame(all_dict, dtype='object')
 
-        # array for storing input times
-        input_times = np.zeros((1, bursts*pulses))
+        return all_df
 
-        # convert to boolean vector (dim: samples)
-        x = np.zeros(t.shape)
-        # cut off number of decimals to prevent rounding error
-        t = np.around(t, 4)
-
-        if tree_key in p_path['seg_idx']:
-
-            delay = p_path['sequence_delays'][tree_key][sec_i][seg_i]
-            
-            # define a single burst 
-            burst1 = np.arange(0., pulses/pulse_freq, 1./pulse_freq)
-            
-            # iterate through bursts
-            for burst_i in range(bursts):
-                
-                # add times to array
-                input_times[0,burst_i*pulses:(burst_i+1)*pulses] = warmup + delay + burst_i/burst_freq + burst1
-                
-            
-            # find input times and to boolean vector
-            for t_i, t_t in enumerate(input_times[0,:]):
-                
-                # store input times
-                x[np.where(t==t_t)]=1
-                
-        return input_times, x
-
-def _seg_zip(data, variable):
-    """ From nested data structure, get list of all segments and corresponding conditions
-    
-    ===Args===
-    -data : data structure organized as data{'polarity'}{'pathway'}{'tree_variable'}[section number][segment number][time series]
-    
-    ===Out===
-    -seg_list : list of tuples.  each tuple contains (polarity_key, path_key, tree_key, sec_i, seg_i).  list has length equal to the total number of recorded segments in the data structure
-    
-    ===Comments===
-    -used in _data2mat to store list of attributes for each data time series
-    """
-    # parameter structure
-    p = data['p']
-    # for storing list of all recorded segments
-    seg_list = []
-    for polarity_key, polarity in data.iteritems():
-        # exclude parameter dictionary
-        if polarity_key != 'p':        
-            # iterate over pathways
-            for path_key, path in polarity.iteritems():
-                # get path-specific parameters
-                p_path = p['p_path'][path_key]  
-                # iterate over trees
-                for tree_key_raw, tree in path.iteritems():
-                    
-                    for key in p['seg_dist']:
-                        if key in tree_key_raw:
-                            tree_key=key
-              
-                    # exclude time vectors
-                    if tree_key!='t':    
-                        if '_'+variable in tree_key_raw:                   
-                            # iterate over sections in tree
-                            for sec_i, sec in enumerate(tree):                        
-                                # iterate over segments in section
-                                for seg_i, seg in enumerate(sec):
-                                    # add tuple to segment list
-                                    seg_list.append((polarity_key, path_key, tree_key, sec_i, seg_i))
-    return seg_list
-    
-def _data2mat(data, variable, **kwargs):
-    """ Convert data structure to single matrix
-    
-    ===Args===
-    -data : data structure organized as data{'polarity'}{'pathway'}{'tree_variable'}[section number][segment number][time series]
-    -variable : string naming a variable to enter in matrix (eg 'v' for membrane voltage)
-    
-    ===Out===
-    -data_mat : matrix of time series data for specified variable (segments x samples)
-    -input_mat : boolean matrix with ones for input times (segments x samples)
-    -conditions  : dictionary of condition types ('polarity', 'path' etc). each dictionary entry is a list with indices matching the fist dimension of mat
-    -p : parameter dictionary for the simulations in data
-    -t : single time vector for all data (ms), all simulations in a given data file have the same time vector
-    
-    ===Comments===
-    -This is very sensitive to the organizaiton of the input data structure
-    
-    """
-    # get parameter dictionary
-    p = data['p']
-    # get time vector (all time vectors are the same within a given data file, same simulation)
-    t = data[data.keys()[0]].values()[0]['t']
-    # get total number of recorded segments
-    nsegs = len(_seg_zip(data, variable))
-    # preallocate output arrays (segments x samples)
-    data_mat = np.zeros((nsegs, len(t)))
-    input_mat = np.zeros((nsegs, len(t)))
-    # dictionary to store conditions for each segment ['condition type'][segment number]
-    conditions = {'polarity':[],
-                  'path':[],
-                  'p':[],
-                  'tree':[],
-                  'sec_i':[],
-                  'sec_num':[],
-                  'seg_i':[],
-                  'seg_num':[],
-                  'input_times':[],
-                  'trial_id':[]
-                  }
-    
-    # get data for each segment
-    #`````````````````````````````````````````````````````````````````````
-    # data = {'polarity'}{'pathway'}{'tree_variable'}[section number][segment number][time series]
-    # iterate over polarities
-    seg_cnt=-1
-    for polarity_key, polarity in data.iteritems():
-
-        # exclude parameter dictionary
-        if polarity_key != 'p':
-            
-            # iterate over pathways
-            for path_key, path in polarity.iteritems():
-                        
-                # get path-specific parameters
-                p_path = p['p_path'][path_key]
-                
-                # iterate over trees
-                for tree_key_raw, tree in path.iteritems():
-                    
-                    for key in p['seg_dist']:
-                        if key in tree_key_raw:
-                            tree_key=key
-                    # if '_' in tree_key_raw:
-                    #     tree_key = tree_key_raw.rpartition('_')[0]
-                    # else:
-                    #     tree_key = tree_key_raw
-
-                    
-
-                    # exclude time vectors
-                    if tree_key!='t':   
-                        
-                        if '_'+variable in tree_key_raw:
-
-                            print tree_key_raw, tree_key
-                            # iterate over sections in tree
-                            for sec_i, sec in enumerate(tree):
-                                
-                                if tree_key in p_path['sec_idx']:
-                                    # get section number
-                                    sec_num = p_path['sec_idx'][tree_key][sec_i]
-                                else:
-                                    sec_num=sec_i
-                                
-                                # iterate over segments in section
-                                for seg_i, seg in enumerate(sec):
-                                    
-                                    if seg.shape[0]==data_mat.shape[1]:
-                                        seg_cnt += 1
-
-                                        if tree_key in p_path['seg_idx']:
-                                            # get section number
-                                            # print p_path['seg_idx']
-                                            # print seg_i
-                                            seg_num = p_path['seg_idx'][tree_key][sec_i][seg_i]
-                                        else:
-                                            seg_num=seg_i
-                                        
-                                        # get input times from parameter dictionary
-                                        # input_times: list of all input times in ms
-                                        # x: boolean vector. Same dimensions as t. 1=input, 0=no input
-
-                                        #FIXME how to handle soma recordings
-                                        input_times, x = _param2times(p_path, tree_key, sec_i, seg_i, t)
-                                        
-                                        # reshape x to 2D row vector
-                                        x = x.reshape(1, x.shape[0])
-                                        
-                                        # add x to input matrix (boolean, dim: segments x samples)
-                                        input_mat[seg_cnt,:] = x
-                                        
-                                        # get time series data for current segment
-                                        # vec =  path[tree_key+'_'+variable][sec_i][seg_i]
-                                        vec=seg
-                                        # reshape to 2D row vector
-                                        vec = vec.reshape(1, vec.shape[0])
-                                        # add to data matrix (dim: segments x samples)
-                                        data_mat[seg_cnt,:] = vec
-                                        
-                                        # update conditions matrix ['condition type'][segment number]
-                                        conditions['polarity'].append(polarity_key)
-                                        conditions['path'].append(path_key)
-                                        conditions['p'].append(p)
-                                        conditions['tree'].append(tree_key)
-                                        conditions['sec_i'].append(sec_i)
-                                        conditions['sec_num'].append(sec_num)
-                                        conditions['seg_i'].append(seg_i)
-                                        conditions['seg_num'].append(seg_num)
-                                        conditions['input_times'].append(input_times)
-                                        conditions['trial_id'].append(p['trial_id'])
-
-    return data_mat, input_mat, conditions, p, t
-
-def _load_group_data(directory='', file_name=''):
-        """ Load group data from folder
-        
-        ===Args===
-        -directory : directory where group data is stored including /
-        -file_name : file name for group data file, including .pkl
-                    -file_name cannot contain the string 'data', since this string is used t search for individual data files
-
-        ===Out===
-        -group_data  : typically a dictionary.  If no file is found with the specified string, an empty dictionary is returned
-
-        ===Updates===
-        -none
-
-        ===Comments===
-        """
-        
-        # all files in directory
-        files = os.listdir(directory)
-        
-        # if data file already exists
-        if file_name in files:
-            # load data
-            print 'group data found:', file_name
-            with open(directory+file_name, 'rb') as pkl_file:
-                group_data= pickle.load(pkl_file)
-            print 'group data loaded'
-        # otherwise create data structure
-        else:
-            # data organized as {frequency}{syn distance}{number of synapses}{polarity}[trial]{data type}{tree}[section][segment][spikes]
-            print 'no group data found'
-            group_data= {}
-
-        return group_data 
-
-def _update_group_data(directory, search_string, group_data, variables):
+def _input_times_2array(input_times, t, t_precision=4, **kwargs):
     '''
+    Arguments
+    ---------
+    ~input_times: nested list of input times [location number][list of input times]
+    '''
+    # number of locations with input times
+    n_locs = len(input_times)
+    # number of time steps
+    n_steps = len(t)
+    # convert input times to input array
+    #--------------------------------------------------------------
+    # preallocate
+    input_array = np.zeros((n_locs, n_steps))
+    # cut off number of decimals to prevent rounding error
+    t = np.around(t, t_precision)
+    # iterate over locations
+    for loc_i, times in enumerate(input_times):
+        # print type(times)
+        # print np.isnan(times)
+        if type(times)==float and np.isnan(times):
+            continue
+        # find input times and to boolean vector
+        # iterate over input times
+        for t_i, t_t in enumerate(times):
+            # if input time does not exactly match a sample in time vector    
+            if t_t not in t:
+                # set input time to nearest sample
+                input_array[loc_i, int(np.argmin(np.absolute(t-t_t)))]=1
+            else:
+                # store input times
+                input_array[loc_i, np.where(t==t_t)]=1
+
+    return input_array
+
+def _format_figures(fig, ax, figdf, tick_max=40):
+    '''
+    '''
+    # get ylim and xlim across all figures
+    #-------------------------------------
+    xlim={}
+    ylim={}
+    xlims=[]
+    ylims=[]
+    # iterate over figures
+    for figkey in ax:
+        # get ticks
+        yticks = ax[figkey].get_yticks()
+        xticks = ax[figkey].get_xticks()
+        # apply scaling to ticks
+        #-------------------------------------
+        if 'fig_yscale' in figdf:
+            yscale = figdf.loc[figkey].fig_yscale.unique()[0]
+            print 'yscale', yscale
+            yticks = yscale*yticks
+        if 'fig_xscale' in figdf:
+            xscale = figdf.loc[figkey].fig_xscale.unique()[0]
+            xticks = xscale*xticks
+        ax[figkey].set_yticks(yticks)
+        ax[figkey].set_xticks(xticks)
+        # get updated lims
+        xlim[figkey] = _to_1sigfig(ax[figkey].get_xlim())
+        ylim[figkey] = _to_1sigfig(ax[figkey].get_ylim())
+        # print ylim
+        xlims.append(copy.copy(xlim[figkey]))
+        ylims.append(copy.copy(ylim[figkey]))
+    # find x and y lims across all figures in group
+    xlim_all = [min([temp[0] for temp in xlims]), max([temp[1] for temp in xlims])]
+    ylim_all = [min([temp[0] for temp in ylims]), max([temp[1] for temp in ylims])]
+
+    # iterate over figures and update attributes
+    #---------------------------------------------
+    for figkey, axes in ax.iteritems():
+        # get x and y lims
+        ylim_current = list(ax[figkey].get_ylim())
+        xlim_current = list(ax[figkey].get_xlim())
+        # set ylim across all figures
+        #----------------------------
+        if all(figdf.fig_ylim_all):
+            xlim_current = xlim_all
+            ylim_current = ylim_all
+        if 'fig_ymin' in figdf.keys():
+            ylim_current[0] = figdf.loc[figkey].fig_ymin.unique()[0]
+        if 'fig_xmin' in figdf.keys():
+            xlim_current[0] = figdf.loc[figkey].fig_xmin.unique()[0]
+        if 'fig_ymax' in figdf.keys():
+            ylim_current[1] = figdf.loc[figkey].fig_ymax.unique()[0]
+        if 'fig_xmax' in figdf.keys():
+            xlim_current[1] = figdf.loc[figkey].fig_xmax.unique()[0]
+
+        ax[figkey].set_ylim(ylim_current)
+        ax[figkey].set_xlim(xlim_current)
+
+        # set x and y ticks
+        #------------------------------------------------------------------
+        print 'setting ticks'
+        # get current lims and ticks
+        xlim[figkey] = copy.copy(list(ax[figkey].get_xlim()))
+        ylim[figkey] = copy.copy(list(ax[figkey].get_ylim()))
+        xticks = ax[figkey].get_xticks()
+        yticks = ax[figkey].get_yticks()
+        nyticks=5
+        dyticks = float(abs(ylim[figkey][1]-ylim[figkey][0]))/nyticks
+        nxticks=5
+        dxticks = float(abs(xlim[figkey][1]-xlim[figkey][0]))/nxticks
+        # print 'ylim', ylim[figkey]
+        if 'fig_dyticks' in figdf:
+            dyticks = figdf.loc[figkey].fig_dyticks.unique()[0]
+            nyticks = len(np.arange(ylim[figkey][0], ylim[figkey][1], dyticks))
+        elif 'fig_nyticks' in figdf:
+            nyticks = figdf.loc[figkey].fig_nyticks.unique()[0]
+            dyticks = float(abs(ylim[figkey][1]-ylim[figkey][0]))/nyticks
+        # else:
+        #     nyticks=5
+        #     dyticks = float(abs(ylim[figkey][1]-ylim[figkey][0]))/nyticks
+
+        if nyticks>tick_max:
+            nyticks=tick_max
+            dyticks = float(abs(ylim[figkey][1]-ylim[figkey][0]))/nyticks
+        if 'fig_ytick_assert' in figdf:
+            ytick_assert = figdf.loc[figkey].fig_ytick_assert.unique()[0]
+        else:
+            ytick_assert = ylim[figkey][0]
+        # print ylim[figkey]
+        # print ytick_assert
+        yticks_new_1 = np.flip(np.arange(ytick_assert, ylim[figkey][0], -dyticks))
+        # print yticks_new_1
+        yticks_new_2 = np.arange(ytick_assert, ylim[figkey][1], dyticks)
+        yticks_new = np.append(yticks_new_1, yticks_new_2)
+
+        if 'fig_dxticks' in figdf:
+            dxticks = figdf.loc[figkey].fig_dxticks.unique()[0]
+            nxticks = len(np.arange(xlim[figkey][0], xlim[figkey][1], dxticks))
+        elif 'fig_nxticks' in figdf:
+            nxticks = figdf.loc[figkey].fig_nxticks.unique()[0]
+            dxticks = float(abs(xlim[figkey][1]-xlim[figkey][0]))/nxticks
+        # else:
+        #     nxticks=5
+        #     dxticks = float(abs(xlim[figkey][1]-xlim[figkey][0]))/nxticks
+        if nxticks>tick_max:
+            nxticks=tick_max
+            dxticks = float(abs(xlim[figkey][1]-xlim[figkey][0]))/nxticks
+        if 'fig_xtick_assert' in figdf:
+            xtick_assert = figdf.loc[figkey].fig_xtick_assert.unique()[0]
+        else:
+            xtick_assert = xlim[figkey][0]
+            xtick_assert = _to_1sigfig(xtick_assert)
+        xticks_new_1 = np.flip(np.arange(xtick_assert, xlim[figkey][0], -dxticks))
+        xticks_new_2 = np.arange(xtick_assert, xlim[figkey][1], dxticks)
+        xticks_new = np.append(xticks_new_1, xticks_new_2)
+        print xticks_new_1, xticks_new_2
+
+        if 'fig_ytick_round' in figdf:
+            decimals = figdf.loc[figkey].fig_ytick_round.unique()[0]
+            yticks_new = np.round(yticks_new, decimals=decimals)
+
+        if 'fig_xtick_round' in figdf:
+            decimals = figdf.loc[figkey].fig_xtick_round.unique()[0]
+            xticks_new = np.round(xticks_new, decimals=decimals)
+
+        if 'fig_xticks' in figdf:
+            xticks_new = figdf.fig_xticks.values[0]
+        if 'fig_yticks' in figdf:
+            yticks_new = figdf.fig_yticks.values[0]
+
+        if 'fig_set_xscale' in figdf:
+            ax[figkey].set_xscale(figdf.fig_set_xscale.values[0])
+        print 'yticks_new',yticks_new
+        print 'xticks_new',xticks_new
+
+        # if 'fig_yscale' in figdf:
+        #     yscale = figdf.loc[figkey].fig_yscale.unique()[0]
+        #     print 'yscale', yscale
+        #     yticks_new = yscale*yticks_new
+        # if 'fig_xscale' in figdf:
+        #     xscale = figdf.loc[figkey].fig_xscale.unique()[0]
+        #     xticks_new = xscale*xticks_new
+        ax[figkey].set_yticks(yticks_new)
+        ax[figkey].set_xticks(xticks_new)
+        ax[figkey].set_yticklabels(yticks_new)
+        ax[figkey].set_xticklabels(xticks_new)
+
+        # set tick decimal places
+        #---------------------------------------------------------------
+        if 'fig_xtick_decimals' in figdf:
+            dec = figdf.loc[figkey].fig_xtick_decimals.unique()[0]
+            ax[figkey].xaxis.set_major_formatter(FormatStrFormatter('%.{}f'.format(dec)))
+        if 'fig_ytick_decimals' in figdf:
+            dec = figdf.loc[figkey].fig_ytick_decimals.unique()[0]
+            ax[figkey].yaxis.set_major_formatter(FormatStrFormatter('%.{}f'.format(dec)))
+
+
+
+
+        #     yticks = np.arange(ylim[figkey][0], ylim[figkey][1], figdf.loc[figkey].fig_dyticks.unique()[0])
+        # elif 'fig_nyticks' in figdf:
+        #     dstep = float(abs(ylim[figkey][1]-ylim[figkey][0]))/figdf.loc[figkey].fig_nyticks.unique()[0]
+        #     yticks = np.arange(ylim[figkey][0], ylim[figkey][1], dstep)
+
+        # if 'fig_dxticks' in figdf:
+        #     xticks = np.arange(xlim[figkey][0], xlim[figkey][1], figdf.loc[figkey].fig_dxticks.unique()[0])
+        # elif 'fig_nxticks' in figdf:
+        #     dstep = float(abs(xlim[figkey][1]-xlim[figkey][0]))/figdf.loc[figkey].fig_nxticks.unique()[0]
+        #     xticks = np.arange(xlim[figkey][0], xlim[figkey][1], dstep)
+        # print 'resetting ticks'
+        # print xticks
+        # # print len(yticks)
+        # # print xticks
+        # ax[figkey].set_yticks(yticks)
+        # ax[figkey].set_xticks(xticks)
+
+        
+
+        # set ticklabel attributes
+        #--------------------------
+        print 'setting ticklabels'
+        for temp in ax[figkey].get_xticklabels():
+            temp.set_fontweight(figdf.loc[figkey].fig_xtick_fontweight.unique()[0])
+            temp.set_fontsize(figdf.loc[figkey].fig_xtick_fontsize.unique()[0])
+        for temp in ax[figkey].get_yticklabels():
+            temp.set_fontweight(figdf.loc[figkey].fig_ytick_fontweight.unique()[0])
+            temp.set_fontsize(figdf.loc[figkey].fig_ytick_fontsize.unique()[0])
+
+        # turn off axes box
+        #------------------
+        if all(figdf.loc[figkey].fig_boxoff):
+            ax[figkey].spines['right'].set_visible(False)
+            ax[figkey].spines['top'].set_visible(False)
+
+        if 'fig_axesoff' in figdf.keys() and all(figdf.loc[figkey].fig_axesoff):
+            ax[figkey].set_axis_off()
+
+        # set axes linewidth and tick position
+        #----------------------
+        ax[figkey].spines['left'].set_linewidth(figdf.loc[figkey].fig_axes_linewidth.unique()[0])
+        ax[figkey].spines['bottom'].set_linewidth(figdf.loc[figkey].fig_axes_linewidth.unique()[0])
+        ax[figkey].xaxis.set_ticks_position('bottom')
+        ax[figkey].yaxis.set_ticks_position('left')
+
+        # set axes labels
+        #----------------
+
+        # print 'fontsize',figdf['fig_xlabel_fonstize']
+        # print 'fontsize',figdf.loc[figkey]['fig_xlabel_fonstize']
+        # print 'fontsize',figdf.loc[figkey]['fig_xlabel_fonstize'].unique()[0]
+        # print 'fontsize',figdf.loc[figkey].fig_xlabel_fontsize.unique()
+        ax[figkey].set_xlabel(figdf.loc[figkey].fig_xlabel.unique()[0], fontsize=figdf.loc[figkey]['fig_xlabel_fontsize'].unique()[0], fontweight=figdf.loc[figkey].fig_xlabel_fontweight.unique()[0])
+        ax[figkey].set_ylabel(figdf.loc[figkey].fig_ylabel.unique()[0], fontsize=figdf.loc[figkey]['fig_ylabel_fontsize'].unique()[0], fontweight=figdf.loc[figkey].fig_ylabel_fontweight.unique()[0])
+
+        # set tight layout
+        #-------------------
+        if all(figdf.loc[figkey].fig_tight_layout):
+            plt.figure(fig[figkey].number)
+            plt.tight_layout()
+
+    return fig, ax
+
+def _load_group_data( directory='', filename='slopes_df.pkl', df=True):
+    """ Load group data from folder
+    
     ===Args===
     -directory : directory where group data is stored including /
-    -search_string : string that is unique individual data files to search directory.  typically '*data*'
-    -group_data : group data structure organized as group_data{variable}{data_type}
-            -group_data['v']['data_mat'] is a matrix with dimensions segments x samples
+    -filename : file name for group data file, including .pkl
+                -file_name cannot contain the string 'data', since this string is used t search for individual data files
+    -df : boolean, if true group data is assumed to be a pandas dataframe, otherwise it is assumed to be a nested dictionary
 
     ===Out===
+    -group_data  : if df is True, group_data will be a pandas dataframe.  if no group data is found in the directory an empty dataframe is returned.  if df is False, group_data is returned as a nested dictionary, and if no data is found an empty dictionary is returned
+
     ===Updates===
+    -none
+
     ===Comments===
-    -group_data['processed'] = list of data file names that have already been added to the group 
-    -variable = variable type that was recorded from neuron simulaitons, e.g. 'v' or 'gbar'
-    -data_type for group_data structure:
-        -'data_mat' : matrix of time series data for the specified variable
-        -'input_mat': matrix of boolean time series of synpatic inputs for the corresponding data_mat (1=active input, 0=inactive input)
-        -'conditions' : 
-                -'polarity', 'path', 'tree', 'sec_i', 'sec_num', 'seg_i', 'seg_num', 'input_times'
-                -e.g. group_data['v']['conditions']['polarity'] returns a list of field polarities with indices corresponsponding to rows group_data['v']['data_mat']
-        't' : single 0D vector of time values (should be identical for all simulations in a given group data structure)
-    '''
-    # get list of new data files
-    #`````````````````````````````````````````````````````````````
-    # get list of all data files
-    data_files = glob.glob(directory+search_string)
-
-    # get list of processed data files
-    if group_data:
-        processed_data_files = group_data['processed']
-    else:
-        group_data['processed']=[]
-        processed_data_files = group_data['processed']
-
-    # get list of new data files
-    new_data_files = list(set(data_files)-set(processed_data_files))
-    print 'total data files:', len(data_files) 
-    print 'new data fies:', len(new_data_files)
+    """
     
+    # all files in directory
+    # files = os.listdir(directory)
+    files = glob.glob(directory+'*'+filename+'*')
+    print 'files',files
+
+    if len(files)>0:
+        print len(files), 'variable files found'
+        group_data=pd.DataFrame()
+        for file in files:
+            group_data_temp = pd.read_pickle(file)
+            print 'group data loaded', file
+            # print group_data_temp
+            if group_data.empty:
+                group_data=group_data_temp
+            else:
+                group_data=group_data.append(group_data_temp)
+
+        # print 'keys',sorted(group_data.keys())
+
+    # otherwise create data structure
+    else:
+        print 'no group data found'
+        
+        # if dataframe
+        if df:
+            # create empty dataframe
+            group_data = pd.DataFrame()
+        # else if dicitonary
+        else:
+            group_data= {}
+
+
+    # # if data file already exists
+    # if filename in files:
+    #     print 'group data found:', filename
+
+    #     # if stored as dataframe
+    #     if df:
+    #         if '.pkl' in filename:
+    #             # load dataframe
+    #             group_data=pd.read_pickle(directory+filename)
+    #             print 'group data loaded'
+
+    #         elif '.h5' in filename:
+    #             # load dataframe
+    #             group_data=pd.read_hdf(directory+filename)
+    #             print 'group data loaded'
+    #     # if stored as dictionary
+    #     else:
+    #         # load dictionary
+    #         with open(directory+filename, 'rb') as pkl_file:
+    #             group_data= pickle.load(pkl_file)
+    #         print 'group data loaded'
+
+    # # otherwise create data structure
+    # else:
+    #     print 'no group data found'
+        
+    #     # if dataframe
+    #     if df:
+    #         # create empty dataframe
+    #         group_data = pd.DataFrame()
+    #     # else if dicitonary
+    #     else:
+    #         group_data= {}
+
+    return group_data 
+
+def _save_group_data(df, directory, variable, extension='.pkl', size_limit=5E7, check_against=None, nsplit=10, **kwargs):
+    '''
+    '''
+    if (check_against is not None and not df.equals(check_against)) or check_against is None:
+        print 'saving updated group df'
+        # get size of df
+        #---------------------------
+        df_size_temp = sys.getsizeof(df)
+        df_size = _total_size(df)
+        print 'file size', df_size_temp
+        print 'total size', df_size
+        # if df is too big, break into manageable parts
+        if nsplit is not None:
+            print 'splitting group df'
+            n_dfs=nsplit
+            df_split = np.array_split(df, n_dfs)
+            for df_i, df_chunk in enumerate(df_split):
+                if extension=='.pkl':
+                    # print df_chunk
+                    df_chunk.to_pickle(directory+variable+'_'+str(df_i)+extension)
+                elif extension=='.h5':
+                    df_chunk.to_hdf(directory+variable+'_'+str(df_i)+extension, key=variable, mode='w', format='fixed')
+        elif size_limit is not None and df_size>size_limit:
+            print 'df too large to save, breaking into smaller parts'
+            n_dfs=df_size/size_limit
+            df_split = np.array_split(df, n_dfs)
+            for df_i, df_chunk in enumerate(df_split):
+                if extension=='.pkl':
+                    # print df_chunk
+                    df_chunk.to_pickle(directory+variable+'_'+str(df_i)+extension)
+                elif extension=='.h5':
+                    df_chunk.to_hdf(directory+variable+'_'+str(df_i)+extension, key=variable, mode='w', format='fixed')
+
+        else:
+            # check write protocol
+            if extension=='.pkl':
+                df.to_pickle(directory+variable+extension)
+            elif extension=='.h5':
+                df.to_hdf(directory+variable+extension, key=variable, mode='w', format='fixed')
+
+    return df
+
+def _to_1sigfig(num, minimum=True):
+    '''
+    '''
+    print 'num',num
+    if type(num)==np.ndarray or type(num)==list or type(num)==tuple:
+        new_val = np.zeros(len(num))
+        sigfigs=[]
+        for i, val in enumerate(num):
+            if val!=0:
+                sigfigs.append(int(math.floor(math.log10(abs(val)))))
+            else:
+                sigfigs.append(0)
+
+        min_sigfig = min(sigfigs)
+        print min_sigfig
+        for i, val in enumerate(num):
+            if minimum:
+                new_val[i] = np.round(val, -min_sigfig)
+            else:
+                new_val[i] = np.round(val, -sigfigs[i])
+
+    elif type(num)==float or type(num)==np.float64:
+        if num!=0:
+            new_val = np.round(num, -int(math.floor(math.log10(abs(num)))))
+        else:
+            new_val=0
+
+    print new_val
+    return new_val
+
+def _2array(series, remove_nans=True, remove_nans_axis=0, list_index=0, array_funcs=[], array_func_kws=[]):
+    '''
+    '''
+    if remove_nans:
+        series = series.dropna()
+    series_list = series.tolist()
+    # if there are nans in a row, fill whole row with nans
+    #-------------------------------------------------------
+    if not remove_nans:
+        max_size = max([len(row) for row in series_list if type(row)==np.ndarray])
+        for row_i, row in enumerate(series_list):
+            if row is None or np.isnan(row).any():
+                new_row = np.full(max_size, np.nan)
+                series_list[row_i]=new_row
+
+    if len(series_list)>0 and type(series_list[0])==list:
+    #     print 'list to array?'
+        series_list = [item[list_index] for item in series_list if type(item)==list and len(item)>list_index]
+    #     # print series_list
+    #     print np.array(np.array(series_list))
+
+    array = np.array(series_list).squeeze()
+
+    return array
+
+def _process_new_data_df(group_df, preprocessed_directory, search_string='data', functions=[], kwlist=[], rerun=[], keep=[], file_limit=[], ):
+    ''' process new data and add to group
+
+    ==Args==
+    -group_df : pandas dataframe containing group data
+    -directory : relative directory containing unprocessed data
+    -search_string :  string to identify unprocessed data, typically ".mat"
+    -variables : variables to be derived from unprocessed data (e.g. slopes or slopes_norm)
+
+    ==Out==
+    -group_df : pandas dataframe containing group data
+
+    ==Update==
+    
+    ==Comments==
+    '''
+    # iterate over columns in group_df
+    # if column in keep, use old column values and drop suffix
+    # otherwise keep new columnn values and drop suffix
+
+
+    # merge all function dfs on filename and path
+    # update appropriate rows and columns of group_df with function dfs, use merge? find indices and use update/combine?
+
+    # get list of all preprocessed data files
+    data_files = glob.glob(preprocessed_directory+'*'+search_string+'*')
+    # remove directory and file extension
+    data_filenames = [file.split('\\')[-1].split('.')[0] for file in data_files]
+    trial_ids = [file.split('_')[-1] for file in data_filenames]
+
+    # get list of processed data files (already added to group dataframe)
+    if group_df.empty:
+        processed_trial_ids = []
+    else:
+        processed_trial_ids = group_df.trial_id
+
+    # get list of new data files (haven't been added to dataframe)
+    new_trial_ids = list(set(trial_ids)-set(processed_trial_ids))
+    new_data_files = [data_files[trial_id_i] for trial_id_i, trial_id in enumerate(trial_ids) if trial_id in new_trial_ids]
+
+    # if any functions specified in rerun, set iterfiles to all data files
+    if rerun:
+        iterfiles = data_files
+    # if there are no functions to rerun, only iterate through new files
+    else:
+        iterfiles = new_data_files
+
+    print 'total data files:', len(data_files) 
+    print 'new data files:', len(new_data_files)
+    if rerun:
+        print 'functions to rerun over all slices:', rerun
+
     # iterate over new files and update group_data structure
     #`````````````````````````````````````````````````````````````````
     print 'updating group data structure'
-    # dictionary for temporary storage of individual simulation data
-    dtemp={}
-    # iterate over new data files
-    for file_i, file in enumerate(new_data_files):
 
-        if file_i<2:
+    # temporary df for storing rerun function outputs
+    df_update = pd.DataFrame()
+
+    # suffixes for merging df_update with group_df
+    old_suffix = '_old'
+    rerun_suffix = '_rerun'
+
+    # iterate over data files
+    for file_i, file in enumerate(iterfiles):
+        print file_i
+
+        # apply file limit
+        #------------------
+        if file_limit and file_i> file_limit:
+            continue
+        else:
+
+            # get trial_id
+            #----------------
+            trial_id = file.split('\\')[-1].split('.')[0].split('_')[-1]
 
             # load data file
+            #---------------
             with open(file, 'rb') as pkl_file:
-                data = pickle.load(pkl_file)
 
-            # iterate over variables to be updated
-            for variable_i, variable in enumerate(variables):
+                pre = pickle.load(pkl_file)
 
-                # convert data to matrix and get corresponding conditions
-                dtemp['data_mat'], dtemp['input_mat'], dtemp['conditions'], dtemp['p'], dtemp['t'] = _data2mat(data, variable)
+            # for each function create df and add to list (either new or rerun)
+            new_dfs = []
+            rerun_dfs = []
+            # iterate over functions
+            #-------------------------
+            for func_i, func in enumerate(functions):
 
+                # if new data file add to new list
+                #---------------------------------
+                if file in new_data_files:
 
-                # add to group data
-                #``````````````````````````````````````````````````````````````
-                # if variable does not exist in group_data
-                if variable not in group_data:
-                    # create entry
-                    group_data[variable]={}
-                    # iterate through data types for individual simulation
-                    for key, val in dtemp.iteritems():
-                        # set initial value in group_data to the individual value
-                        group_data[variable][key]=val
+                    print 'new file found:', trial_id
+                    print kwlist[func_i]
+                    df_temp = func(pre, df=[], keep=[], **kwlist[func_i])
+                    # # print 'test'
+                    new_dfs.append(df_temp)
 
-                # if variable already exists in group_data structure
-                else:
-                    # iterate through data types
-                    for key, val in dtemp.iteritems():
-                        # for conditions info
-                        if key=='conditions':
-                            # iterate through the various conditions (e.g. 'polarity', 'path', 'tree', 'sec_i', 'seg_i')
-                            for condition_key, condition_list in val.iteritems():
-                                # add list for individual data to running list for group
-                                group_data[variable][key][condition_key] += condition_list 
-                        # if data type is a matrix
-                        elif 'mat' in key:
-                            # add to existing group matrix
-                            group_data[variable][key] = np.append(group_data[variable][key], val, axis=0)
-                        
-                        # FIXME this is overwritten on each loop (should only be set once)
-                        # create single time vector in group_data
-                        elif key=='t':
-                            group_data[variable][key] = val
+                # if rerunning current func, add to rerun list
+                #-------------------------------------------
+                elif func in rerun:
+                    # get corresponding row from group_df
+                    df_locs = group_df[group_df.trial_id==trial_id].index.values
+                    # get df from function
+                    df_temp = func(pre, keep=keep, df=group_df.loc[df_locs], **kwlist[func_i])
+                    # add to rerun list
+                    rerun_dfs.append(df_temp)
 
-                # add file to processed list to keep track of processed files
-                group_data['processed'].append(file)
+            # if there are new df's, append to bottom of df_update
+            #--------------------------------------------------
+            if new_dfs:
+                # combine all new_df's in list
+                new_df = reduce(
+                    lambda left,right: 
+                    pd.merge(
+                        left, 
+                        right[np.append(right.columns.difference(left.columns).values, ['trial_id', 'field', 'location'])], 
+                        on=['trial_id', 'field', 'location'], 
+                        how='inner', ), 
+                    new_dfs
+                    )
+                # add to update df (will be merged with old df later)
+                df_update = df_update.append(new_df, ignore_index=True)
 
-    print 'finished updating group data structure'
+            # if there are rerun df's, append to bottom of df_update
+            #--------------------------------------------------
+            if rerun_dfs:
+                # merge df's across the different functions
+                rerun_df = reduce(
+                    lambda left,right: 
+                    pd.merge(
+                        left, 
+                        right[np.append(right.columns.difference(left.columns).values, ['trial_id', 'field', 'location'])], 
+                        on=['trial_id', 'field','location'], 
+                        how='inner', ), 
+                    rerun_dfs
+                    ) # validate='one_to_one'
 
-    # ouput group data structure 
-    return group_data
-
-def _save_group_data(group_data, directory, file_name):
-    '''
-    ===Args===
-    ===Out===
-    ===Updates===
-    ===Comments===
-    '''
-    with open(directory+file_name, 'wb') as output:
-        pickle.dump(group_data, output,protocol=pickle.HIGHEST_PROTOCOL)
-
-    print 'group data saved as:', file_name 
-
-def _add_param_to_group(group_data, condition, path=True):
-    '''
-    ===Args===
-    -group_data : data structure for group of simulations
-            -see analysis._update_group_data for structure
-
-    -condition : a parameter key to be added to the list of conditions for each simulation
-
-    -path   : boolean. indicates that the parameter exists in a path dictionary, i.e. p['p_path'] instead of the global parameter dictionary p
-
-    ===Out===
-    -group_data
+                # add to update df (will be merged with old df later)
+                df_update = df_update.append(rerun_df, ignore_index=True)
     
-    ===Update===
-    -group_data 
-    ===Comments===
-    '''
-    # add syn_dist to conditions list
-        # FIXME create function to do this for arbitrary parameter
-    print 'adding', condition,'to conditions list'
-    for variable in group_data:
-        if 'conditions' in group_data[variable]:
-            if condition not in group_data[variable]['conditions']:
-                group_data[variable]['conditions'][condition]=[]
-            
-                for cond_i, cond in enumerate(group_data[variable]['conditions']['p']):
-                    path_key = group_data[variable]['conditions']['path'][cond_i] 
-                    if path:
-                        condition_val = cond['p_path'][path_key][condition]
-                    else:
-                        condition_val = cond[condition]
-                    group_data[variable]['conditions'][condition].append(condition_val)
-
-    return group_data
-
-def _plot_weights_mean(group_data, condition_ax, condition_ax_vals, condition_trace, condition_trace_vals, colors, conditions_keep=[],conditions_keep_vals=[]):
-    ''' Plot average weight change for group of simulations over time
+    # merge old and new df's
+    #------------------------------------------------------------            
+    # print 'merging old and new data'
+    # if no old df is specified, set to group_df to update_df
+    if group_df.empty:
+        group_df=df_update
+    # otherwise merge old df and update df
+    elif not df_update.empty:
+        group_df = group_df.merge(df_update, on=['trial_id', 'field', 'location'], how='outer', suffixes=[old_suffix, rerun_suffix])
     
-    ===Args===
-    -group_data : data structure containing a matrix of time series and corresponding conditions for the simulation
-            -time series data is stored as a matrix in group_data{data_type}{'data_mat'} with dimensions trial/segment number x samples
-            -conditions stored as a list in group_data{data_type}{'conditions'}{condition} with list indices corresponding to segment/trial number in data_mat
+    # update columns after merge
+    #------------------------------
+    # print 'dropping columns after merge'
+    # get column values
+    columns = group_df.columns.values
+    # drop columns, based on keep argument
+    drop_columns = []
+    # iterate over columns
+    for column in columns:
+        # if old column
+        if old_suffix in column:
+            # get original column name
+            column_original = column.split(old_suffix)[0]
+            # get equivalent rerun column name
+            column_new = column_original+rerun_suffix
+            # if not a keep column
+            if not any([temp for temp in keep if temp in column]):
+                # use new to update old
+                # FIXME, use overwrite kwarg for update
+                group_df[column].update(group_df[column_new])
+                # then drop new
+                drop_columns.append(column_new)
+            # if a keep column
+            else:
+                # use old to update new, drop old
+                group_df[column_new].update(group_df[column])
+                drop_columns.append(column)
+    # drop specified columns
+    group_df.drop(drop_columns, axis=1, inplace=True)
+
+    # remove suffixes from merge
+    #---------------------------
+    # print 'renaming columns after merge'
+    # dictionary for updated column names
+    rename_dict={}
+    # iterate over column names
+    for column in group_df.columns.values:
+        # check for suffixes and drop 
+        if old_suffix in column:
+            rename_dict[column] = column.split(old_suffix)[0]
+        elif rerun_suffix in column:
+            rename_dict[column] = column.split(rerun_suffix)[0]
+    # rename columns
+    group_df.rename(columns=rename_dict, inplace=True)
+
+    return group_df
+
+def _total_size(o, handlers={}, verbose=False):
+    """ Returns the approximate memory footprint an object and all of its contents.
+
+    Automatically finds the contents of the following builtin containers and
+    their subclasses:  tuple, list, deque, dict, set and frozenset.
+    To search other containers, add handlers to iterate over their contents:
+
+        handlers = {SomeContainerClass: iter,
+                    OtherContainerClass: OtherContainerClass.get_elements}
 
-    -condition_ax : condition type to divide axes based.  e.g. condition_ax='path' will create separate subplots for each path name specified in condition_ax_vals
-
-    -condition_ax_vals  : specific values to create different axes for.  The returned figure will contain as many subplots as the length of this list
-
-    -condition_trace    : condition type to separate traces within an individual subplot.  e.g. 'polarity' will create separate traces for each electric field polarity specified in condition_trace_vals
-
-    -condition_trace_vals : specific values to separate traces based on.  e.g. ['-20.0','0.0', '20.0'] for different field polarities.  Number of tracres in each figure axis will equal the length of this list
-
-    -colors    : list of plot colors corresponding to the traces specified by condition_trace_vals
-
-    ===Out===
-    - fig   : figure object
-    -axes   : list of axes objects. length is the length condition_ax_vals
-
-    ===Updates===
-    
-    ===Comments===
-    -This function assumes a  very specific structure for the data object (see Args)
-    -
-    '''
-
-    # create set of axes for condition in condtiion axes
-    fig, axes = plt.subplots(1, len(condition_ax_vals))
-
-    if conditions_keep:
-        for condition_keep_i, condition_keep in enumerate(conditions_keep):
-            indices_keep = [i for i,val in enumerate(group_data['gbar']['conditions'][condition_keep]) if val in conditions_keep_vals[condition_keep_i]]
-    #FIXME 
-    # add option to not specify axes conditions to yield a single figure
-    for condition_ax_i, condition_ax_val in enumerate(condition_ax_vals):
-        for condition_trace_i, condition_trace_val in enumerate(condition_trace_vals):
-            indices_trace = [i for i,val in enumerate(group_data['gbar']['conditions'][condition_trace]) if val==condition_trace_val]
-            indices_ax = [i for i,val in enumerate(group_data['gbar']['conditions'][condition_ax]) if val==condition_ax_val]
-            indices=list(set(indices_ax) & set(indices_trace)& set(indices_keep))
-            color = colors[condition_trace_i]
-            w_mean = np.mean(group_data['gbar']['data_mat'][indices,:],axis=0, keepdims=True).transpose()
-            w_std = np.std(group_data['gbar']['data_mat'][indices,:],axis=0, keepdims=True).transpose()
-            t_vec = group_data['gbar']['t']
-            t_vec.reshape(len(t_vec), 1)
-
-            axes[condition_ax_i].plot(t_vec, w_mean, color=colors[condition_trace_i])
-
-        axes[condition_ax_i].set_xlabel('time (ms)')
-        axes[condition_ax_i].set_ylabel('weight')
-        axes[condition_ax_i].set_title(condition_ax+''+str(condition_ax_val))
-
-    return fig, axes
-
-def _plot_weights_final(group_data, condition_ax, condition_ax_vals, condition_trace, condition_trace_vals, colors, conditions_keep=[],conditions_keep_vals=[]):
-    ''' Plot average weight change for group of simulations over time
-    
-    ===Args===
-    -group_data : data structure containing a matrix of time series and corresponding conditions for the simulation
-            -time series data is stored as a matrix in group_data{data_type}{'data_mat'} with dimensions trial/segment number x samples
-            -conditions stored as a list in group_data{data_type}{'conditions'}{condition} with list indices corresponding to segment/trial number in data_mat
-
-    -condition_ax : condition type to divide axes based.  e.g. condition_ax='path' will create separate subplots for each path name specified in condition_ax_vals
-
-    -condition_ax_vals  : specific values to create different axes for.  The returned figure will contain as many subplots as the length of this list
-
-    -condition_trace    : condition type to separate traces within an individual subplot.  e.g. 'polarity' will create separate traces for each electric field polarity specified in condition_trace_vals
-
-    -condition_trace_vals : specific values to separate traces based on.  e.g. ['-20.0','0.0', '20.0'] for different field polarities.  Number of tracres in each figure axis will equal the length of this list
-
-    -colors    : list of plot colors corresponding to the traces specified by condition_trace_vals
-
-    ===Out===
-    - fig   : figure object
-    -axes   : list of axes objects. length is the length condition_ax_vals
-
-    ===Updates===
-    
-    ===Comments===
-    -This function assumes a  very specific structure for the data object (see Args)
-    -
-    '''
-
-    # create set of axes for condition in condtiion axes
-    fig, axes = plt.subplots(1, len(condition_ax_vals))
-
-    if conditions_keep:
-        for condition_keep_i, condition_keep in enumerate(conditions_keep):
-            indices_keep = [i for i,val in enumerate(group_data['gbar']['conditions'][condition_keep]) if val in conditions_keep_vals[condition_keep_i]]
-    #FIXME 
-    # add option to not specify axes conditions to yield a single figure
-    for condition_ax_i, condition_ax_val in enumerate(condition_ax_vals):
-        xticks=[]
-        xticklabels=['cathodal','control','anodal']
-        for condition_trace_i, condition_trace_val in enumerate(condition_trace_vals):
-            indices_trace = [i for i,val in enumerate(group_data['gbar']['conditions'][condition_trace]) if val==condition_trace_val]
-            indices_ax = [i for i,val in enumerate(group_data['gbar']['conditions'][condition_ax]) if val==condition_ax_val]
-            indices=list(set(indices_ax) & set(indices_trace) & set(indices_keep))
-            color = colors[condition_trace_i]
-            w_mean = np.mean(group_data['gbar']['data_mat'][indices,:],axis=0, keepdims=True).transpose()
-            w_std = np.std(group_data['gbar']['data_mat'][indices,:],axis=0, keepdims=True).transpose()
-            dw = group_data['gbar']['data_mat'][indices,-1]/group_data['gbar']['data_mat'][indices,0]
-            dw_mean = np.mean(dw)
-            dw_std = np.std(dw)
-            t_vec = group_data['gbar']['t']
-            t_vec.reshape(len(t_vec), 1)
-            x_vals = condition_trace_i*np.ones(dw.shape)
-            xticks.append(condition_trace_i)
-
-            axes[condition_ax_i].bar( condition_trace_i, dw_mean, yerr=dw_std, color=colors[condition_trace_i],)
-            # axes[condition_ax_i].plot(x_vals, dw, linestyle='None', marker='.', color='grey')
-
-        axes[condition_ax_i].set_xticks(xticks)
-        axes[condition_ax_i].set_xticklabels(xticklabels, fontsize=15)
-        
-        if condition_ax_i == 0:    
-            axes[condition_ax_i].set_ylabel('weight change (final/initial)', fontsize=20)
-        if condition_ax_i >0:
-            axes[condition_ax_i].yaxis.tick_right()
-        axes[condition_ax_i].set_title(condition_ax+''+str(condition_ax_val))
-
-        axes[condition_ax_i].set_ylim(bottom=0.95)
-
-    return fig, axes
-
-def _get_spike_times(data_mat, threshold, fs):
-    '''
-    ===Args===
-    -data_mat : matrix of voltage traces organized as (segments x samples)
-    -threshold :  threshold voltage for detecting spikes (mV)
-    -fs : sampling rate in kHz (1/fs is in ms)
-    ===Out===
-    -times :  nested list of spike times for each segment, organized as [segments][spike times]
-    -train : boolean array of spike trains with same dimensions as data_mat (segments x samples).  spike times are indicated with 1's
-    ===Updates===
-    ===Comments===
-    '''
-    print 'getting spike times'
-    # tuple of spike times in samples (array of row indices, array of column indices)
-    segs, samples = np.where(np.diff(np.sign(data_mat-threshold))>0)
-    spike_times =[]
-    for row_i in range(data_mat.shape[0]):
-        segs_i = np.where(segs==row_i)
-        times = samples[segs_i]/fs
-        spike_times.append(times)
-
-    # create spike train matrix (1=spike, 0=no spike)
-    # set non spike times to 0
-    spike_train = np.where(np.diff(np.sign(data_mat-threshold))>0, data_mat[:,1:],0)
-    # set spike times to 1
-    spike_train = np.where(spike_train==0, spike_train, 1)
-
-    # detect indeces where vector crosses threshold in the positive direction
-    return {'times':spike_times,'train':spike_train}
-
-# FIXME
-def _bin_spike_times(group_data):
-    '''
-    ===Args===
-    ===Out===
-    ===Updates===
-    ===Comments===
-    '''
-    print 'binning spike times'
-    # create entry for storing binned spike times
-    group_data['v']['spike_times_bin']=[]
-
-    # add a dimension to list for each segment
-    for x in group_data['v']['conditions']['trial_id']:
-        group_data['v']['spike_times_bin'].append([])
-    
-    # spike_times_bin organized as [segment][bin number][spike time]
-    # create entry for storing binned spike times
-    group_data['v']['spike_times_bin']=[]
-    # iterate over segments
-    for input_times_i, input_times in enumerate(group_data['v']['conditions']['input_times']):
-
-        # add dimension for each segment
-        group_data['v']['spike_times_bin'].append([])
-        # get all spike times for the current segment
-        spike_times = group_data['v']['spike_times'][input_times_i]
-
-        if input_times:
-            # iterate over time bins (between input spikes)
-            for input_time_i, input_time in enumerate(input_times):
-
-                # if not the last input spike 
-                if input_time_i < len(input_times)-1:
-                    input_time_next = input_times[input_time_i+1]
-                    # list of spikes that fall within the current bin
-                    spike_times_bin = [time for time_i, time in times if time > input_time and time <= input_time_next ]
-                else:   
-                    # list of spikes that fall within the current bin
-                    spike_times_bin = [time for time_i, time in times if time > input_time]
-
-                # add to spike_times_bin list
-                group_data['v']['spike_times_bin'][input_times_i].append(spike_times_bin)
-
-    return group_data
-
-# FIXME
-def _get_spike_origin(group_data):
-    '''
-    ===Args===
-    ===Out===
-    ===Updates===
-    ===Comments===
-    '''
-
-    # get list of unique trial ids
-    trial_ids = list(set(group_data['v']['conditions']['trial_id']))
-
-    # get list of polarities
-    polarities = list(set(group_data['v']['conditions']['polarity']))
-
-    group_data['v']['spike_origins_bin'] = []
-    for i, v in enumerate(group_data['v']['spike_times_bin']):
-        group_data['v']['spike_origins_bin'].append([])
-
-    # iterate over trial id's (cells)
-    for trial_id in trial_ids:
-        
-        # get index of all segments with the current trial id
-        trial_is = [i for i,x in enumerate(group_data['v']['conditions']['trial_id']) if x==trial_id]
-        
-        # get input times
-        input_times = group_data['v']['conditions']['input_times'][trial_is[0]]
-
-        # all spikes for the current trial [segment][time bin][spike time]
-        current_spikes = [v for i, v in enumerate(group_data['v']['spike_times_bin']) if i in trial_is[trial_id]]
-
-        # iterate over input times (time bins)
-        for input_time_i, input_time in enumerate(input_times):
-
-            # spikes for the current input time bin [segments][[spike times]]
-            spikes = [v[input_time_i] for i, v in enumerate(current_spikes)]
-            
-            # list of spike times in the segment containing the first spike time [spike times]
-            first_spike_times = min(spikes)
-            
-            # get the index of the segment containing the first spike
-            first_spike_loc = spikes.index(first_spike_times)
-
-            # recover tree, section, segment info
-            global_i = trial_is[first_spike_loc]
-            tree = group_data['v']['conditions']['tree'][global_i]
-            sec_num = group_data['v']['conditions']['sec_num'][global_i]
-            seg_num = group_data['v']['conditions']['seg_num'][global_i]
-            location = (tree, sec_num, seg_num, first_spike_times[0])
-
-            # add location of first spike to each segment 
-            for trial_i in trial_is:
-                group_data['v']['spike_origins_bin'][trial_i]
-
-    return group_data
-
-def _get_spike_xcorr_with_soma(group_data):
-    ''' cross correlation between somatic and dendritic spike trains as a function of distance from soma
-
-    ===Args===
-    ===Out===
-    ===Updates===
-    ===Comments===
-    '''
-    # for each segment, find the spike train from the corresponding soma
-    # compute cross correlation for the segment and the soma
-    # store matrix of spike cross correlations between dendrite and soma
-    print 'getting cross correlation'
-    # get list of unique trial ids
-    trial_ids = list(set(group_data['v']['conditions']['trial_id']))
-    # get shape of data matrix
-    data_shape = group_data['v']['spike_train'].shape
-    # create new array to store cross correlations
-    xcorr_mat = np.zeros((data_shape[0],data_shape[1]*2-1))
-    
-    print group_data['v']['data_mat'].shape
-    print group_data['v']['spike_train'].shape
-    print len(group_data['v']['conditions']['trial_id'])
-    plt.figure()
-    plt.imshow(group_data['v']['spike_train'])
-    plt.axis('equal')
-    plt.show()
-    # iterate over segments
-    for spike_train_i, spike_train in enumerate(group_data['v']['spike_train']):
-
-        # get trial id
-        trial_id = group_data['v']['conditions']['trial_id'][spike_train_i]
-
-        # print trial_id
-        # print [i for i,val in enumerate(group_data['v']['conditions']['tree']) if val=='soma']
-        # print group_data['v']['conditions']['tree'][:20]
-        # print []
-        # get soma index
-        soma_i = [i for i,val in enumerate(group_data['v']['conditions']['trial_id']) if val==trial_id and group_data['v']['conditions']['tree'][i]=='soma']
-        # print soma_i[0]
-
-        
-        # get soma spike train
-        soma_spikes = group_data['v']['spike_train'][soma_i[0],:]
-        print 'xcorr:', sum(np.correlate(spike_train, soma_spikes,mode='full'))
-        # get full cross correlation
-        xcorr_mat[spike_train_i,:] = np.correlate(spike_train, soma_spikes, mode='full')
-
-        print i
-        print np.sum(xcorr_mat[:spike_train_i,:],axis=1)
-    # print np.max(xcorr_mat)
-
-    return xcorr_mat
-    # iterate over trial id's (cells)
-    for trial_id in trial_ids:
-        
-        # get index of all segments with the current trial id
-        trial_is = [i for i,x in enumerate(group_data['v']['conditions']['trial_id']) if x==trial_id]
-        
-        # get input times
-        input_times = group_data['v']['conditions']['input_times'][trial_is[0]]
-
-        # all spikes for the current trial [segment][time bin][spike time]
-        current_spikes = [v for i, v in enumerate(group_data['v']['spike_times_bin']) if i in trial_is[trial_id]]
-
-        # iterate over input times (time bins)
-        for input_time_i, input_time in enumerate(input_times):
-
-            # spikes for the current input time bin [segments][[spike times]]
-            spikes = [v[input_time_i] for i, v in enumerate(current_spikes)]
-            
-            # list of spike times in the segment containing the first spike time [spike times]
-            first_spike_times = min(spikes)
-            
-            # get the index of the segment containing the first spike
-            first_spike_loc = spikes.index(first_spike_times)
-
-            # recover tree, section, segment info
-            global_i = trial_is[first_spike_loc]
-            tree = group_data['v']['conditions']['tree'][global_i]
-            sec_num = group_data['v']['conditions']['sec_num'][global_i]
-            seg_num = group_data['v']['conditions']['seg_num'][global_i]
-            location = (tree, sec_num, seg_num, first_spike_times[0])
-
-            # add location of first spike to each segment 
-            for trial_i in trial_is:
-                group_data['v']['spike_origins_bin'][trial_i]
-
-    pass
-
-def _convert_spike_times_to_bool(t, spike_times):
-    '''
-    ===Args===
-    ===Out===
-    ===Updates===
-    ===Comments===
-    '''
-    # convert to boolean vector (dim: samples)
-    x = np.zeros(t.shape)
-    # cut off number of decimals to prevent rounding error
-    t = np.around(t, 4)
-    spike_times = np.around(spike_times, 4)
-    # find input times and to boolean vector
-    for t_i, t_t in enumerate(spike_times):
-        # store input times
-        x[np.where(t==t_t)]=1
-
-    return x
-
-
-class Clopath():
-    
-    """ Apply Clopath learning rule to membrane voltage data
-    
-    ===Methods===
-    
-    ===Variables===
     """
-    
-    def __init__(self):
-        """
-        """
+    dict_handler = lambda d: itertools.chain.from_iterable(d.items())
+    all_handlers = {tuple: iter,
+                    list: iter,
+                    deque: iter,
+                    dict: dict_handler,
+                    set: iter,
+                    frozenset: iter,
+                   }
+    all_handlers.update(handlers)     # user handlers take precedence
+    seen = set()                      # track which object id's have already been seen
+    default_size = getsizeof(0)       # estimate sizeof object without __sizeof__
+
+    def sizeof(o):
+        if id(o) in seen:       # do not double count the same object
+            return 0
+        seen.add(id(o))
+        s = getsizeof(o, default_size)
+
+        # if verbose:
+        #     print(s, type(o), repr(o), file=stderr)
+
+        for typ, handler in all_handlers.items():
+            if isinstance(o, typ):
+                s += sum(map(sizeof, handler(o)))
+                break
+        return s
+
+    return sizeof(o)
+#############################################################################
+# figure formatting
+#############################################################################
+class FormatFig:
+    '''
+    '''
+    def __init__(self, ):
+        '''
+        '''
         pass
-        
-    def _run_clopath_individual(self,directory='Data/quick_run/',search_string='data*syn_num_2*',):
-        """ Load data from a single simulation and apply learning rule
-        
-        ===Args===
-        
-        ===Out===
-        
-        ===Comments===
-        """
-        data_files = glob.glob(directory+search_string)
-        data_file = data_files[1]
-        with open(data_file, 'rb') as pkl_file:
-            data = pickle.load(pkl_file)
-        p = data['p']
-        print data_file
-        self.data_mat, self.input_mat, self.conditions, self.p, self.t = self._load_data(directory='', data_file=data_file)
-        self.w = self._clopath(x=self.input_mat, u=self.data_mat, )
-        fig_v = PlotRangeVar().plot_trace(data=data,
-                            sec_idx=p['sec_idx'],
-                            seg_idx=p['seg_idx'],
-                            variables=p['plot_variables'],
-                            x_variables=p['x_variables'],
-                            file_name='',
-                            group_trees=p['group_trees'],
-                            xlim=[p['warmup']-5,p['tstop']],
-                            ylim=[-70,-45])
-        fig = self._plot_clopath(self.w, self.conditions)
-        fig.savefig(directory+'_weights.png',dpi=250)
+
+    def _standard_figformat(self, figures, axes, figdf, tight=True, xticks=True, yticks=True, xscale=True, yscale=True, xticks_minor=True, **kwargs):
+        '''
+        '''
+        # set fontsizes
+        #---------------
+        # figures, axes = FormatFig()._set_fontsizes(figures=figures, axes=axes, figdf=figdf)
+        # set yticks
+        #--------------
+        if yticks:
+            figures, axes = FormatFig()._set_yticks(figures=figures, axes=axes, figdf=figdf)
+        # set xticks
+        #--------------
+        if xticks:
+            figures, axes = FormatFig()._set_xticks(figures=figures, axes=axes, figdf=figdf)
+
+        # set xticks
+        #--------------
+        if xticks_minor:
+            figures, axes = FormatFig()._set_xticks_minor(figures=figures, axes=axes, figdf=figdf)
+        # scale yticklabels
+        #-------------------
+        if yscale:
+            figures, axes = FormatFig()._scale_yticklabels(figures=figures, axes=axes, figdf=figdf)
+        # scale xticklabels
+        #-------------------
+        if xscale:
+            figures, axes = FormatFig()._scale_xticklabels(figures=figures, axes=axes, figdf=figdf)
+        # set yticklabel decimals
+        #-----------------------
+        figures, axes = FormatFig()._set_yticklabel_decimals(figures=figures, axes=axes, figdf=figdf)
+        # set xticklabel decimals
+        #-----------------------
+        figures, axes = FormatFig()._set_xticklabel_decimals(figures=figures, axes=axes, figdf=figdf)
+        # set fontsizes
+        #---------------
+        figures, axes = FormatFig()._set_fontsizes(figures=figures, axes=axes, figdf=figdf)
+        # set tight layout
+        #-----------------
+        if tight:
+            for figkey in figures:
+                figures[figkey].tight_layout()
+            # plt.tight_layout()
+
+        return figures, axes
+
+    def _set_xticks(self, figures, axes, figdf, tick_max=10,**kwargs):
+        '''
+        '''
+
+        print 'setting ticks'
+        # get xlim across all figures
+        #-------------------------------------
+        xlim={}
+        xlims=[]
+        # iterate over figures
+        for axkey, ax in axes.iteritems():
+            
+            # get ticks
+            xticks = ax.get_xticks()
+            print 'xTICKS',xticks
+            # get updated lims (1  significant figure)
+            xlim[axkey] = _to_1sigfig(ax.get_xlim())
+            xlims.append(copy.copy(xlim[axkey]))
+        # find x lims across all figures in group
+        xlim_all = [min([temp[0] for temp in xlims]), max([temp[1] for temp in xlims])]
+
+        # iterate over figures
+        #--------------------------------------
+        for axkey, ax in axes.iteritems():
+            # # check if axes are numeric
+            # #-----------------------------------------------------------
+            # # get current ticklabels
+            # xticklabels = [tick.get_text() for tick in ax.get_xticklabels()]
+            # while '' in xticklabels:
+            #     xticklabels.remove('')
+            # print xticklabels
+            # # check if tick labels are numeric
+            # for label in xticklabels:
+            #     try:
+            #         label_float = type(float(label))==float
+            #     except ValueError:
+            #         label_float=False
+            # # if ticklabels are numeric, scale them, otherwise leave them alone
+            # if not label_float:
+            #     continue
+            # get ticks and limits
+            #----------------------
+            xticks = ax.get_xticks()
+            # get scale factors
+            #--------------------
+            if 'fig_xscale' in figdf:
+                xscale = figdf.loc[axkey].fig_xscale.values[0]
+            else:
+                xscale=1
+            # get x lims
+            xlim_current = list(ax.get_xlim())
+            print 'xlim_current', xlim_current
+
+            # set xlim across all figures
+            #----------------------------
+            if all(figdf.fig_xlim_all):
+                xlim_current = xlim_all
+            if 'fig_xmin' in figdf.keys():
+                xlim_current[0] = figdf.loc[axkey].fig_xmin.unique()[0]/xscale
+            if 'fig_xmax' in figdf.keys():
+                xlim_current[1] = figdf.loc[axkey].fig_xmax.unique()[0]/xscale
+            ax.set_xlim(xlim_current)
+
+            # set x ticks
+            #------------------------------------------------------------
+            print 'setting ticks'
+            # get current lims and ticks
+            xlim[axkey] = copy.copy(list(ax.get_xlim()))
+            print 'xlim', xlim[axkey]
+            xticks = np.array(ax.get_xticks())
+            xlim_scaled = np.array(xlim[axkey])
+
+            # get number of ticks and tick spacing
+            #------------------------------------------------
+            # default nxticks and dxticks
+            nxticks=5.
+            dxticks = float(abs(xlim_scaled[1]-xlim_scaled[0]))/nxticks
+            # specifx dxticks
+            if 'fig_dxticks' in figdf:
+                dxticks = figdf.loc[axkey].fig_dxticks.unique()[0]/xscale
+                nxticks = len(np.arange(xlim_scaled[0], xlim_scaled[1], dxticks))
+            # specify nxticks
+            elif 'fig_nxticks' in figdf:
+                nxticks = figdf.loc[axkey].fig_nxticks.unique()[0]
+                dxticks = float(abs(xlim_scaled[1]-xlim_scaled[0]))/nxticks
+            # make sure that there isn't a crazy number of ticks
+            #-----------------------------------------------------
+            if nxticks>tick_max:
+                nxticks=tick_max
+                dxticks = float(abs(xlim_scaled[1]-xlim_scaled[0]))/nxticks
+
+            # assert a specific tick value
+            #------------------------------
+            if 'fig_xtick_assert' in figdf:
+                xtick_assert = figdf.loc[axkey].fig_xtick_assert.unique()[0]/xscale
+            else:
+                xtick_assert = xlim_scaled[0]
+            # crete new ticks
+            #--------------------
+            xticks_new_1 = np.flip(np.arange(xtick_assert, xlim_scaled[0], -dxticks))
+            # print xticks_new_1
+            xticks_new_2 = np.arange(xtick_assert, xlim_scaled[1], dxticks)
+            xticks_new = np.append(xticks_new_1, xticks_new_2)
+            print 'xticks new',xticks_new_1, xticks_new_2, xticks_new
+            print 'xticks new',xtick_assert, xlim_scaled, dxticks, xscale
+
+            # roud tick decimals
+            #-------------------------
+            # if 'fig_xtick_round' in figdf:
+            #     print 'rounding xticks'
+            #     decimals = figdf.loc[axkey].fig_xtick_round.unique()[0]
+            #     xticks_new = np.round(xticks_new, decimals=decimals)
+            # if 'fig_xticks' in figdf:
+            #     print 'setting xticks'
+            #     xticks_new = figdf.fig_xticks.values[0]
+            print 'xticks_new',xticks_new
+            print 'xticks_new',xticks_new/xscale
+            ax.set_xticks(xticks_new)
+            ax.set_xticklabels(xticks_new)
+
+        return figures, axes
     
-    def _plot_clopath(self, w, conditions):
-        """ Plot weight changes
-        """
-        pols = ['-20.0','0.0','20.0']
-        colors = ['blue','black','red']
-        fig = plt.figure()
-        nsyns = w.shape[0]
-        for syn in range(nsyns):
-            polarity = conditions['polarity'][syn]
-            color = colors[pols.index(polarity)]
-            plt.plot(w[syn,:],color=color)
-        plt.xlabel('time')
-        plt.ylabel('weight')
-        plt.title('weight dynamics during single theta burst')
+    def _set_xticks_minor(self, figures, axes, figdf, **kwargs):
+        '''
+        '''
+        print 'setting xticks minor'
+        # iterate over figures
+        figdf = figdf.reset_index().set_index(['figure', 'subgroup', 'trace'])
+        for axkey, ax in axes.iteritems():
+            subgroups = figdf.loc[axkey].index.get_level_values('subgroup').unique().values
+            xticks_minor=[]
+            xticklabels_minor=[]
+            if 'xticks_minor_loc' in figdf:
+                for subgroup in subgroups:
+                    subgroup_loc = figdf.loc[(axkey, subgroup)]['xticks_minor_loc'].unique()[0]
+                    xticks_minor.append(subgroup_loc)
+                    xticklabels_minor.append(subgroup)
+
+            ax.set_xticks(xticks_minor, minor=True)
+            ax.set_xticklabels(xticklabels_minor, minor=True, )
+
+        return figures, axes
+
+    def _set_yticks(self, figures, axes, figdf, tick_max=10,**kwargs):
+        '''
+        '''
+        print 'setting ticks'
+        # get ylim across all figures
+        #-------------------------------------
+        ylim={}
+        ylims=[]
+        # iterate over figures
+        for axkey, ax in axes.iteritems():
+            # get ticks
+            yticks = ax.get_yticks()
+            print 'YTICKS',yticks
+            # get updated lims (1  significant figure)
+            ylim[axkey] = _to_1sigfig(ax.get_ylim())
+            # ylim[axkey] = ax.get_ylim()
+            ylims.append(copy.copy(ylim[axkey]))
+        # find x and y lims across all figures in group
+        ylim_all = [min([temp[0] for temp in ylims]), max([temp[1] for temp in ylims])]
+
+        # iterate over figures
+        #--------------------------------------
+        for axkey, ax in axes.iteritems():
+            # draw figure to create ticklabels
+            #----------------------------------
+            # figures[axkey].canvas.draw()
+            # # check that ticklabels are numeric
+            # #----------------------------------------
+            # # get current ticklabels
+            # yticklabels = [tick.get_text() for tick in ax.get_yticklabels()]
+            # while '' in yticklabels:
+            #     yticklabels.remove('')
+            # print yticklabels
+            # # check if tick labels are numeric
+            # for label in yticklabels:
+            #     try:
+            #         label_float = type(float(label))==float
+            #     except ValueError:
+            #         label_float=False
+            # # if ticklabels are numeric, scale them, otherwise leave them alone
+            # if not label_float:
+            #     print 'yticks not numeric'
+            #     continue
+
+            # get ticks and limits
+            #----------------------
+            yticks = ax.get_yticks()
+            # get scale factors
+            #--------------------
+            if 'fig_yscale' in figdf:
+                yscale = figdf.loc[axkey].fig_yscale.values[0]
+            else:
+                yscale=1
+            # get y lims
+            ylim_current = list(ax.get_ylim())
+            print 'ylim_current', ylim_current
+
+            # set ylim across all figures
+            #----------------------------
+            if all(figdf.fig_ylim_all):
+                ylim_current = ylim_all
+            if 'fig_ymin' in figdf.keys():
+                ylim_current[0] = figdf.loc[axkey].fig_ymin.unique()[0]/yscale
+            if 'fig_ymax' in figdf.keys():
+                ylim_current[1] = figdf.loc[axkey].fig_ymax.unique()[0]/yscale
+            ax.set_ylim(ylim_current)
+
+            # set y ticks
+            #------------------------------------------------------------
+            print 'setting ticks'
+            # get current lims and ticks
+            ylim[axkey] = copy.copy(list(ax.get_ylim()))
+            print 'ylim', ylim[axkey]
+            yticks = yscale*np.array(ax.get_yticks())
+            ylim_scaled = yscale*np.array(ylim[axkey])
+
+            # get number of ticks and tick spacing
+            #------------------------------------------------
+            # default nyticks and dyticks
+            nyticks=5.
+            dyticks = float(abs(ylim_scaled[1]-ylim_scaled[0]))/nyticks
+            # specify dyticks
+            if 'fig_dyticks' in figdf:
+                dyticks = figdf.loc[axkey].fig_dyticks.unique()[0]
+                nyticks = len(np.arange(ylim_scaled[0], ylim_scaled[1], dyticks))
+            # specify nyticks
+            elif 'fig_nyticks' in figdf:
+                nyticks = figdf.loc[axkey].fig_nyticks.unique()[0]
+                dyticks = float(abs(ylim_scaled[1]-ylim_scaled[0]))/nyticks
+            # make sure that there isn't a crazy number of ticks
+            #-----------------------------------------------------
+            if nyticks>tick_max:
+                nyticks=tick_max
+                dyticks = float(abs(ylim_scaled[1]-ylim_scaled[0]))/nyticks
+
+            # assert a specific tick value
+            #------------------------------
+            if 'fig_ytick_assert' in figdf:
+                ytick_assert = figdf.loc[axkey].fig_ytick_assert.unique()[0]
+            else:
+                ytick_assert = ylim_scaled[0]
+            # crete new ticks
+            #--------------------
+            yticks_new_1 = np.flip(np.arange(ytick_assert, ylim_scaled[0], -dyticks))
+            # print yticks_new_1
+            yticks_new_2 = np.arange(ytick_assert, ylim_scaled[1], dyticks)
+            yticks_new = np.append(yticks_new_1, yticks_new_2)
+            print 'yticks new',yticks_new_1, yticks_new_2
+            print 'yticks new',ytick_assert, ylim_scaled, dyticks, yscale
+
+            # roud tick decimals
+            #-------------------------
+            if 'fig_ytick_round' in figdf:
+                decimals = figdf.loc[axkey].fig_ytick_round.unique()[0]
+                yticks_new = np.round(yticks_new, decimals=decimals)
+            if 'fig_yticks' in figdf:
+                yticks_new = figdf.fig_yticks.values[0]
+            print 'yticks_new',yticks_new
+            ax.set_yticks(yticks_new/yscale)
+            ax.set_yticklabels(yticks_new/yscale)
+
+        return figures, axes
+
+    def _set_yticklabel_decimals(self, figures, axes, figdf, **kwargs):
+        '''
+        '''
+        print 'setting tick decimals'
+        for axkey, ax in axes.iteritems():
+            # get ticks
+            #----------------------
+            yticks = ax.get_yticks()
+            # apply scale factor
+            #-------------------------
+            if 'fig_yscale' in figdf:
+                print 'yscale factor found'
+                yscale = figdf.loc[axkey].fig_yscale.values[0]
+            else:
+                yscale=1
+            # apply scaling factor
+            yticks = yscale*yticks
+            # set tick decimal places
+            #---------------------------------------------------------------
+            if 'fig_ytick_decimals' in figdf:
+                # get decimal places
+                dec = figdf.loc[axkey].fig_ytick_decimals.unique()[0]
+                # get ticklabels
+                yticklabels = ['%.{}f'.format(dec) % float(tick) for tick in yticks]
+                print 'yticklabels',yticklabels
+                # set ticklabels
+                ax.set_yticklabels(yticklabels)
+        return figures, axes
+    
+    def _set_xticklabel_decimals(self, figures, axes, figdf, **kwargs):
+        '''
+        '''
+        print 'setting tick decimals'
+        for axkey, ax in axes.iteritems():
+            # get ticks
+            #-----------------------
+            xticks = ax.get_xticks()
+            # scale factor
+            #-------------------------
+            if 'fig_xscale' in figdf:
+                print 'xscale factor found'
+                xscale = figdf.loc[axkey].fig_xscale.values[0]
+            else:
+                xscale=1
+            # apply scaling factor
+            xticks = xscale*xticks
+            # set tick decimal places
+            #---------------------------------------------------------------
+            if 'fig_xtick_decimals' in figdf:
+                # get decimal places
+                dec = figdf.loc[axkey].fig_xtick_decimals.unique()[0]
+                # get ticklabels
+                xticklabels = ['%.{}f'.format(dec) % float(tick) for tick in xticks]
+                print 'xticklabels',xticklabels
+                # set ticklabels
+                ax.set_xticklabels(xticklabels)
+        return figures, axes
+
+    def _scale_yticklabels(self, figures, axes, figdf, **kwargs):
+        '''
+        '''
+        print 'scaling yticks'
+        for axkey, ax in axes.iteritems():
+            # get ticks
+            yticks = ax.get_yticks()
+            #--------------------------------------
+            # yticks
+            #-------------------------------------
+            if 'fig_yscale' in figdf:
+                print 'yscale factor found'
+                yscale = figdf.loc[axkey].fig_yscale.values[0]
+            else:
+                yscale=1
+            # apply scaling factor
+            yticks = yscale*yticks
+            # # get current ticklabels
+            # yticklabels = [tick.get_text() for tick in ax.get_yticklabels()]
+            # print yticklabels
+            # # check if tick labels are numeric
+            # for label in yticklabels:
+            #     try:
+            #         label_float = type(float(label))==float
+            #     except ValueError:
+            #         label_float=False
+            # if ticklabels are numeric, scale them, otherwise leave them alone
+            # if label_float:
+            # update tick decimal places
+            #-----------------------------
+            # if 'fig_ytick_decimals' in figdf:
+            #     # get decimal places
+            #     dec = figdf.loc[axkey].fig_ytick_decimals.unique()[0]
+            #     # get ticklabels with adjusted decimals
+            #     yticklabels = ['%.{}f'.format(dec) % tick for tick in yticks]
+            # else:
+            #     yticklabels=yticks
+            # set ticklabels
+            yticklabels=yticks
+            ax.set_yticklabels(yticklabels)
+        return figures, axes
+
+    def _scale_xticklabels(self, figures, axes, figdf, **kwargs):
+        '''
+        '''
+        print 'scaling xticks'
+        for axkey, ax in axes.iteritems():
+            # get ticks
+            xticks = ax.get_xticks()
+            print xticks
+            # xticklabels = list(ax.get_xticklabels())
+            #--------------------------------------
+            # yticks
+            #-------------------------------------
+            if 'fig_xscale' in figdf:
+                print 'xscale factor found'
+                xscale = figdf.loc[axkey].fig_xscale.values[0]
+            else:
+                xscale=1
+            # apply scaling factor
+            xticks = xscale*xticks
+            print xticks
+            # # get current ticklabels
+            # yticklabels = [tick.get_text() for tick in ax.get_yticklabels()]
+            # print yticklabels
+            # # check if tick labels are numeric
+            # for label in yticklabels:
+            #     try:
+            #         label_float = type(float(label))==float
+            #     except ValueError:
+            #         label_float=False
+            # if ticklabels are numeric, scale them, otherwise leave them alone
+            # if label_float:
+            # update tick decimal places
+            #-----------------------------
+            # if 'fig_xtick_decimals' in figdf:
+            #     # get decimal places
+            #     dec = figdf.loc[axkey].fig_xtick_decimals.unique()[0]
+            #     # get ticklabels with adjusted decimals
+            #     xticklabels = ['%.{}f'.format(dec) % tick for tick in xticks]
+            # else:
+            #     xticklabels=xticks
+            # set ticklabels
+            xticklabels=xticks
+            ax.set_xticklabels(xticklabels)
+        return figures, axes
+
+    def _set_fontsizes(self, figures, axes, figdf, **kwargs):
+        '''
+        '''
+        print 'setting axes properties'
+        # iterate through figures
+        for axkey, ax in axes.iteritems():
+            # set ticklabel fontweight and size
+            #-----------------------------------
+            print 'setting ticklabels'
+            # ytick labels
+            for label in ax.get_xticklabels():
+                # fontweight
+                label.set_fontweight(figdf.loc[axkey].fig_xtick_fontweight.values[0])
+                # fonstize
+                label.set_fontsize(figdf.loc[axkey].fig_xtick_fontsize.values[0])
+            # ytick labels
+            for label in ax.get_yticklabels():
+                # fontweight
+                label.set_fontweight(figdf.loc[axkey].fig_ytick_fontweight.values[0])
+                # fontsize
+                label.set_fontsize(figdf.loc[axkey].fig_ytick_fontsize.values[0])
+
+            for label in ax.get_xticklabels(which='minor'):
+                print 'minor label', label
+                label.set_fontweight(figdf.loc[axkey].fig_xtick_fontweight.values[0])
+                label.set_fontsize(figdf.loc[axkey].fig_xtick_fontsize.values[0])
+
+            # turn off axes box
+            #-----------------------------------
+            # turn off top and right axes lines
+            if all(figdf.loc[axkey].fig_boxoff):
+                ax.spines['right'].set_visible(False)
+                ax.spines['top'].set_visible(False)
+            # turn off all axes lines
+            if 'fig_axesoff' in figdf.keys() and all(figdf.loc[axkey].fig_axesoff):
+                ax.set_axis_off()
+
+            # set axes linewidth and tick position
+            #--------------------------------------
+            ax.spines['left'].set_linewidth(figdf.loc[axkey].fig_axes_linewidth.unique()[0])
+            ax.spines['bottom'].set_linewidth(figdf.loc[axkey].fig_axes_linewidth.unique()[0])
+            ax.xaxis.set_ticks_position('bottom')
+            ax.yaxis.set_ticks_position('left')
+
+            # set axes labels
+            #----------------
+            if 'fig_xlabel' in figdf:
+                ax.set_xlabel(figdf.loc[axkey].fig_xlabel.values[0], fontsize=figdf.loc[axkey]['fig_xlabel_fontsize'].values[0], fontweight=figdf.loc[axkey].fig_xlabel_fontweight.values[0])
+            if 'fig_ylabel' in figdf:
+                ax.set_ylabel(figdf.loc[axkey].fig_ylabel.values[0], fontsize=figdf.loc[axkey]['fig_ylabel_fontsize'].values[0], fontweight=figdf.loc[axkey].fig_ylabel_fontweight.values[0])
+
+            # set tight layout
+            #-------------------
+            if all(figdf.loc[axkey].fig_tight_layout):
+                plt.figure(figures[axkey].number)
+                plt.tight_layout()
+
+        return figures, axes
+
+#############################################################################
+# plotting functions
+#############################################################################
+class PlotFuncs:
+    ''' each plot function should have coresponding function to generate figdf in BuildFigDF
+    '''
+    def __init__(self):
+        '''
+        '''
+        pass
+
+    def _figdf_generator(self, df, figdf, variables, remove_nans=True,):
+        '''
+        '''
+        # set figdf to hierarchical index (figure, subgroup, trace)
+        figdf = figdf.reset_index().set_index(['figure','subgroup','trace'])
+        # get list of all figure names
+        figures = figdf.index.get_level_values('figure').unique().values
+        # iterate over figures
+        for figkey in figures:
+            # get subgroups list
+            subgroups = figdf.loc[figkey].index.get_level_values('subgroup').unique().values
+            # iterate over subgroups of traces
+            for subkey in subgroups:
+                # get list of tracekeys
+                traces = figdf.loc[(figkey, subkey)].index.get_level_values('trace').unique().values
+                # iterate over traces
+                for tracekey in traces:
+                    # get params from figdf
+                    params = figdf.loc[(figkey,subkey, tracekey)]
+                    # get corresponding series and convert to array
+                    #----------------------------------------------
+                    # if available, get series, otherwise next iter
+                    try:
+                        trace_df=df.loc[tracekey,slice(None)]
+                    except:
+                        print tracekey, 'not in df index'
+                        print df.index.names
+                        continue
+                    try:
+                        trace_df=trace_df[variables]
+                    except:
+                        print variables, 'not in df'
+                        continue
+
+                    if remove_nans:
+                        # remove nans from trace series
+                        na = trace_df.isna()
+                        trace_df = trace_df[~na]
+
+                    yield figkey, subkey, tracekey, params, trace_df 
+
+    def _select_kwargs(self, funcs, kwargs):
+        ''' remove kwargs from dictionary if the function cannot handle them
+
+            Arguments
+            -----------
+            ~func: function to check arguments
+            ~kwargs: dictionary of keyword arguments with key corresponding to arguments in func
+
+            Returns
+            -----------
+            ~kwargs_new: new dictionary of keyword arguments with all keys as valid arguments for func
+
+        '''
+        kwargs_new={}
+        for key, val in kwargs.iteritems():
+            for func in funcs:
+                if inspect.isclass(func):
+                    args, varargs, varkw, defaults=inspect.getargspec(func.__init__)
+                elif inspect.isfunction(func):
+                    args, varargs, varkw, defaults=inspect.getargspec(func)
+                print 'args',args
+                print varargs
+                print varkw
+                print defaults
+                if key in args and key not in kwargs_new:
+                    kwargs_new[key]=val
+
+        return kwargs_new
+    
+    def _kwargs_from_figdf(self, figdf, prefix):
+        ''' generate a dictionary kwargs to pass to plotting function for each trace to be plotted
+
+        Arguments
+        -------------
+        ~figdf
+        ~prefix: string indicating which columns from figdf to include in the kwarg dictionary.  Assumes that column names are formatted as 'trace_param', where 'param' is a keyword to passed to plotting function for each trace
+
+        Returns
+        ----------------
+        ~figdf: a new column with name prefix+'_kwargs' is added.  each entry in this column is a dictionary of kwargs for plotting functions
+
+        Comments
+        -----------------
+
+        '''
+        # get list of all columns
+        columns = figdf.columns
+        # get columns that contain the specified prefix
+        kwarg_columns = [column for column in columns if prefix in column
+        ]
+        # get suffixes to be keys in kwargs dictionary
+        kwarg_keys = [key.split(prefix+'_')[-1] for key in kwarg_columns]
+        # preallocate new column
+        figdf[prefix+'_kwargs']=None
+        # iterate over rows
+        for row_i, row in figdf.iterrows():
+            # preallocate kwarg dictionary
+            kwargs={}
+            # iterate over column names
+            for kwarg_i, kwarg_column in enumerate(kwarg_columns):
+                # get corresponding keys and values
+                val = row[kwarg_column]
+                key = kwarg_keys[kwarg_i]
+                # store in kwarg dictionary
+                kwargs[key]=val
+            # update new column with kwarg dictionary
+            figdf.at[row_i, prefix+'_kwargs'] = copy.deepcopy(kwargs)
+
+        return figdf
+    
+    def _draw_lines(self, fig, ax, figdf):
+        '''
+        '''
+        # set figdf to hierarchical index (figure, subgroup, trace)
+        figdf = figdf.reset_index().set_index(['figure','subgroup','trace'])
+        # get list of all figure names
+        figures = figdf.index.get_level_values('figure').unique().values
+        # iterate over figures
+        for figkey in figures:
+            if 'fig_hlines' in figdf:
+                yvals = figdf.loc[figkey].fig_hlines.unique()[0]
+                xlims = ax[figkey].get_xlim()
+                ax[figkey].hlines(yvals, xlims[0], xlims[1])
+            if 'fig_vlines' in figdf:
+                xvals = figdf.loc[figkey].fig_vlines.unique()[0]
+                ylims = ax[figkey].get_ylim()
+                ax[figkey].vlines(xvals, ylims[0], ylims[1])
+        return fig, ax
+
+    def _draw_rectangle(self, fig, ax, figdf):
+        '''
+        '''
+        print 'plotting rectangle'
+        # set figdf to hierarchical index (figure, subgroup, trace)
+        figdf = figdf.reset_index().set_index(['figure','subgroup','trace'])
+        # get list of all figure names
+        figures = figdf.index.get_level_values('figure').unique().values
+        # iterate over figures
+        for figkey in figures:
+            rec = Rectangle((.3, 0), .1, 2, alpha=0.5, facecolor='gray', edgecolor='gray')
+            ax[figkey].add_patch(rec)
+            plt.draw()
+        return fig, ax
+
+    def _dose_response(self, df, figdf, variable, **kwargs):
+        '''
+        '''
+        print 'plotting:', inspect.stack()[0][3]
+        # preallocate fig and ax objects
+        fig={}
+        ax={}
+        locations={}
+        heights={}
+        y_errors={}
+        # figdf = figdf.reset_index()
+        # set figdf to hierarchical index (figure, subgroup, trace)
+        figdf = figdf.reset_index().set_index(['figure','subgroup','trace'])
+        print figdf.index.names
+        # get list of all figure names
+        figures = figdf.index.get_level_values('figure').unique().values
+        df = df.set_index(['field', 'path_1_syn_num'])
+        # iterate over figures
+        for figkey in figures:
+            # create figure, passing params as **kwargs
+            fig[figkey], ax[figkey] = plt.subplots()
+            # get subgroups list
+            subgroups = figdf.loc[figkey].index.get_level_values('subgroup').unique().values
+            locations[figkey] = []
+            heights[figkey]=[]
+            y_errors[figkey]=[]
+            colors=[]
+            ecolors=[]
+            xticks=[]
+            xticklabels=[]
+            # iterate over subgroups of traces
+            for subkey in subgroups:
+                traces = figdf.loc[(figkey, subkey)].index.get_level_values('trace').unique().values
+                # iterate over traces
+                for tracekey in traces:
+                    # get params from figdf
+                    params = figdf.loc[(figkey,subkey, tracekey)]
+
+                    try:
+                        # get corresponding series
+                        trace_series = df.loc[tracekey, slice(None)][variable]
+                    except:
+                        print tracekey, 'not in df index'
+                        continue
+
+                    # convert to array
+                    data_array = _2array(trace_series, remove_nans=True, remove_nans_axis=1)
+                    # check that data is correct  shape
+                    if type(data_array)==np.ndarray and len(data_array.shape)==1:
+                        # print data_array
+                        # mean across cells
+                        data_mean = np.mean(data_array, axis=0)
+                        #std across cells
+                        data_std = np.std(data_array, axis=0)
+                        # sem across cells
+                        data_sem = stats.sem(data_array, axis=0)
+                        # check if trace location has been set manually
+                        # if 'trace_location' in params:
+                        plot_location = params.trace_location
+                        locations[figkey].append(plot_location)
+                        xticks.append(plot_location)
+                        if 'trace_label' in params:
+                            xticklabels.append(params.trace_label)
+                        else:
+                            xticklabels.append(plot_location)
+
+                        colors.append(params.trace_color)
+                        ecolors.append(params.trace_ecolor)
+                        heights[figkey].append(data_mean)
+                        y_errors[figkey].append(data_sem)
+                        plt.errorbar(locations[figkey][-1], data_mean, data_sem, ecolor=params.trace_ecolor, elinewidth=2)
+                        if 'fig_data_style' in figdf and figdf.fig_data_style.unique()[0]=='point':
+                            ax[figkey].plot(locations[figkey][-1], heights[figkey][-1], color=colors[-1], linestyle='None', markersize=30, marker='.')
+            if 'fig_barwidth' in figdf:
+                width=figdf.fig_barwidth.unique()[0]
+            else:
+                width=1
+
+            # if 'fig_data_style' in figdf and figdf.fig_data_style.unique()[0]=='point':
+            #     ax[figkey].plot(locations[figkey], heights[figkey], linestyle='None', markersize=30, marker='.')
+
+            # barcontainer = ax[figkey].bar(locations[figkey], heights[figkey], width=width, tick_label=xticklabels)
+            # ax[figkey].set_xscale('symlog')
+            # print xticks
+            # ax[figkey].set_xticks(xticks)
+            # ax[figkey].set_xticklabels(xticks)
+
+
+            # set bar color
+            # for bar_i, bar in enumerate(barcontainer):
+            #     bar.set_color(colors[bar_i])
+
+        # fig, ax = _format_figures(fig=fig, ax=ax, figdf=figdf)
+
+        # fig, ax = FormatFig()._set_fontsizes(figures=fig, axes=ax, figdf=figdf)
+        # fig, ax = FormatFig()._set_yticks(figures=fig, axes=ax, figdf=figdf)
+        # fig, ax = FormatFig()._scale_ticklabels(figures=fig, axes=ax, figdf=figdf)
+        # fig, ax = FormatFig()._set_ticklabel_decimals(figures=fig, axes=ax, figdf=figdf)
+
+        fig, ax = FormatFig()._standard_figformat(figures=fig, axes=ax, figdf=figdf)
+
+        plt.show(block=False)
+
+        # fig, ax = figsetup._format_figures(fig=fig, ax=ax, figdf=figdf, xlim=xlim, ylim=ylim)
+
+        # for figkey in ax:
+        # if 'fig_label_pvalues' in figdf and all(figdf.loc[figkey].fig_label_pvalues):
+        #     _label_pvalues(ax=ax[figkey], ttests=ttests, traces=tracelist[figkey], x_locations=locations[figkey], y_means=heights[figkey], y_errors=y_errors[figkey])
+        # # get x and y lims
+        # xlim[figkey] = ax[figkey].get_xlim()
+        # ylim[figkey] = ax[figkey].get_ylim()
+
+        # # ylim may change after add significance markers, so reformat
+        # fig, ax = figsetup._format_figures(fig=fig, ax=ax, figdf=figdf, xlim=xlim, ylim=ylim)
+
+        return fig, ax
+
+    # def _twinx(self, dfs, figdfs, variables, funcs, func_kws, **kwargs):
+    #     '''
+    #     '''
+    def _var2var_corr(self, df, figdf, variables, df_funcs=[], df_func_kws=[],array_funcs_x=[],array_func_kws_x=[],array_funcs_y=[],array_func_kws_y=[], df_sorted=[], figformat='standard', **kwargs):
+        '''FIXME add docs
+        '''
         
-        return fig
+        # report progress
+        print 'plotting:', inspect.stack()[0][3]
+
+        # preallocate figures and axes
+        fig={}
+        ax={}
+        # iteratively apply functions for creating new column to dataframe
+        #----------------------------------------------------------------
+        if len(df_funcs)>0:
+            for df_func_i, df_func in enuemrate(df_funcs):
+                df = df_func(df, axis=1, **df_func_kws[df_func_i])
+        # iterate over traces to be plotted
+        #-----------------------------------
+        for figkey, subkey, tracekey, params, trace_df in self._figdf_generator(df, figdf, variables):
+            # make new figure if doesnt exist yet
+            #-------------------------------------
+            if figkey not in ax:
+                fig[figkey], ax[figkey] = plt.subplots()
+            # get series from df
+            #----------------------------------------
+            trace_series_x = trace_df[variables[0]]
+            trace_series_y = trace_df[variables[1]]
+            # check for missing values and remove rows
+            #---------------------------------------------
+            nax = ~trace_series_x.isna()
+            nay = ~trace_series_y.isna()
+            # drop any rows that contain nan
+            #-----------------------------------------------
+            trace_series_x = trace_series_x[nax&nay]
+            trace_series_y = trace_series_y[nax&nay]
+            # convert to array
+            #--------------------------------------------------
+            data_array_x = _2array(trace_series_x, remove_nans=True, remove_nans_axis=1).astype(float)
+            data_array_y = _2array(trace_series_y, remove_nans=True, remove_nans_axis=1).astype(float)
+            # apply array functions
+            #----------------------------------------------------
+            for i, array_func in enumerate(array_funcs_x):
+                data_array_x = array_func(data_array_x, **array_func_kws_x[i])
+            for i, array_func in enumerate(array_funcs_y):
+                data_array_y = array_func(data_array_y, **array_func_kws_y[i])
+            # check array shapes
+            #------------------------------
+            if type(data_array_x)==np.ndarray and len(data_array_x.shape)==1 and data_array_x.shape[0]>0 and type(data_array_y)==np.ndarray and len(data_array_y.shape)==1 and data_array_y.shape[0]>0:
+
+                # data_x_subgroup[figkey][subkey] = np.append(data_x_subgroup[figkey][subkey], data_array_x)
+                # data_y_subgroup[figkey][subkey] = np.append(data_y_subgroup[figkey][subkey], data_array_y)
+                # colors[figkey][subkey].append([param.trace_color]*len(data_array_y))
+                # markersizes[figkey][subkey].append([param.trace_markersize]*len(data_array_y))
+
+                # if data_array_x.shape[0]>0 and  data_array_x.shape[0]>0:
+                # plot
+                #------------------------------------------------------
+                print data_array_x[0]
+                print data_array_y.shape
+                ax[figkey].plot(data_array_x, data_array_y, marker='.',linestyle='None', color=params.trace_color, markersize=params.trace_markersize)
+        # format figure
+        #----------------
+        if figformat=='standard':
+            fig, ax = FormatFig()._standard_figformat(figures=fig, axes=ax, figdf=figdf)
+
+        plt.show(block=False)
+
+        return fig, ax
+
+    def _var2var_corr_connect(self, df, figdf, x_variable, y_variable, connect_variable, df_funcs=[], df_func_kws=[],array_funcs_x=[],array_func_kws_x=[],array_funcs_y=[],array_func_kws_y=[], df_sorted=[], figformat='standard', **kwargs):
+        '''FIXME add docs
+        '''
+        variables = [x_variable, y_variable, connect_variable]
+        index_names = list(df.index.names)
+        # get list of all tracekeys
+        all_tracekeys = figdf.reset_index().set_index('trace').index.values
+        print 'all_tracekeys:', all_tracekeys
+        # report progress
+        print 'plotting:', inspect.stack()[0][3]
+
+        # preallocate figures and axes
+        fig={}
+        ax={}
+        # iteratively apply functions for creating new column to dataframe
+        #----------------------------------------------------------------
+        if len(df_funcs)>0:
+            for df_func_i, df_func in enuemrate(df_funcs):
+                df = df_func(df, axis=1, **df_func_kws[df_func_i])
+        # iterate over traces to be plotted
+        #-----------------------------------
+        for figkey, subkey, tracekey, params, trace_df in self._figdf_generator(df, figdf, variables):
+            # make new figure if doesnt exist yet
+            #-------------------------------------
+            if figkey not in ax:
+                fig[figkey], ax[figkey] = plt.subplots()
+
+                # draw connections between any points that share the connect variable
+                ###############################################################
+                df_connect = df.reset_index().set_index(connect_variable)
+                # get list of unique connect values
+                #--------------------------------------
+                connect_vals = df_connect.index.unique()
+                # iterate over connect values
+                #--------------------------------------
+                for connect_val in connect_vals:
+                    # get df for current connect value
+                    df_current = df_connect.loc[connect_val]
+                    # if there is more than one entry with the same connect variable
+                    if len(df_current.shape)>1:
+                        # reset index to match figdf tracekey
+                        df_current = df_current.reset_index().set_index(index_names)
+                        # get list of index values
+                        index_values = df_current.index.values
+                        # get x values
+                        x_values = df_current[x_variable].values
+                        # y values
+                        y_values = df_current[y_variable].values
+                        # pairs
+                        xy_pairs = zip(x_values, y_values, index_values)
+                        # get combinations of 
+                        xy_combos = itertools.combinations(xy_pairs, 2)
+                        # iterate over combos
+                        for combo in xy_combos:
+                            # print 'combo:', (combo[0][-1],)
+                            # print (combo[0][-1],) in all_tracekeys
+                            # if (combo[0][-1],) in all_tracekeys and (combo[1][-1],) in all_tracekeys:
+                            x = [combo[0][0], combo[1][0]]
+                            y = [combo[0][1], combo[1][1]]
+                            ax[figkey].plot(x, y, 'grey')
+
+
+            # get series from df
+            #----------------------------------------
+            trace_series_x = trace_df[variables[0]]
+            trace_series_y = trace_df[variables[1]]
+            # check for missing values and remove rows
+            #---------------------------------------------
+            nax = ~trace_series_x.isna()
+            nay = ~trace_series_y.isna()
+            # drop any rows that contain nan
+            #-----------------------------------------------
+            trace_series_x = trace_series_x[nax&nay]
+            trace_series_y = trace_series_y[nax&nay]
+            # convert to array
+            #--------------------------------------------------
+            data_array_x = _2array(trace_series_x, remove_nans=True, remove_nans_axis=1).astype(float)
+            data_array_y = _2array(trace_series_y, remove_nans=True, remove_nans_axis=1).astype(float)
+            # apply array functions
+            #----------------------------------------------------
+            for i, array_func in enumerate(array_funcs_x):
+                data_array_x = array_func(data_array_x, **array_func_kws_x[i])
+            for i, array_func in enumerate(array_funcs_y):
+                data_array_y = array_func(data_array_y, **array_func_kws_y[i])
+            # check array shapes
+            #------------------------------
+            if type(data_array_x)==np.ndarray and len(data_array_x.shape)==1 and data_array_x.shape[0]>0 and type(data_array_y)==np.ndarray and len(data_array_y.shape)==1 and data_array_y.shape[0]>0:
+
+                # data_x_subgroup[figkey][subkey] = np.append(data_x_subgroup[figkey][subkey], data_array_x)
+                # data_y_subgroup[figkey][subkey] = np.append(data_y_subgroup[figkey][subkey], data_array_y)
+                # colors[figkey][subkey].append([param.trace_color]*len(data_array_y))
+                # markersizes[figkey][subkey].append([param.trace_markersize]*len(data_array_y))
+
+                # if data_array_x.shape[0]>0 and  data_array_x.shape[0]>0:
+                # plot
+                #------------------------------------------------------
+                print data_array_x[0]
+                print data_array_y.shape
+                ax[figkey].plot(data_array_x, data_array_y, marker='.',linestyle='None', color=params.trace_color, markersize=params.trace_markersize)
+        # format figure
+        #----------------
+        if figformat=='standard':
+            fig, ax = FormatFig()._standard_figformat(figures=fig, axes=ax, figdf=figdf)
+
+        plt.show(block=False)
+
+        return fig, ax
+
+    def _trace_mean(self, df, figdf, variables, xvals=None, xvals_kw={},array_funcs=[], array_func_kws=[], df_funcs=[], df_func_kws=[], df_sorted=[], figformat='standard', **kwargs):
+        '''FIXME add docs
+        '''
         
-    def _load_data(self, directory='Data/', param_file='fd_parameters.pkl',data_file='induction_slopes_all.mat', ):
-        """
-        
-        ===Args===
-        
-        ===Out===
-        """
-        
-        with open(directory+data_file, 'rb') as pkl_file:
-            data = pickle.load(pkl_file)
+        # report progress
+        print 'plotting:', inspect.stack()[0][3]
+        # update dt
+        #------------------
+        if 'dt' in kwargs:
+            dt=kwargs['dt']
+        else:
+            dt=1
+        # preallocate figures and axes
+        fig={}
+        ax={}
+        # iteratively apply functions for creating new column to dataframe
+        #----------------------------------------------------------------
+        if len(df_funcs)>0:
+            for df_func_i, df_func in enuemrate(df_funcs):
+                df = df_func(df, axis=1, **df_func_kws[df_func_i])
+        # iterate over traces to be plotted
+        #-----------------------------------
+        for figkey, subkey, tracekey, params, trace_df in self._figdf_generator(df, figdf, variables):
+            # make new figure if doesnt exist yet
+            #-------------------------------------
+            if figkey not in ax:
+                fig[figkey], ax[figkey] = plt.subplots()
+            # convert df to array
+            #---------------------
+            data_array = _2array(trace_df, remove_nans=True, remove_nans_axis=1)
+            print data_array
+            print 'data array shape:', data_array.shape
+
+            # iteratively apply array functions
+            #-----------------------------------
+            if len(array_funcs)>0:
+                for array_func_i, array_func in enumerate(array_funcs):
+                    data_array=array_func(data_array, **array_func_kws[array_func_i])
+
+            # make sure array is the correct shape
+            if type(data_array)==np.ndarray and data_array.shape[0]!=0:
+                # if array is 1d, convert to 2d
+                if len(data_array.shape)==1:
+                    data_array = data_array.reshape((1,-1))
+                # mean across slices
+                data_mean = np.mean(data_array, axis=0)
+                #std across slices
+                data_std = np.std(data_array, axis=0)
+                # sem across slices
+                data_sem = stats.sem(data_array, axis=0)
+                # set x values
+                #-------------------------------------
+                if xvals is None:
+                    # default time vector
+                    xvals_array = np.linspace(0, len(data_mean)*dt, len(data_mean))
+                elif callable(xvals):
+                    xvals_array = xvals(data_mean, **xvals_kw)
+                else:
+                    xvals_array=xvals
+
+                assert 'error_style' in figdf, 'specify error style'
+                # line plot with shaded error
+                #-----------------------------------
+                if figdf.loc[(figkey,subkey,tracekey)].error_style=='shade':
+                    # plot mean trace
+                    #-------------------------------
+                    ax[figkey].plot(xvals_array, data_mean, 
+                        color=params.trace_color, 
+                        linewidth=params.trace_linewidth,
+                        linestyle=params.trace_linestyle)
+                    # shade error
+                    #-----------------------------------
+                    plt.fill_between(xvals_array,data_mean-data_sem,data_mean+data_sem,color=params.trace_ecolor, 
+                        alpha=params.trace_ealpha)
+
+                # error bar plot
+                #--------------------------------------
+                elif figdf.loc[(figkey,subkey,tracekey)].error_style=='bar':
+                    ax[figkey].errorbar(xvals_array, data_mean, 
+                        yerr=data_sem, 
+                        color=params.trace_color, 
+                        marker=params.trace_marker,  
+                        markersize=params.markersize, 
+                        elinewidth=params.error_linewidth, 
+                        linewidth=params.trace_linewidth, 
+                        markerfacecolor=params.trace_color, 
+                        ecolor=params.trace_ecolor)
+        # format figure
+        #----------------
+        if figformat=='standard':
+            fig, ax = FormatFig()._standard_figformat(figures=fig, axes=ax, figdf=figdf)
+
+        plt.show(block=False)
+
+        return fig, ax
+
+    def _var2var_mean(self, df, figdf, x_variable, variable, array_funcs=[], array_func_kws=[], df_funcs=[], df_func_kws=[], df_sorted=[], figformat='standard', **kwargs):
+        '''FIXME add docs
+        '''
+        if 'dt' in kwargs:
+            dt=kwargs['dt']
+        else:
+            dt=1
+        # report progress
+        print 'plotting:', inspect.stack()[0][3]
+        # preallocate figures and axes
+        fig={}
+        ax={}
+        # iteratively apply functions for creating new column to dataframe
+        #----------------------------------------------------------------
+        if len(df_funcs)>0:
+            for df_func_i, df_func in enuemrate(df_funcs):
+                df = df_func(df, axis=1, **df_func_kws[df_func_i])
+        # set figdf to hierarchical index (figure, subgroup, trace)
+        figdf = figdf.reset_index().set_index(['figure','subgroup','trace'])
+        # get list of all figure names
+        figures = figdf.index.get_level_values('figure').unique().values
+        # iterate over figures
+        for figkey in figures:
+            # create figure, passing params as **kwargs
+            fig[figkey], ax[figkey] = plt.subplots()
+            # get subgroups list
+            subgroups = figdf.loc[figkey].index.get_level_values('subgroup').unique().values
+            # iterate over subgroups of traces
+            for subkey in subgroups:
+                traces = figdf.loc[(figkey, subkey)].index.get_level_values('trace').unique().values
+                # iterate over traces
+                for tracekey in traces:
+                    # get params from figdf
+                    #-----------------------
+                    params = figdf.loc[(figkey,subkey, tracekey)]
+                    # get corresponding series and convert to array
+                    #----------------------------------------------
+                    # if available, get series, otherwise next iter
+                    try:
+                        trace_series=df.loc[tracekey,slice(None)][[x_variable, variable]]
+                    except:
+                        print tracekey,'or', variable, 'or', x_variable, 'not in df index'
+                        continue
+
+                    # group data by x_variable
+                    #-------------------------------------------------
+                    trace_series = trace_series.set_index(x_variable)
+
+                    # iterate over x_variable values
+                    #------------------------------------------------
+                    x_vals = np.sort(trace_series.index.unique().values)
+                    y_vals = np.full_like(x_vals, np.nan, dtype=np.double)
+                    e_vals = np.full_like(x_vals, np.nan, dtype=np.double)
+                    for i, x_val in enumerate(x_vals):
+                        print trace_series.loc[x_val, variable]
+                        # get corresponding y data and convert to array
+                        #----------------------------------------------
+                        data_array = _2array(trace_series.loc[x_val, variable], remove_nans=True, remove_nans_axis=1)
+                        print 'data array shape:', data_array.shape
+                        # iteratively apply array functions
+                        #-----------------------------------
+                        if len(array_funcs)>0:
+                            for array_func_i, array_func in enumerate(array_funcs):
+                                data_array=array_func(data_array, **array_func_kws[array_func_i])
+                        # make sure array is the correct shape
+                        #--------------------------------------
+                        if type(data_array)==np.ndarray and data_array.shape[0]!=0:
+                            assert len(data_array.shape)==1, 'data array must be 1d'
+                            # mean across slices
+                            data_mean = np.mean(data_array, axis=0)
+                            #std across slices
+                            data_std = np.std(data_array, axis=0)
+                            # sem across slices
+                            data_sem = stats.sem(data_array, axis=0)
+                            # update y values and errors for plot
+                            y_vals[i]=data_mean
+                            e_vals[i]=data_sem
+
+                    print 'x',x_vals
+                    print 'y',y_vals
+                    print 'e',e_vals
+                    # line plot with shaded error
+                    #-----------------------------------
+                    if figdf.loc[(figkey,subkey,tracekey)].error_style=='shade':
+                        ax[figkey].plot(x_vals, y_vals ,color=params.trace_color, linewidth=params.trace_linewidth)
+                        # print params.error_color
+                        plt.fill_between(x_vals, y_vals-e_vals, y_vals+e_vals, color=params.trace_ecolor, alpha=params.trace_ealpha)
+                    # error bar plot
+                    #--------------------------------------
+                    elif figdf.loc[(figkey,subkey,tracekey)].error_style=='bar':
+                        ax[figkey].plot(x_vals, y_vals, 
+                            color=params.trace_color, 
+                            marker=params.trace_marker,  
+                            markersize=params.trace_markersize,  
+                            linewidth=params.trace_linewidth, 
+                            markerfacecolor=params.trace_color)
+                        ax[figkey].errorbar(x_vals, y_vals, yerr=e_vals, color=params.trace_color, 
+                            marker=params.trace_marker,  
+                            markersize=params.trace_markersize, 
+                            elinewidth=params.error_linewidth, 
+                            linewidth=params.trace_linewidth, 
+                            markerfacecolor=params.trace_color, 
+                            ecolor=params.trace_ecolor)
+
+        # fig, ax = _format_figures(fig=fig, ax=ax, figdf=figdf,)
+        # plt.axhline(y=1, color='black', linestyle='--', linewidth=4)
+        # format figure
+        #----------------
+        if figformat=='standard':
+            fig, ax = FormatFig()._standard_figformat(figures=fig, axes=ax, figdf=figdf)
+
+        # plt.show(block=False)
+
+        return fig, ax
+
+    def _var2var_func(self, df, figdf, x_variable, variable, figformat='standard', array_funcs=[], array_func_kws=[], error_funcs=[], error_func_kws=[],df_funcs=[], df_func_kws=[], df_sorted=[],**kwargs):
+        '''FIXME add docs
+        '''
+        if 'dt' in kwargs:
+            dt=kwargs['dt']
+        else:
+            dt=1
+        # report progress
+        print 'plotting:', inspect.stack()[0][3]
+        # preallocate figures and axes
+        fig={}
+        ax={}
+        # iteratively apply functions for creating new column to dataframe
+        #----------------------------------------------------------------
+        if len(df_funcs)>0:
+            for df_func_i, df_func in enuemrate(df_funcs):
+                df = df_func(df, axis=1, **df_func_kws[df_func_i])
+        # set figdf to hierarchical index (figure, subgroup, trace)
+        figdf = figdf.reset_index().set_index(['figure','subgroup','trace'])
+        # get list of all figure names
+        figures = figdf.index.get_level_values('figure').unique().values
+        # iterate over figures
+        for figkey in figures:
+            # create figure, passing params as **kwargs
+            fig[figkey], ax[figkey] = plt.subplots()
+            # get subgroups list
+            subgroups = figdf.loc[figkey].index.get_level_values('subgroup').unique().values
+            # iterate over subgroups of traces
+            for subkey in subgroups:
+                traces = figdf.loc[(figkey, subkey)].index.get_level_values('trace').unique().values
+                # iterate over traces
+                for tracekey in traces:
+                    # get params from figdf
+                    #-----------------------
+                    params = figdf.loc[(figkey,subkey, tracekey)]
+                    # get corresponding series and convert to array
+                    #----------------------------------------------
+                    # if available, get series, otherwise next iter
+                    try:
+                        # trace_series=df.loc[tracekey,slice(None)][[x_variable, variable]]
+                        trace_series=df.loc[tracekey,slice(None)]
+                    except:
+                        print tracekey,'or', variable, 'or', x_variable, 'not in df index'
+                        continue
+
+                    # group data by x_variable
+                    #-------------------------------------------------
+                    trace_series = trace_series.reset_index().set_index(x_variable)
+
+                    # iterate over x_variable values
+                    #------------------------------------------------
+                    x_vals = np.sort(trace_series.index.unique().values)
+                    # print tracekey
+                    # print 'x_vals', x_vals
+                    y_vals = np.full_like(x_vals, np.nan, dtype=np.double)
+                    e_vals = np.full_like(x_vals, np.nan, dtype=np.double)
+                    error_array=0
+                    for i, x_val in enumerate(x_vals):
+                        # print trace_series
+                        # print trace_series.loc[x_val, variable]
+                        # get corresponding y data and convert to array
+                        #----------------------------------------------
+                        data_array = _2array(trace_series.loc[x_val, variable], remove_nans=True, remove_nans_axis=1)
+                        
+                        # iteratively apply array functions
+                        #-----------------------------------
+                        if len(error_funcs)>0:
+                            for error_func_i, error_func in enumerate(error_funcs):
+                                error_array=error_func(data_array, **error_func_kws[error_func_i])
+
+                        print 'data array shape:', data_array.shape
+                        # iteratively apply array functions
+                        #-----------------------------------
+                        if len(array_funcs)>0:
+                            for array_func_i, array_func in enumerate(array_funcs):
+                                data_array=array_func(data_array, **array_func_kws[array_func_i])
+
+                        # make sure array is the correct shape
+                        #--------------------------------------
+                        try:
+                            float(data_array)
+                        except:
+                            continue
+
+                        # print type(data_array)
+                        # if (type(data_array)==np.ndarray and len(data_array.shape)==0) or type(data_array)==float:
+                            # assert len(data_array.shape)==1, 'data array must be 1d'
+                            # mean across slices
+                            # data_mean = np.mean(data_array, axis=0)
+                            # #std across slices
+                            # data_std = np.std(data_array, axis=0)
+                            # # sem across slices
+                            # data_sem = stats.sem(data_array, axis=0)
+                            # update y values and errors for plot
+                        y_vals[i]=data_array
+                        e_vals[i]=error_array
+
+                    x_vals = [float(val) for val in x_vals]
+                    print 'x',x_vals
+                    print 'y',y_vals
+
+                    # print 'e',e_vals
+                    # line plot with shaded error
+                    #-----------------------------------
+                    if figdf.loc[(figkey,subkey,tracekey)].error_style=='shade':
+                        ax[figkey].plot(x_vals, y_vals ,color=params.trace_color, linewidth=params.trace_linewidth)
+                        # print params.error_color
+                        # plt.fill_between(x_vals, y_vals-e_vals, y_vals+e_vals, color=params.trace_ecolor, alpha=params.trace_ealpha)
+                    # error bar plot
+                    #--------------------------------------
+                    elif figdf.loc[(figkey,subkey,tracekey)].error_style=='bar':
+                        ax[figkey].plot(x_vals, y_vals, 
+                            color=params.trace_color, 
+                            marker=params.trace_marker,  
+                            markersize=params.trace_markersize,  
+                            linewidth=params.trace_linewidth, 
+                            markerfacecolor=params.trace_color)
+
+                        print x_vals, y_vals, e_vals
+                        ax[figkey].errorbar(x_vals, y_vals, yerr=e_vals, color=params.trace_color, 
+                            marker=params.trace_marker,  
+                            markersize=params.trace_markersize, 
+                            elinewidth=params.error_linewidth, 
+                            linewidth=params.trace_linewidth, 
+                            markerfacecolor=params.trace_color, 
+                            ecolor=params.trace_ecolor)
+
+        # fig, ax = _format_figures(fig=fig, ax=ax, figdf=figdf,)
+        # plt.axhline(y=1, color='black', linestyle='--', linewidth=4)
+        # figure formatting
+        #--------------------
+        # fig, ax = FormatFig()._set_fontsizes(figures=fig, axes=ax, figdf=figdf)
+        # fig, ax = FormatFig()._set_yticks(figures=fig, axes=ax, figdf=figdf)
+        # fig, ax = FormatFig()._scale_ticklabels(figures=fig, axes=ax, figdf=figdf)
+        # format figure
+        #----------------
+        if figformat=='standard':
+            fig, ax = FormatFig()._standard_figformat(figures=fig, axes=ax, figdf=figdf)
+        plt.show(block=False)
+
+        return fig, ax
+
+    def _trace_individual(self, df, figdf, variable, index=0, array_funcs=[], array_func_kws=[], df_funcs=[], df_func_kws=[], df_sorted=[],**kwargs):
+        '''FIXME add docs
+        '''
+        # set dt
+        #---------
+        if 'dt' in kwargs:
+            dt=kwargs['dt']
+        else:
+            dt=1
+        # report progress
+        #------------------
+        print 'plotting:', inspect.stack()[0][3]
+        # preallocate figures and axes
+        fig={}
+        ax={}
+        # iteratively apply functions for creating new column to dataframe
+        #----------------------------------------------------------------
+        if len(df_funcs)>0:
+            for df_func_i, df_func in enuemrate(df_funcs):
+                df = df_func(df, axis=1, **df_func_kws[df_func_i])
+        # set figdf to hierarchical index (figure, subgroup, trace)
+        figdf = figdf.reset_index().set_index(['figure','subgroup','trace'])
+        # get list of all figure names
+        figures = figdf.index.get_level_values('figure').unique().values
+        # iterate over figures
+        for figkey in figures:
+            # create figure, passing params as **kwargs
+            fig[figkey], ax[figkey] = plt.subplots()
+            # get subgroups list
+            subgroups = figdf.loc[figkey].index.get_level_values('subgroup').unique().values
+            # iterate over subgroups of traces
+            for subkey in subgroups:
+                traces = figdf.loc[(figkey, subkey)].index.get_level_values('trace').unique().values
+                # iterate over traces
+                for tracekey in traces:
+                    # get params from figdf
+                    #-----------------------
+                    params = figdf.loc[(figkey,subkey, tracekey)]
+                    # get corresponding series and convert to array
+                    #----------------------------------------------
+                    # if available, get series, otherwise next iter
+                    try:
+                        trace_series=df.loc[tracekey,slice(None)][variable]
+                    except:
+                        print tracekey,'or', variable, 'not in df index'
+                        continue
+                    # convert to array
+                    data_array = _2array(trace_series, remove_nans=True, remove_nans_axis=1)
+                    print 'data array shape:', data_array.shape
+                    # iteratively apply array functions
+                    #-----------------------------------
+                    if len(array_funcs)>0:
+                        for array_func_i, array_func in enumerate(array_funcs):
+                            data_array=array_func(data_array, **array_func_kws[array_func_i])
+                    # make sure array is the correct shape
+                    if type(data_array)==np.ndarray and data_array.shape[0]!=0:
+                        # if array is 1d, convert to 2d
+                        if len(data_array.shape)==1:
+                            data_array = data_array.reshape((1,-1))
+                        # mean across slices
+                        data_mean = np.mean(data_array, axis=0)
+                        #std across slices
+                        data_std = np.std(data_array, axis=0)
+                        # sem across slices
+                        data_sem = stats.sem(data_array, axis=0)
+                        # time vector
+                        t = np.arange(0, len(data_mean)*dt, dt)
+
+                        assert 'error_style' in figdf, 'specify error style'
+                        # line plot with shaded error
+                        #-----------------------------------
+                        if figdf.loc[(figkey,subkey,tracekey)].error_style=='shade':
+                            ax[figkey].plot(t, data_mean, color=params.trace_color, linewidth=params.trace_linewidth)
+                            # print params.error_color
+                            plt.fill_between(t, data_mean-data_sem, data_mean+data_sem, color=params.trace_ecolor, alpha=params.trace_ealpha)
+                        # error bar plot
+                        #--------------------------------------
+                        elif figdf.loc[(figkey,subkey,tracekey)].error_style=='bar':
+                            ax[figkey].errorbar(t, data_mean, yerr=data_sem, color=params.trace_color, 
+                                marker=params.trace_marker,  
+                                markersize=params.markersize, 
+                                elinewidth=params.error_linewidth, 
+                                linewidth=params.trace_linewidth, 
+                                markerfacecolor=params.trace_color, 
+                                ecolor=params.trace_ecolor)
+
+        fig, ax = _format_figures(fig=fig, ax=ax, figdf=figdf,)
+
+        plt.show(block=False)
+
+        return fig, ax
+
+    def _hist(self, df, figdf, variables, bins='auto', bins_kw={}, normalize_weights=False, cumulative=False, histtype='step', orientation='vertical', array_funcs=[], array_func_kws=[], df_funcs=[], df_func_kws=[],**kwargs):
+        '''FIXME add docs
+        '''
+        print 'plotting:', inspect.stack()[0][3]
+        fig={}
+        ax={}
+        # iteratively apply functions for creating new column to dataframe
+        #----------------------------------------------------------------
+        if len(df_funcs)>0:
+            for df_func_i, df_func in enuemrate(df_funcs):
+                df = df_func(df, axis=1, **df_func_kws[df_func_i])
+        # iterate over traces to be plotted
+        #-----------------------------------
+        for figkey, subkey, tracekey, params, trace_df in self._figdf_generator(df, figdf, variables):
+            # make new figure if doesnt exist yet
+            #-------------------------------------
+            if figkey not in ax:
+                fig[figkey], ax[figkey] = plt.subplots()
+            # convert df to array
+            #---------------------
+            data_array = _2array(trace_df, remove_nans=True, remove_nans_axis=1)
+            print data_array
+            print 'data array shape:', data_array.shape
+
+            # iteratively apply array functions
+            #-----------------------------------
+            if len(array_funcs)>0:
+                for array_func_i, array_func in enumerate(array_funcs):
+                    data_array=array_func(data_array, **array_func_kws[array_func_i])
+
+            # make sure array is the correct shape
+            #-------------------------------------
+            if type(data_array)==np.ndarray and data_array.shape[0]!=0:
+                if len(data_array.shape)!=1:
+                    data_array = data_array.flatten()
+
+                # set kwargs for plotting function
+                #-----------------------------------
+                # kwargs_hist = self._select_kwargs([plt.hist], params.trace_kwargs)
+
+                # weights
+                #--------------------------------
+                if normalize_weights:
+                    weights=np.ones_like(data_array)/float(len(data_array))
+                    # kwargs_hist['weights']=weights
+                else:
+                    weights=None
+
+                # bins
+                #--------------------------------------
+                if callable(bins):
+                    bin_array = bins(data_array, **bins_kw)
+                    # kwargs_hist['bins']=bin_array
+                else:
+                    bin_array=bins
+                    # kwargs_hist['bins']=bins
+
+                # plot
+                #--------------------------------------------
+                # print kwargs_kosher
+                # ax[figkey].hist(data_array, linewidth=params.trace_linewidth, **kwargs_hist)
+
+                # weights=np.ones_like(data_array)
+                # weights=np.ones_like(data_array)/float(len(data_array))
+                # bins = 100
+                # bins='auto'
+                # data_range = [min(data_array), max(data_array)]
+                # print data_range
+                # bins =int(np.floor(len(data_array)/4))
+                # bins = np.arange(0, data_range[1], .01)
+                # bins = np.arange(0, 60, .5)
+                # bins='auto'
+                # print data_array
+                ax[figkey].hist(data_array, color=params.trace_color, bins=bin_array, cumulative=cumulative, histtype=histtype, weights=weights, orientation=orientation, linewidth=params.trace_linewidth)
+        # format figures
+        #-------------------------------------------------------------------
+        fig, ax = FormatFig()._standard_figformat(figures=fig, axes=ax, figdf=figdf, tight=False)
+
+        plt.show(block=False)
+
+        return fig, ax
+
+    def _shapeplot(self, df, figdf, variable, array_funcs=[], array_func_kws=[], df_funcs=[], df_func_kws=[], df_sorted=[], cmap=colormap.PiYG, **kwargs):
+        '''
+        '''
+        print 'plotting:', inspect.stack()[0][3]
+        fig={}
+        ax={}
+        # set figdf to hierarchical index (figure, subgroup, trace)
+        figdf = figdf.reset_index().set_index(['figure','subgroup','trace'])
+        # get list of all figure names
+        figures = figdf.index.get_level_values('figure').unique().values
+        df = df.reset_index().set_index('field')
+        # iterate over figures
+        for figkey in figures:
+            # create figure, passing params as **kwargs
+            fig[figkey], ax[figkey] = plt.subplots()
+            # get subgroups list
+            subgroups = figdf.loc[figkey].index.get_level_values('subgroup').unique().values
+            # iterate over subgroups of traces
+            for subkey in subgroups:
+                traces = figdf.loc[(figkey, subkey)].index.get_level_values('trace').unique().values
+                # iterate over traces
+                for tracekey in traces:
+                    # get params from figdf
+                    params = figdf.loc[(figkey,subkey, tracekey)]
+                    # get corresponding series and convert to array
+                    #----------------------------------------------
+                    # if available, get series, otherwise next iter
+                    try:
+                        data=df.loc[tracekey,slice(None)][variable].values
+                        morpho=df.loc[tracekey, slice(None)]['morpho'].values
+                    except:
+                        print tracekey,'or', variable, 'not in df index'
+                        continue
+
+                    patches, colors = ShapePlot().basic(morpho=morpho, data=data, axes=ax[figkey], width_scale=3, colormap=cmap)
+
+                    # plot collection
+                    ax[figkey].add_collection(patches)
+                    # show colorbar
+                    plt.colorbar(patches)
+                    # autoscale axes
+                    ax[figkey].autoscale()
+                    ax[figkey].set_aspect(1.)
+                    plt.axis('off')
+        plt.show(block=False)
+
+        return fig, ax
+
+    def _bar(self, df, figdf, variable, array_funcs=[], array_func_kws=[], df_funcs=[], df_func_kws=[], group_space=1, bar_width=1, bar_spacing=1, **kwargs):
+        '''
+        '''
+        # preallocate variables to be passed to barplot
+        #-----------------------------------------------
+        fig={}
+        ax={}
+        n_subgroups={}
+        n_traces={}
+        xlim={}
+        ylim={}
+        data={}
+        heights={}
+        locations={}
+        y_errors={}
+        tracelist={}
+        # set figdf to hierarchical index (figure, subgroup, trace)
+        figdf = figdf.reset_index().set_index(['figure','subgroup','trace'])
+        # get list of all figure names
+        figures = figdf.index.get_level_values('figure').unique().values
+        # get pairwise comparisons between traces
+        # ttests  = Stats()._pairwise_ttests(df_sorted, variable, array_funcs=array_funcs, array_func_kws=array_func_kws)
+        # iterate over figures
+        #--------------------
+        for figkey in figures:
+            # create figure objects
+            fig[figkey], ax[figkey] = plt.subplots()
+            # get subgroups list
+            subgroups = figdf.loc[figkey].index.get_level_values('subgroup').unique().values
+            # preallocate
+            #---------------
+            locations[figkey] = []
+            tracelist[figkey]=[]
+            heights[figkey]=[]
+            y_errors[figkey]=[]
+            colors=[]
+            xticks=[]
+            xticklabels=[]
+            cnt=bar_spacing
+            # iterate over subgroups of traces
+            #---------------------------------
+            for subkey in subgroups:
+                # get traces
+                traces = figdf.loc[(figkey, subkey)].index.get_level_values('trace').unique().values
+                # count subgroups
+                cnt+=group_space
+                # iterate over traces
+                #---------------------
+                for tracekey in traces:
+                    # trace parameters
+                    param = figdf.loc[(figkey,subkey, tracekey)]
+                    # get corresponding series and convert to array
+                    #----------------------------------------------
+                    # if available, get series, otherwise next iter
+                    try:
+                        trace_series=df.loc[tracekey,slice(None)][variable]
+                    except:
+                        print tracekey,'or', variable, 'not in df index'
+                        continue
+                    # convert to array
+                    data_array = _2array(trace_series, remove_nans=True, remove_nans_axis=1)
+                    print 'data array shape:', data_array.shape
+                    # iteratively apply array functions
+                    #-----------------------------------
+                    if len(array_funcs)>0:
+                        for array_func_i, array_func in enumerate(array_funcs):
+                            data_array=array_func(data_array, **array_func_kws[array_func_i])
+                            print array_func.__name__, data_array.shape
+                    print 'data array shape:', data_array.shape
+                    print tracekey, data_array
+                    # make sure array is the correct shape (1 dimensional with at least one entry in first dimension)
+                    #-------------------------------------------
+                    if not (type(data_array)==np.ndarray and len(data_array.shape)==1 and data_array.shape[0]!=0):
+                        continue
+                    # pdb.set_trace()
+                    # print figkey
+                    # print data_array
+                    # mean across slices
+                    data_mean = np.mean(data_array, axis=0)
+                    #std across slices
+                    data_std = np.std(data_array, axis=0)
+                    # sem across slices
+                    data_sem = stats.sem(data_array, axis=0)
+                    # add plot location
+                    # print figkey, subkey, tracekey, param.sub_location, param.trace_location
+                    print data_mean
+                    plot_location = param.sub_location+param.trace_location
+                    tracelist[figkey].append(tracekey)
+                    locations[figkey].append(plot_location)
+                    xticks.append(plot_location)
+                    xticklabels.append(param.trace_label)
+                    colors.append(param.trace_color)
+                    heights[figkey].append(data_mean)
+                    y_errors[figkey].append(data_sem)
+                    print tracekey, data_mean.shape
+                    plt.errorbar(locations[figkey][-1], data_mean, data_sem, color=param.trace_ecolor)
             
-        data_mat, input_mat, conditions, p, t = _data2mat(data, 'v')
+            # if len(heights[figkey])>0:
+            barcontainer = ax[figkey].bar(locations[figkey], heights[figkey], width=param.fig_barwidth, tick_label=xticklabels)
+
+            # get x and y lims
+            xlim[figkey] = ax[figkey].get_xlim()
+            ylim[figkey] = ax[figkey].get_ylim()
         
-        return data_mat, input_mat, conditions, p, t
-            
-    def _clopath(self, x, u, fs=40, w0=0.5, homeostatic=False, param={}):
+            # set bar color
+            for bar_i, bar in enumerate(barcontainer):
+                bar.set_color(colors[bar_i])
+
+        # format figure
+        #----------------
+        fig, ax = FormatFig()._standard_figformat(figures=fig, axes=ax, figdf=figdf, xticks=False, xscale=False, xticks_minor=True)
+
+        plt.show(block=False)
+
+        return fig, ax
+
+    # deprecated plot functions
+    #----------------------------------------------------------------------
+    def _trace_mean_deprecated(self, df, figdf, variable, array_funcs=[], array_func_kws=[], df_funcs=[], df_func_kws=[], df_sorted=[],**kwargs):
+        '''FIXME add docs
+        '''
+        if 'dt' in kwargs:
+            dt=kwargs['dt']
+        else:
+            dt=1
+        # report progress
+        print 'plotting:', inspect.stack()[0][3]
+        # preallocate figures and axes
+        fig={}
+        ax={}
+        # iteratively apply functions for creating new column to dataframe
+        #----------------------------------------------------------------
+        if len(df_funcs)>0:
+            for df_func_i, df_func in enuemrate(df_funcs):
+                df = df_func(df, axis=1, **df_func_kws[df_func_i])
+
+        # set figdf to hierarchical index (figure, subgroup, trace)
+        figdf = figdf.reset_index().set_index(['figure','subgroup','trace'])
+        # get list of all figure names
+        figures = figdf.index.get_level_values('figure').unique().values
+        # iterate over figures
+        for figkey in figures:
+            # create figure, passing params as **kwargs
+            fig[figkey], ax[figkey] = plt.subplots()
+            # get subgroups list
+            subgroups = figdf.loc[figkey].index.get_level_values('subgroup').unique().values
+            # iterate over subgroups of traces
+            for subkey in subgroups:
+                traces = figdf.loc[(figkey, subkey)].index.get_level_values('trace').unique().values
+                # iterate over traces
+                for tracekey in traces:
+                    # get params from figdf
+                    #-----------------------
+                    params = figdf.loc[(figkey,subkey, tracekey)]
+                    # get corresponding series and convert to array
+                    #----------------------------------------------
+                    # if available, get series, otherwise next iter
+                    try:
+                        trace_series=df.loc[tracekey,slice(None)][variable]
+                    except:
+                        print tracekey,'or', variable, 'not in df index'
+                        continue
+                    # convert to array
+                    data_array = _2array(trace_series, remove_nans=True, remove_nans_axis=1)
+                    print 'data array shape:', data_array.shape
+
+                    # iteratively apply array functions
+                    #-----------------------------------
+                    if len(array_funcs)>0:
+                        for array_func_i, array_func in enumerate(array_funcs):
+                            data_array=array_func(data_array, **array_func_kws[array_func_i])
+                    # make sure array is the correct shape
+                    if type(data_array)==np.ndarray and data_array.shape[0]!=0:
+                        # if array is 1d, convert to 2d
+                        if len(data_array.shape)==1:
+                            data_array = data_array.reshape((1,-1))
+                        # mean across slices
+                        data_mean = np.mean(data_array, axis=0)
+                        #std across slices
+                        data_std = np.std(data_array, axis=0)
+                        # sem across slices
+                        data_sem = stats.sem(data_array, axis=0)
+                        # time vector
+                        # if 't' in kwargs:
+                        #     t=kwargs['t']
+                        # else:
+                        # t = np.linspace(0, len(data_mean)*dt, len(data_mean))
+                        t = dt*(np.arange(0, len(data_mean))-(len(data_mean)-1)/2)
+
+
+                        assert 'error_style' in figdf, 'specify error style'
+                        # line plot with shaded error
+                        #-----------------------------------
+                        if figdf.loc[(figkey,subkey,tracekey)].error_style=='shade':
+                            ax[figkey].plot(t, data_mean, color=params.trace_color, linewidth=params.trace_linewidth,linestyle=params.trace_linestyle)
+                            # print params.error_color
+                            plt.fill_between(t, data_mean-data_sem, data_mean+data_sem, color=params.trace_ecolor, alpha=params.trace_ealpha)
+                        # error bar plot
+                        #--------------------------------------
+                        elif figdf.loc[(figkey,subkey,tracekey)].error_style=='bar':
+                            ax[figkey].errorbar(t, data_mean, yerr=data_sem, color=params.trace_color, 
+                                marker=params.trace_marker,  
+                                markersize=params.markersize, 
+                                elinewidth=params.error_linewidth, 
+                                linewidth=params.trace_linewidth, 
+                                markerfacecolor=params.trace_color, 
+                                ecolor=params.trace_ecolor)
+        # format figure
+        #----------------
+        fig, ax = FormatFig()._standard_figformat(figures=fig, axes=ax, figdf=figdf)
+
+        # fig, ax = _format_figures(fig=fig, ax=ax, figdf=figdf,)
+
+        plt.show(block=False)
+
+        return fig, ax
+
+    def _hist_deprecated(self, df, figdf, variable, array_funcs=[], array_func_kws=[], df_funcs=[], df_func_kws=[], df_sorted=[],**kwargs):
+        '''FIXME add docs
+        '''
+        print 'plotting:', inspect.stack()[0][3]
+        fig={}
+        ax={}
+        xlim={}
+        ylim={}
+        # iteratively apply functions for creating new column to dataframe
+        #----------------------------------------------------------------
+        if len(df_funcs)>0:
+            for df_func_i, df_func in enuemrate(df_funcs):
+                df = df_func(df, axis=1, **df_func_kws[df_func_i])
+        # set figdf to hierarchical index (figure, subgroup, trace)
+        figdf = figdf.reset_index().set_index(['figure','subgroup','trace'])
+        # get list of all figure names
+        figures = figdf.index.get_level_values('figure').unique().values
+        # iterate over figures
+        for figkey in figures:
+            # create figure, passing params as **kwargs
+            fig[figkey], ax[figkey] = plt.subplots()
+            # get subgroups list
+            subgroups = figdf.loc[figkey].index.get_level_values('subgroup').unique().values
+            # iterate over subgroups of traces
+            for subkey in subgroups:
+                traces = figdf.loc[(figkey, subkey)].index.get_level_values('trace').unique().values
+                # iterate over traces
+                for tracekey in traces:
+                    # get params from figdf
+                    params = figdf.loc[(figkey,subkey, tracekey)]
+                    # get corresponding series and convert to array
+                    #----------------------------------------------
+                    # if available, get series, otherwise next iter
+                    try:
+                        trace_series=df.loc[tracekey,slice(None)][variable]
+                    except:
+                        print tracekey,'or', variable, 'not in df index'
+                        continue
+                    # remove nans from trace series
+                    na = trace_series.isna()
+                    trace_series = trace_series[~na]
+
+                    # convert to array
+                    data_array = _2array(trace_series, remove_nans=True, remove_nans_axis=1)
+                    print data_array
+                    print 'data array shape:', data_array.shape
+                    # iteratively apply array functions
+                    #-----------------------------------
+                    if len(array_funcs)>0:
+                        for array_func_i, array_func in enumerate(array_funcs):
+                            data_array=array_func(data_array, **array_func_kws[array_func_i])
+
+                    print 'data array shape:', data_array.shape
+                    # make sure array is the correct shape
+                    if type(data_array)==np.ndarray and data_array.shape[0]!=0:
+                        if len(data_array.shape)!=1:
+                            data_array = data_array.flatten()
+                        weights=np.ones_like(data_array)
+                        # weights=np.ones_like(data_array)/float(len(data_array))
+                        # bins = 100
+                        # bins='auto'
+                        data_range = [min(data_array), max(data_array)]
+                        # print data_range
+                        # bins =int(np.floor(len(data_array)/4))
+                        # bins = np.arange(0, data_range[1], .01)
+                        bins = np.arange(0, 60, .5)
+                        # bins='auto'
+                        # print data_array
+                        ax[figkey].hist(data_array, color=params.trace_color, bins=bins, cumulative=False, histtype='step', weights=weights, orientation='vertical', linewidth=params.trace_linewidth)
+                        # ax[figkey].hist(data_array,  bins=bins, cumulative=False, histtype='step', weights=weights, orientation='vertical', params.trace_kwargs)
+                        # ax[figkey].invert_xaxis()
+                        # plt.title(figkey)
+
+        # fig, ax = FormatFig()._set_fontsizes(figures=fig, axes=ax, figdf=figdf)
+        # fig, ax = FormatFig()._set_yticks(figures=fig, axes=ax, figdf=figdf)
+        # fig, ax = FormatFig()._scale_ticklabels(figures=fig, axes=ax, figdf=figdf)
+        fig, ax = FormatFig()._standard_figformat(figures=fig, axes=ax, figdf=figdf)
+
+        plt.show(block=False)
+
+        return fig, ax
+#############################################################################
+# array functions
+#############################################################################
+class ArrayFunctions:
+    '''
+    '''
+    def __init__(self, ):
+        '''
+        '''
+        pass
+
+    def _normalize(self, array, norm_type='divide', norm_slice=slice(1), axis=1, axis_slice=slice(None), **kwargs):
+        '''
+        '''
+        # create slice object with appropriate number of dimensions
+        slicer = [slice(None)]*len(array.shape)
+        # update slice object
+        slicer[axis]=axis_slice
+        # slice array
+        array = array[slicer]
+        # get normalization slicer
+        # create slice object
+        norm_slicer = copy.deepcopy(slicer)
+        norm_slicer[axis] = norm_slice
+        if norm_type=='divide':
+            print slicer
+            print norm_slicer
+            array = array/array[norm_slicer]
+        elif norm_type=='subtract':
+            array = array-array[norm_slicer]
+
+        return array
+
+    def _get_area(self, array, axis=1, islice=slice(None), norm=True, **kwargs):
+        ''' get area under curve for timeseries
+
+        Arguments
+        ----------
+        ~array : array of timeseries, typically cells x samples
+        ~axis : axis corresponding to time (to take area under)
+        ~islice : python slice object for choosing indices along time dimension
+        ~norm : bool indicating whether to normalize values to the first value (after slicing)
+
+        Returns
+        --------
+        ~area : vector of areas for each cell
+
+        Notes
+        --------
+        '''
+        # create slice object with appropriate number of dimensions
+        slicer = [slice(None)]*len(array.shape)
+        # update slice object
+        slicer[axis]=islice
+        # slice array
+        array = array[slicer]
+        # if  normalizing to first value
+        if norm:
+            # create slice object
+            norm_slicer = copy.deepcopy(slicer)
+            norm_slicer[axis] = slice(1)
+            # normalize
+            array = array-array[norm_slicer]
+            # print array
+
+        area = np.sum(array, axis=axis)
+        if len(area.shape)==0:
+            area=np.reshape(area, (1))
+
+
+        return area
+
+    def _get_bins(self, data_array, nbins=100, binsize=None, binmin=None, binmax=None):
+        ''' generate an array of bins for histograms based on data in data_array
+
+            Arguments
+            ------------
+            ~data_array: 1d array of values to be binned for histogram
+            ~nbins: total number of bins
+            ~binsize: step size between bins
+            ~binmin: minimum bin value (not size)
+            ~binmax: maximum bin value (not size)
+
+            Return
+            --------------
+            ~bins: array of bin values to be passed to plt.hist
+
+            Comments
+            ------------------
+            ~data_array must be 1D
+            ~binsize overrides nbins if specified
+        '''
+        print data_array
+        data_range = [np.min(data_array), np.max(data_array)]
+        print 'data range',data_range
+        if binmin is None:
+            binmin =data_range[0]
+        if binmax is None:
+            binmax =data_range[1]
+        if binsize is not None:
+            if binmin==binmax:
+                binmin=binmin-binsize
+                binmax=binmax+binsize
+            bins = np.arange(binmin, binmax, binsize)
+        else:
+            bins = np.linspace(binmin, binmax, nbins)
+
+        return bins
+
+    def _get_trace_xvals(self, data_array, dt=1, xtype='time', **kwargs):
+        '''
+        '''
+        print 'getting xvals'
+        print data_array
+        print data_array.shape
+        if xtype=='time':
+            xvals_array = np.linspace(0, len(data_array)*dt, len(data_array))
+        elif xtype=='xcorr':
+            xvals_array = dt*(np.arange(0, len(data_array))-(len(data_array)-1)/2)
+
+        print xvals_array
+        print xvals_array.shape
+
+        return xvals_array
+
+    def _filter_mean(self, array, filt=[], filt_series=[], hilbert=False, mean_axis=0, islice=slice(None), slice_axis=1 , **kwargs):
+        '''
+        '''
+        # create slice object with appropriate number of dimensions
+        slicer = [slice(None)]*len(array.shape)
+        # update slice object
+        slicer[slice_axis]=islice
+        array_mean = np.mean(array[slicer], axis=mean_axis)
+
+        # single filter
+        if filt:
+            filtered_array = signal.filtfilt(filt[0], filt[1], array_mean, method='pad', padlen=len(array), padtype='odd')
+            # filtered_array = signal.lfilter(filt[0], filt[1], array_mean,)
+        # cascade filters
+        if filt_series:
+            filtered_array=copy.copy(array)
+            for subfilt_key, subfilt in filt_series.iteritems():
+                filtered_array = signal.filtfilt(subfilt[0], subfilt[1], filtered_array, method='pad', padlen=len(filtered_array),padtype='odd')
+                # filtered_array = signal.lfilter(subfilt[0], subfilt[1], filtered_array,)
+        # apply hilbert
+        if hilbert:
+            filtered_array = np.abs(signal.hilbert(filtered_array - np.mean(filtered_array)))
+
+        print 'filtered_mean',np.mean(filtered_array)
+        # pdb.set_trace()
+        # plt.figure()
+        # plt.plot(filtered_array)
+        # plt.show(block=False)
+
+        return filtered_array
+
+    def _subtract_timeseries(self, array, islice=slice(1), axis=1, **kwargs):
+        '''
+        '''
+        # create slice object with appropriate number of dimensions
+        slicer = [slice(None)]*len(array.shape)
+        # update slice object
+        slicer[axis]=islice
+        # get values to subtract
+        sub_vals = copy.copy(array[slicer])
+        # subtract values
+        array_new = array-sub_vals
+        return array_new
+
+    def _flatten(self, array, **kwargs):
+        '''
+        '''
+        flattened = np.array(list(itertools.chain.from_iterable(array)))
+        return flattened
+
+    def _reject_outliers(self, array, std_tol=2, axis=0, **kwargs):
+        '''
+        '''
+        # if 'std_tol' in kwargs:
+        #     std_tol=kwargs['std_tol']
+        # array_mean = np.mean(array, axis=axis)
+        # array_std = np.std(array, axis=axis)
+        # array_diff = array-array_mean
+
+        array_new = array[abs(array- np.mean(data, axis=axis)) < m * np.std(array, axis=axis)]
+        return array_new
+
+    def _last(self, array, **kwargs):
+        '''
+        '''
+        last = array[:,-1]
+
+        return last
+
+    def _first(self, array, **kwargs):
+        '''
+        '''
+        first = array[:,0]
+        return first
+
+    def _slice_mean(self, array, islice, axis=2, **kwargs):
+        '''
+        '''
+        # assert 'axis' in kwargs, 'please specificy axis to operate on'
+        # assert '' in kwargs, 'please specificy axis to operate on'
+        # axis = kwargs['axis']
+        slicer = [slice(None)]*len(array.shape)
+        # pdb.set_trace()
+        # print slicer
+        # print islice
+        # print array.shape
+        if axis<len(array.shape) and array.shape[axis]>0:
+            slicer[axis]=islice
+            # print slicer
+            # print array[slicer]
+            array_new = np.mean(array[slicer], axis=axis)
+        else:
+            array_new = array
+        # array_new = np.mean(array[slicer], axis=axis)
+        # else:
+        #     array_new=array
+        # print array_new.shape
+        return array_new
+
+    def _slice(self, array, islice, axis=1, **kwargs):
+        '''
+        '''
+        # assert 'axis' in kwargs, 'please specificy axis to operate on'
+        # assert '' in kwargs, 'please specificy axis to operate on'
+        # axis = kwargs['axis']
+        print 'slicing array',islice
+        print array.shape
+        slicer = [slice(None)]*len(array.shape)
+        # pdb.set_trace()
+        # print slicer
+        # print islice
+        # print array.shape
+        if axis<len(array.shape) and array.shape[axis]>0:
+            slicer[axis]=islice
+            array_new =  copy.copy(array[slicer])
+        else:
+            array_new=array
+        # print slicer
+        # print array[slicer]
+        # array_new =  copy.copy(array[slicer])
+        # array_new = np.mean(array[slicer], axis=axis)
+        # print array_new.shape
+        return array_new
+
+    def _mean(self, array, **kwargs):
+        '''
+        '''
+        mean = np.mean(array, 2)
+        return mean
+
+    def _adapt(self, array, **kwargs):
+        '''
+        '''
+        adapt = array[:,-1]/array[:,0]
+        return adapt
+
+    def _nth(self, array, **kwargs):
+        '''
+        '''
+        nth = array[:,kwargs['n']]
+        return nth
+
+    def _every_nth(self, array, **kwargs):
+        '''
+        '''
+        pulses = kwargs['pulses']
+        pulse_i = kwargs['pulse_i']
+        mask = range(pulse_i, array.shape[1], pulses)
+        every_nth = array[:,mask]
+        return every_nth
+#############################################################################
+# clopath algorithm
+#############################################################################
+class Clopath():
+    """ Apply Clopath learning rule, given array of synaptic input times and postsynatpic voltage traces
+    
+        Methods
+        ---------
+        _clopath: algorithm for updting synaptic weights based on input times and postsynaptic voltage
+        
+        Attributes
+        -----------
+        ~p: parameter dictionary
+        ~w: weight array (synapses x samples)
+        ~u_md: membrane potential for the depression
+        ~u_mdbar: homeostatic membrane potential parameter
+        ~u_mp: membrane potential for the potentiation
+        ~u_sig: thresholded membrane potential
+        ~u_md_sig: filtered and thresholded (thetam) membrane potential
+        ~u_mp_sig: filtered and thresholded (thetap) membrane potential
+        ~x_m0: presynaptic trace
+        ~A_m: homeostatic LTD parameter
+    """
+    def __init__(self, ):
+        '''
+        '''
+        pass
+
+    def _clopath(self, x, u, fs=40, w0=0.5, homeostatic=False, param={}, lower_bound=None, upper_bound=None, **kwargs):
         """ Determine weights from voltage traces and input times with Clopath rule
         
         ===Args===
-        -x      :   input vector of spike times (1 for spike, 0 for no spike)
-        -u      :   array of voltage time traces (compartments x time)
+        -x      :   input array of spikes (1 for spike, 0 for no spike) (compartments x samples)
+        -u      :   array of voltage time traces (compartments x samples)
         -fs     :   sampling rate (kHz)
         -w0     :   initial weight 
         -param  :   dictionary of clopath parameters
@@ -912,8 +2926,9 @@ class Clopath():
         
         # create time vector
         #`````````````````````````````
-        print 'data shape:', u.shape
+        # print 'data shape:', u.shape
         dt      = 1./fs
+        fs      = int(fs)
         T       = u.shape[1]/fs
         dur_samples = int(T*fs)
         time    = np.arange(0., T, dt)
@@ -922,13 +2937,13 @@ class Clopath():
         #```````````````````````````````````````````````````````````````````
         p['u_ref']      = 9         # reference value for homeostatic process mV
         p['adapt_t']    = 1000*fs   # time to integrate over for homeostatic process (samples)
-        p['A_m0']       = 2E-5      # A_m: amplitude for the depression
+        p['A_m0']       = 100E-5      # A_m: amplitude for the depression
         p['A_p']        = 38E-5     # A_p: amplitude for the potentiation
-        p['tau_p']      = 5         # tau_p: time constant for voltage trace in the potentiation term [ms]
-        p['tau_x']      = 10       # tau_x: time constant for presynaptic trace [ms]
-        p['tau_m']      = 6         # tau_m: time constant for voltage trace in the depression term [ms]
-        p['tetam']      = -60       # tetam: low threshold
-        p['tetap']      = -53       # tetap: high threshold in the potentiation term
+        p['tau_p']      = 3         # tau_p: time constant for voltage trace in the potentiation term [ms]
+        p['tau_x']      = 8       # tau_x: time constant for presynaptic trace [ms]
+        p['tau_m']      = 20         # tau_m: time constant for voltage trace in the depression term [ms]
+        p['tetam']      = -70       # tetam: low threshold
+        p['tetap']      = -65       # tetap: high threshold in the potentiation term
         p['E_L']        = -70.6     # resting potential [mV], used for LTD adaptation
         p['delay']      = 0        # conduction delay after action potential (ms)
         p['LTD_delay']  = 1         # delay (ms) applied to presynaptic spike before computing LTD term (this allows LTD in response to subthreshold inputs) 
@@ -936,6 +2951,8 @@ class Clopath():
         for key, val in param.iteritems():
             p[key] = val
 
+
+        # print 'clopath parameters:',p
         # preallocate learning rule variables
         #``````````````````````````````````````````````````````````````````````
         self.w           = w0*np.ones((n_syn,dur_samples))       # weights
@@ -992,338 +3009,295 @@ class Clopath():
                 
                 # update weights
                 self.w[:,i] = self.w[:,i-1] - self.A_m[:,i] *self.u_md_sig[:,i] *x[:,i-int(p['LTD_delay']*fs)] + p['A_p']*self.u_sig[:,i] *self.u_mp_sig[:,i] *self.x_m0[:,i]
-        
+        # apply upper and lower bounds to weights
+        #-----------------------------------------
+        if 'lower_bound' in p:
+            lower_bound=p['lower_bound']
+        if 'upper_bound' in p:
+            upper_bound=p['upper_bound']
+        print 'weight bounds, ', lower_bound, upper_bound
+        if upper_bound is not None or lower_bound is not None:
+            self.w = np.clip(self.w, a_min=lower_bound, a_max=upper_bound)
+
         self.p=p
-        # output weight matrix (synapses x time)
+        # output weight matrix (synapses x samples)
         return self.w
+#############################################################################
+# get spikes from voltage data
+#############################################################################
+class Spikes:
+    '''
+    '''
+    def __init__(self, **kwargs):
+        '''
+        '''
+        pass
 
-class FitFD():
-    """ Functions for fitting facillitation and depression parameters to train of synaptic inputs
-    
-    Based on FD model in Varela et al. 1997 Journal of Neuroscience
-    """
-    
-    #__________________________________________________________________________
-    def __init__(self, run_opt=False, ):
-        """ Define optimization parameters here
-        
-        ---
-        Args
-        ---
-        run_opt = if True, parameter optimization will be called on class instantiation
-        """
-        
-        # run optimization
-        #``````````````````````````````````````````````
-        if run_opt:
-            
-            param0 = [.8,.1,
-                      .999,.2,
-                      .999,100,]
-            bounds = [(0, 20), (0,.5), 
-                     (0,1), (0,1),
-                     (0, 1), (0, 100),
-                     (.9, 1), (1, 2000),]
-            self._fd_opt(param0=param0, 
-                        bounds=bounds)
-            
-        else:
-            pass
+    def _get_spikes(self, data, threshold,dt):
+        '''
+        ==Args==
+        -data : array of voltage data (mV), traces x samples
+        -threshold : threshold voltage for detecting spikes (mV)
+        -dt : time step (ms)
 
-    #__________________________________________________________________________
-    def _plot_fd_fromfile(self, 
-                          directory='Data/', 
-                          param_file='fd_parameters.pkl', 
-                          data_file='induction_slopes_all.mat', 
-                          plot_file='fd_fitted_traces.png',
-                          fit_color='red', 
-                          data_color='black'):
+        ==Out==
+        -spike_idx : nested list containing indices of threshold crossings [trace_i][index]
+        -spike_times : nested list containing time (ms) of threshold crossings [trace_i][time]
+        -spike_train : boolean numpy array with same dimensions as original voltage data (spike onsets are 1's, all else is zero)
         
-        """ Plot data and fd fit from saved files
-        ---
-        Args
-        ---
-        directory = folder for parameters and data
-        param_file =  file name for fd parameter list
-        data_file = file name for data to be fit
-            -matlab file with a matrix for tetanus at different frequencies, x_tet = [input times x tetanus frequency]
-            and a vector for tbs called x_tbs = [input times]
-        
-        ---
-        Out
-        ---
-        fig = plot with data and fd fit
-        
-        -saved
-            fig
-        """
-        
-        # load parameters
-        #`````````````````
-        with open(directory+param_file, 'rb') as pkl_file:
-            param_obj = pickle.load(pkl_file)
-            
-        params = param_obj.x
-        
-        print params
-        
-        # load data
-        #````````````````
-        self.data = scipy.io.loadmat(directory+data_file)
-        
-        t_data_list = [self.data['t_tbs'], self.data['t_tet'][:,-1]]
-        y_data_list = [self.data['x_tbs'], self.data['x_tet'][:,-1]]
+        ==Update==
+        ==Comments==
+        '''
+        # if data is 1d array convert to 2d array
+        # print data.shape
+        if len(data.shape)==1:
+            data = data.reshape((1,-1))
 
-        # plot data and fit
-        #`````````````````````
-        fig = plt.figure()
-        
-        # iterate through input streams
-        for i, t_data in enumerate(t_data_list):
-            
-            # get time series of amplitudes from FD parameters
-            fit_opt = self._fd(params, t_data,)
-            
-            # plot data and fit
-            plt.plot(t_data, y_data_list[i], color=data_color)
-            plt.plot(t_data, fit_opt, color=fit_color)
-            
-        # format and save figure
-        #``````````````````````
-        plt.xlabel('time (s)')
-        plt.ylabel('Normalized slope')
-        plt.show()
-            
-        fig.savefig(directory+plot_file, dpi=250)
-        
-        # output figure
-        return fig
-    
-    #__________________________________________________________________________
-    def _fd_opt(self, 
-                param0, 
-                bounds, 
-                directory='Data/', 
-                param_file='fd_parameters.pkl', 
-                data_file='induction_slopes_all.mat', 
-                plot_file='fd_fitted_traces.png',
-                method='differential_evolution'):
-        
-        """ optimize fd parameters
-        
-        ---Args---
-        param0 = list of initial parameter guesses ordered as [f,tF, d1,tD1, d2,tD2, d3,tD3,...]
-        bounds = list of tuples with bounds for each parameter as [(min,max), (min,max)...] with a tuple for each parameter in param0
-        directory = string for directory containing data and optimized parameters
-        param_file = file name string for storing optimized parameters (including file type extension)
-        data_file = file name string for storing data to fit parameters to
-        plot_file = file name string for saving plot
-        method = optimization algorithm
-        
-        ---Out---
-        param_opt_obj = output object from parameter optimization algorithm (parameters stored as param_opt_obj.x)
-        
-        ---Write---
-            -param_opt_obj = optimized parameters
-            -plot of data and fitted fd curves as directory+plot_file
-        """
-        
-        # load data
-        #`````````````````````````
-        self.data = scipy.io.loadmat(directory+data_file)
-        
-        t_data_list = [self.data['t_tbs'], self.data['t_tet'][:,-1]]
-        y_data_list = [self.data['x_tbs'], self.data['x_tet'][:,-1]]
-        
-        # run optimization
-        #```````````````````````````````
-        if method == 'differential_evolution':
-            param_opt_obj = scipy.optimize.differential_evolution(self._fd_err_mult, bounds=bounds, args=(t_data_list, y_data_list))
-            
-        else:
-            param_opt_obj = scipy.optimize.minimize(self._fd_err_mult, param0, (t_data_list, y_data_list), bounds=bounds)
+        # preallocate variables
+        spike_train= np.zeros(data.shape)
+        spike_idx=[]
+        spike_times=[]
 
-        # save optimization parameters
-        with open(directory+param_file, 'wb') as output:
-            pickle.dump(param_opt_obj, output,protocol=pickle.HIGHEST_PROTOCOL)
-        print 'saved optimized parameters'
-        
-        self._plot_fd_fromfile(directory=directory, param_file=param_file, plot_file=plot_file)
-        
-        return param_opt_obj
-        
-    #__________________________________________________________________________
-    def _fd_loop(self, params, t_data,):
-        """ Iterate through times steps to get FD curves
 
-        ---
-        Arguments
-        ---
-        t_data = 1D array of times at which inputs arrive (s) 
-        params = list of parameters, first two parameters are for facilitation 
-        (f increment and time constant respectively), remaining parameters for depression
+        # iterate over voltage traces
+        for row in range(data.shape[0]):
+            # print data[row,:]
+            # indices of threshold crossings
+            spike_i = np.where(np.diff(np.sign(data[row,:]-threshold))>0)[0]
+            # time of threshold crossing
+            spike_time = spike_i*dt
+            # update boolean spike train array
+            spike_train[row,spike_i]=1
+            # add spike index and times to list
+            spike_idx.append(copy.copy(spike_i))
+            spike_times.append(copy.copy(spike_time))
+        
+        return spike_idx, spike_train, spike_times 
 
-        ---
-        Output
-        ---
-        fit = dictionary of 1D facilitation and depression values at each input time in t_data
-            ---
-            Keys
-            ---
-            params = list of parameters, first two parameters are for facilitation, remaining parameters for depression
-            F = facilitation
-            DN = depression, N is the Nth depression term, e.g. D1, D2, D3 etc 
 
-        """
-        fit = {'params':params}
-        f = params[0]
-        tF = params[1]
-        fit['F'] = np.ones(t_data.shape)
-        
-        d1 = params[2]
-        tD1 = params[3]
-        fit['D1'] =np.ones(t_data.shape)
-        
-        if len(params)>4:
-            d2 = params[4]
-            tD2 = params[5]
-            fit['D2'] = np.ones(t_data.shape)
-            
-            if len(params)>6:
-                d3 = params[6]
-                tD3 = params[7]
-                fit['D3'] = np.ones(t_data.shape)
-        
-        # FIXME set up to receive variable number of FD parameters
-        # iterate over input times
-        for i, t in enumerate(t_data):
+    def _get_xcorr_soma(self, spike_train, soma_i, ):
+        '''
+        '''
+        group_data['soma_xcorr']['data']= np.zeros((spike_train.shape[0], spike_train.shape[1]+spike_train.shape[1]-1))
+    # def _get_spike_init(self, group_data, bins)
+#############################################################################
+# filters
+#############################################################################
+class Filters:
+    '''
+    '''
+    def __init__(self, fs):
+        '''
+        '''
 
-            # start from seccond input
-            if i>0:
+        # 300-1000 Hz bandpass
+        self.filters={}
+        nqst = fs/2
+        # print nyquist
 
-                # add increment f to previous pulse, then calculate exponential decay based on time interval
-                fit['F'][i] = 1 + (fit['F'][i-1]+f-1.)*np.exp(-(t-t_data[i-1])/tF)
-                
-                # add decrement d to previous pulse, then calculate exponential decay based on time interval
-                fit['D1'][i] = 1 - (1-fit['D1'][i-1]*d1)*np.exp(-(t-t_data[i-1])/tD1)
-                
-                if 'D2' in fit:
-                    fit['D2'][i] = 1- ( 1- fit['D2'][ i-1]*d2)* np.exp( -( t -t_data[ i-1])/ tD2)
-                
-                if 'D3' in fit:
-                    fit['D3'][i] =  1- ( 1- fit['D3'][ i-1]*d3)* np.exp( -( t -t_data[ i-1])/ tD3)
+        self.filters_series= {
+        'iir_band_5_50':{},
+        'iir_band_300_1000':{}
+        }
 
-        return fit 
-    
-    #__________________________________________________________________________
-    def _fd(self, params, t_data,):
-        """ fit FD parameters and return amplitude vectors
-        
-        ---
-        Arguments
-        ---
-        t_data = 1D array of times at which inputs arrive (s) 
-        params = list of parameters, first two parameters are for facilitation 
-        (f increment and time constant respectively), remaining parameters for depression
-        
-        ---
-        Output
-        ---
-        A = 1D array of amplitude values at each input time in t_data
-        """
+        self.filters_series['iir_band_5_50']['high_5'] = signal.iirdesign(
+            wp = 5./nqst,
+            ws= 0.1/nqst,
+            gpass=1,
+            gstop=20,
+            ftype='butter')
 
-        # get time series for each F and D variable
-        #`````````````````````````````````````````
-        fit = self._fd_loop(params, t_data)
-        
-        # Combine all F and D variables to get amplitude time series A
-        #````````````````````````````````````````````
-        # temporary array for storing amplitudes
-        A = np.ones(fit[fit.keys()[0]].shape)
-        
-        # iterate through F and D variables in fit
-        for key, var in fit.iteritems():
-            
-            # if variable is an F or D variable (parameters are also stored in this dictionary)
-            if 'F' in key or 'D' in key:
-                
-                # multiply all F and D terms 
-                A = A*var
-                
-        # output 1D array of amplitudes at input times in t_data        
-        return A    
-    
-    #__________________________________________________________________________
-    def _fd_err(self, params, t_data, y_data, discount_slope=False):
-        """ Given FD parameters and data calculate error for single time series
-        
-        ---
-        Arguments
-        ---
-        t_data = 1D array of times at which inputs arrive (s) 
-        y_data = 1D array of measured amplitude values at input times in t_data
-        params = list of parameters, first two parameters are for facilitation 
-        (f increment and time constant respectively), remaining parameters for depression
-        
-        ---
-        Output
-        ---
-        ssq_error = sum of squares error between data in y_data and fd model with parameters in params
-        
-        """
-        
-        # get amplitudes from FD model with params
-        #````````````````````````````````````````
-        A = self._fd(params, t_data,)
-        
-        sq_error = (A-y_data)**2
-        
-        # add discount factor so that earlier values are weighted more
-        #````````````````````````````````````````````````````````````
-        if discount_slope:
-            discount = np.exp(-t_data/discount_slope)
-        else:
-            discount = np.ones(t_data.shape)
-        
-        # determine error
-        #````````````````
-        ssq_error = np.sum(discount*sq_error)
+        self.filters_series['iir_band_5_50']['low_50'] = signal.iirdesign(
+            wp = 50./nqst,
+            ws= 100./nqst,
+            gpass=1,
+            gstop=20,
+            ftype='butter')
 
-        # output sum of squared error
-        return ssq_error
-    
-    #__________________________________________________________________________
-    def _fd_err_mult(self, params, t_data_list, y_data_list, ):
-        """Given FD parameters and data calculate error for list of time series, where each list entry is a different input stream
-        
-        ---
-        Arguments
-        ---
-        t_data_list = list of 1D arrays of times at which inputs arrive (s) [input stream][input times]
-        y_data_list = list of 1D arrays of measured amplitude values at input times in t_data [input stream][input times]
-        params = list of parameters, first two parameters are for facilitation 
-        (f increment and time constant respectively), remaining parameters for depression
-        
-        ---
-        Output
-        ---
-        ssq_error = total sum of squares error between data in y_data_list and corresponding fd model with parameters in params
-        """
-        
-        # list to store error for each input stream
-        ssq_error=[]
-        
-        # iterate over input streams
-        for i, input_stream in enumerate(t_data_list):
-            
-            # add error for each stream to list
-            ssq_error.append(self._fd_err(params, t_data_list[i], y_data_list[i]))
-            
-        print 'error:', ssq_error
+        self.filters_series['iir_band_300_1000']['high_300'] = signal.iirdesign(
+            wp = 300./nqst,
+            ws= 200./nqst,
+            gpass=1,
+            gstop=20,
+            ftype='butter')
 
-        # output total error summed over all streams
-        return sum(ssq_error)
+        self.filters_series['iir_band_300_1000']['low_1000'] = signal.iirdesign(
+            wp = 1000./nqst,
+            ws= 1100./nqst,
+            gpass=1,
+            gstop=20,
+            ftype='butter')
 
+        # self.filters['iir_high_1000'] = signal.iirdesign(
+        #     wp = 1000./nqst,
+        #     ws = 600./nqst,
+        #     gpass=1.,
+        #     gstop=80.,)
+
+        self.filters['iir_high_300'] = signal.iirdesign(
+            wp = 300./nqst,
+            ws = 200./nqst,
+            gpass=1.,
+            gstop=80.,)
+        
+        # self.filters['iir_highpass_1000'] = signal.butter(
+        #     5,
+        #     [1000./nqst],
+        #     btype='high'
+        #     )
+
+        self.filters['iir_high_5'] = signal.iirdesign(
+            wp = 5./nqst,
+            ws= 0.1/nqst,
+            gpass=1,
+            gstop=20,
+            ftype='butter')
+
+    def _filter_raw_data(self, data_probe, data_induction, filters, hilbert_filters=[]):
+        '''
+        ==Args==
+        -data_probe : voltage data during baseline probes. organized as data_probe[channel][data type]
+            ~data types: 'data', 'blocks', 'comments', 'fs'
+            ~data_probe['apical']['data'] = array of voltage data with dimensions samples x blocks.  blocks where there is no probe (e.g. during induction) have a placeholder column of all zeros
+        -data_induction : voltage data during induction blocks. organized as data_induction[channel][data type][induction number]
+            ~data types : 'data', 'blocks', 'comments', 'fs'
+            ~~data_probe['apical']['data'][induction number] = 1d array of voltage data
+        -filters : dictionary as filters[filter key][b coefficients, a coefficients]
+        ==Out==
+        -data_probe, data_induction
+        ==Updates==
+        -filtered data are added to data_probe and data_induction as data_probe[channel key]['data_filt_filtername'][samples x blocks]
+        data_induction[channel key]['data_filt_filtername'][induction number][samples]
+        -filter coefficients are stored as data_probe[channel key]['filters'][b coefficients, a coefficients]
+        ==Comments==
+        '''
+        # iterate over channels in recorded data
+        for channel_key, channel in data_probe.iteritems():
+            # iterate over paths
+            for path, info in channel.iteritems():
+                data_probe[channel_key][path]['filters']={}
+                data_induction[channel_key][path]['filters']={}
+                # iterate over filters
+                for filt_key, filt in filters.iteritems():
+                    # apply filter to corresponding probe data
+                    probe_filtered = signal.filtfilt(filt[0],filt[1],info['data'], axis=0)
+                    # store filtered data
+                    data_probe[channel_key][path]['data_filt_'+filt_key]=probe_filtered
+                    # store filters
+                    data_probe[channel_key][path]['filters'][filt_key]=filt
+
+                    # if filt_key in hilbert_filters:
+                    #     probe_filtered_hilbert = np.abs(signal.hilbert(probe_filtered, axis=0))
+                    #     data_probe[channel_key][path]['data_filt_'+filt_key+'_hilbert'] = probe_filtered_hilbert
+
+                    data_induction[channel_key][path]['filters'][filt_key]=filt
+                    data_induction[channel_key][path]['data_filt_'+filt_key]=[]
+                    # if filt_key in hilbert_filters:
+                    #     data_induction[channel_key][path]['data_filt_'+filt_key+'_hilbert']=[]
+                    # iterate over inductions
+                    for induction_num, induction in enumerate(data_induction[channel_key][path]['data']):
+
+                        # filter the current induction data
+                        induction_filtered = signal.filtfilt(filt[0],filt[1],induction)
+                        # store filtered data
+                        data_induction[channel_key][path]['data_filt_'+filt_key].append(induction_filtered)
+
+                        # if filt_key in hilbert_filters:
+                        #     induction_filtered_hilbert = np.abs(signal.hilbert(induction_filtered, axis=0))
+                        #     data_induction[channel_key][path]['data_filt_'+filt_key+'_hilbert'].append(induction_filtered_hilbert)
+
+        return data_probe, data_induction
+
+    def _filter_raw_data_cascade(self, data_probe, data_induction, filters_series,):
+        '''
+        ==Args==
+        -data_probe : voltage data during baseline probes. organized as data_probe[channel][data type]
+            ~data types: 'data', 'blocks', 'comments', 'fs'
+            ~data_probe['apical']['data'] = array of voltage data with dimensions samples x blocks.  blocks where there is no probe (e.g. during induction) have a placeholder column of all zeros
+        -data_induction : voltage data during induction blocks. organized as data_induction[channel][data type][induction number]
+            ~data types : 'data', 'blocks', 'comments', 'fs'
+            ~~data_probe['apical']['data'][induction number] = 1d array of voltage data
+        -filters : dictionary as filters[filter key][b coefficients, a coefficients]
+        ==Out==
+        -data_probe, data_induction
+        ==Updates==
+        -filtered data are added to data_probe and data_induction as data_probe[channel key]['data_filt_filtername'][samples x blocks]
+        data_induction[channel key]['data_filt_filtername'][induction number][samples]
+        -filter coefficients are stored as data_probe[channel key]['filters'][b coefficients, a coefficients]
+        ==Comments==
+        '''
+        # iterate over channels in recorded data
+        for channel_key, channel in data_probe.iteritems():
+            # iterate over paths
+            for path, info in channel.iteritems():
+                data_probe[channel_key][path]['filters_cascade']={}
+                data_induction[channel_key][path]['filters_cascade']={}
+                # iterate over filters
+                for filt_key, filt in filters_series.iteritems():
+                    data_probe[channel_key][path]['filters_cascade'][filt_key]={}
+                    data_induction[channel_key][path]['filters_cascade'][filt_key]={}
+                    probe_filtered = copy.deepcopy(info['data'])
+                    for subfilt_key, subfilt in filt.iteritems():
+                        probe_filtered = signal.filtfilt(subfilt[0], subfilt[1], probe_filtered, axis=0)
+                        data_probe[channel_key][path]['filters_cascade'][filt_key][subfilt_key]=subfilt
+                        data_induction[channel_key][path]['filters_cascade'][filt_key][subfilt_key]=subfilt
+
+                    # store filtered data
+                    data_probe[channel_key][path]['data_filt_'+filt_key]=probe_filtered
+                    # hilbert
+                    #--------------
+                    # if filt_key in hilbert_filters:
+                    #     probe_filtered_hilbert = np.abs(signal.hilbert(probe_filtered, axis=0))
+                    #     data_probe[channel_key][path]['data_filt_'+filt_key+'_hilbert'] = probe_filtered_hilbert
+
+                    data_induction[channel_key][path]['data_filt_'+filt_key]=[]
+                    # hilbert
+                    # if filt_key in hilbert_filters:
+                    #     data_induction[channel_key][path]['data_filt_'+filt_key+'_hilbert']=[]
+                    # iterate over inductions
+                    for induction_num, induction in enumerate(data_induction[channel_key][path]['data']):
+
+                        induction_filtered = copy.deepcopy(induction)
+
+                        for subfilt_key, subfilt in filt.iteritems():
+                            # filter the current induction data
+                            induction_filtered = signal.filtfilt(subfilt[0],subfilt[1],induction_filtered)
+                        # store filtered data
+                        data_induction[channel_key][path]['data_filt_'+filt_key].append(induction_filtered)
+                        # hilbert
+                        # if filt_key in hilbert_filters:
+                        #     induction_filtered_hilbert = np.abs(signal.hilbert(induction_filtered, axis=0))
+                        #     data_induction[channel_key][path]['data_filt_'+filt_key+'_hilbert'].append(induction_filtered_hilbert)
+
+        return data_probe, data_induction
+
+        # load i
+
+    def _get_hilbert(self, data_probe, data_induction, hilbert_filters):
+        '''
+        '''
+        # iterate over channels in recorded data
+        for channel_key, channel in data_probe.iteritems():
+            # iterate over paths
+            for path, info in channel.iteritems():
+                # iterate over filters
+                for filt_key in hilbert_filters:
+                    # apply filter to corresponding probe data
+                    probe_hilbert = np.abs(signal.hilbert(info['data_filt_'+filt_key] - np.mean(info['data_filt_'+filt_key], axis=0), axis=0))
+                    # store filtered data
+                    data_probe[channel_key][path]['data_filt_'+filt_key+'_hilbert']=probe_hilbert
+                    data_induction[channel_key][path]['data_filt_'+filt_key+'_hilbert']=[]
+                    # iterate over inductions
+                    for induction_num, induction in enumerate(data_induction[channel_key][path]['data_filt_'+filt_key]):
+
+                        # filter the current induction data
+                        induction_hilbert = np.abs(signal.hilbert(induction-np.mean(induction)))
+                        # store filtered data
+                        data_induction[channel_key][path]['data_filt_'+filt_key+'_hilbert'].append(induction_hilbert)
+        return data_probe, data_induction
+#############################################################################
+# shapeplot functions
+#############################################################################
 class ShapePlot():
     """ create plot of neuron morphology with data as a colormap
 
@@ -1349,15 +3323,21 @@ class ShapePlot():
         colormap: matplotlib.cm colormap
         """
         # create list of points
-        morph_points=[]
-        indexes = []
-        data_values=[]
-        for tree_key, tree in morpho.iteritems():
-            for sec_i, sec in enumerate(tree):
-                for seg_i, seg in enumerate(sec):
-                    morph_points.append(seg)
-                    indexes.append(copy.copy(seg[0]))
-                    data_values.append(data[tree_key][sec_i][seg_i])
+        if type(morpho)==dict:
+            morph_points=[]
+            indexes = []
+            data_values=[]
+            for tree_key, tree in morpho.iteritems():
+                for sec_i, sec in enumerate(tree):
+                    for seg_i, seg in enumerate(sec):
+                        morph_points.append(seg)
+                        indexes.append(copy.copy(seg[0]))
+                        data_values.append(data[tree_key][sec_i][seg_i])
+
+        else:
+            morph_points=morpho
+            indexes = [val[0] for val in morph_points]
+            data_values = data
         
         # resort lists
         sort_list = np.argsort(indexes)
@@ -1411,10 +3391,101 @@ class ShapePlot():
         p.set_array(np.array(colors))
         # plot collection
         # axes.add_collection(p)
-        # show colorbar
+        # # show colorbar
         # plt.colorbar(p)
-        # autoscale axes
+        # # autoscale axes
         # axes.autoscale()
+        # plt.show(block=False)
+        return p, colors
+
+
+    # FIXME show synapse locations on shapeplot
+    def show_synapses(self, morpho, data, axes, width_scale=1, colormap=colormap.jet):
+        """ creates a shapeplot of a given neuron morphology with the given data
+
+        Arguments:
+        morpho: morphology structure with dimensions {tree}[section][segment](index, name, x, y, z, diam, parent_index)
+
+        data: single floating point values store in a structure with dimensions {tree}[section][segment]
+
+        axes: pyplot axes object
+
+        colormap: matplotlib.cm colormap
+        """
+        # create list of points
+        if type(morpho)==dict:
+            morph_points=[]
+            indexes = []
+            data_values=[]
+            for tree_key, tree in morpho.iteritems():
+                for sec_i, sec in enumerate(tree):
+                    for seg_i, seg in enumerate(sec):
+                        morph_points.append(seg)
+                        indexes.append(copy.copy(seg[0]))
+                        data_values.append(data[tree_key][sec_i][seg_i])
+
+        else:
+            morph_points=morpho
+            indexes = [val[0] for val in morph_points]
+            data_values = data
+        
+        # resort lists
+        sort_list = np.argsort(indexes)
+        morph_points_sorted = [morph_points[i] for i in sort_list]
+        data_values_sorted = [data_values[i] for i in sort_list]
+
+        # lists to store segment shapes and their data values (colors)
+        patches=[]
+        colors=[]
+
+        # iterate through child sections
+        for child_i, child in enumerate(morph_points_sorted):
+            # if segment is the root segment (parent index is -1)
+            if child[-1]==-1:
+                # skip, the root will be added as a parent to its children 
+                continue
+            # if not a root segment
+            else:
+                # find parent segment
+                parent_idx = child[-1]
+                parent = [val for i,val in enumerate(morph_points_sorted) if val[0]==parent_idx][0]
+            
+            # interpolate xyz values between parent and child
+            parent_point = (parent[2], parent[3], parent[4])
+            child_point = (child[2],child[3],child[4])
+            mid_point = self.interpolate_3d(point1=parent_point, point2=child_point, t=0.5)
+
+            # get diameter of parent and child 
+            parent_diam = width_scale*parent[5]
+            child_diam = width_scale*child[5]
+            mid_diam = (parent_diam+child_diam)/2.
+
+            # get data values for parent and child
+            parent_color = data_values_sorted[parent[0]]
+            child_color = data_values_sorted[child_i]
+
+            # create polygon patch to plot segment
+            parent_polygon = self.make_polygon(point1=parent_point, point2=mid_point, d1=parent_diam/2., d2=mid_diam/2.)
+            child_polygon =self.make_polygon(point1=child_point, point2=mid_point, d1=child_diam/2., d2=mid_diam/2.)
+
+            # add to list of patches
+            patches.append(parent_polygon)
+            colors.append(parent_color)
+            patches.append(child_polygon)
+            colors.append(child_color)
+        # print patches
+
+        # create patch collection
+        p = PatchCollection(patches, cmap=colormap, alpha=1.)
+        # set colors
+        p.set_array(np.array(colors))
+        # plot collection
+        # axes.add_collection(p)
+        # # show colorbar
+        # plt.colorbar(p)
+        # # autoscale axes
+        # axes.autoscale()
+        # plt.show(block=False)
         return p, colors
 
     # create 3d interpolation function
@@ -1475,1036 +3546,1222 @@ class ShapePlot():
         points = np.array([[x1_pos, y1_pos],[x1_neg, y1_neg],[x2_neg, y2_neg],[x2_pos, y2_pos]])
 
         return Polygon(points)
-
-class Weights():
-    """
-    measure weight change at group of synapses
-
-    saves initial and final weights at each active synapse across all simulated neurons (dcs polarity x synapses)
-    """
-    def __init__(self,p):
-        self.n_pol = len(p['field'])
-
-    def dw(self, p):
-        self.group_dw(p)
-        self.save_dw(p)
-        self.plot_dw_all(p, self.w_end_all)
-        self.plot_dw_mean(p, self.w_end_all)
-
-    def group_dw(self,p):
-        # arrays for storing all weight changes across neurons
-        self.w_end_all = np.empty([self.n_pol,0])
-        self.w_start_all = np.empty([self.n_pol,0])
-        # loop over experiments (neurons)
-        for data_file in os.listdir(p['data_folder']):
-            # check for proper data file format
-            if 'data' in data_file:
-
-                with open(p['data_folder']+data_file, 'rb') as pkl_file:
-                    data = pickle.load(pkl_file)
-
-                    # load data file
-                    # pkl_file = open(p['data_folder']+data_file, 'rb')
-                    # data = pickle.load(pkl_file)
-
-                    self.p = data['p']
-                    
-                    self.n_act_seg = len(self.p['seg_list'])
-                    
-                    # measure weight changes for individual neuron
-                    self.measure_dw(data)
-                    
-                    # add individual neuron to the group
-                    self.w_end_all = np.append(self.w_end_all,self.w_end,axis=1)
-                    self.w_start_all = np.append(self.w_start_all,self.w_start,axis=1)
-
-                # # close pickle file
-                # pkl_file.close()
-
-    def measure_dw(self, data):
-        # set up arrays to record final and initial weights at each active synapse
-        self.w_end = np.empty([self.n_pol,self.n_act_seg]) # polarity x segments
-        self.w_start = np.empty([self.n_pol,self.n_act_seg]) # polarity x segments
-
-        # find active synapses (all recorded segments were active)
-        # measure weight change at each active synapse
-
-        for tree_key,tree in data.iteritems():
-            if (data['p']['tree'] in tree_key) and ('_w' in tree_key):
-                for f_i,f in enumerate(data['p']['field']):
-                    cnt = -1
-                    for sec_i,sec in enumerate(data['p']['sec_idx']):
-                        for seg_i,seg in enumerate(data['p']['seg_idx'][sec_i]):
-                            cnt += 1
-                            self.w_end[f_i,cnt] = data[tree_key][f_i][sec][seg][-1]
-                            self.w_start[f_i,cnt] = data[tree_key][f_i][sec][seg][0]
-
-    def save_dw(self,p):
-        with open(p['data_folder']+'dw_all_'+p['experiment']+'.pkl', 'wb') as output:
-            pickle.dump(self.w_end_all, output,protocol=pickle.HIGHEST_PROTOCOL)
-
-    def plot_dw_all(self,p,dw):
-        # create figure
-        self.fig_dw_all = plt.figure()
-        # loop over n_pol
-        for field_i,field in enumerate(p['field']):
-            # plot
-            plt.plot(field_i*np.ones(len(dw[field_i,:])),dw[field_i,:],p['field_color'][field_i]+'.')
-        # save figure
-        self.fig_dw_all.savefig(p['data_folder']+'fig_dw_all'+'.png', dpi=250)
-        plt.close(self.fig_dw_all)
-    
-    def plot_dw_mean(self,p,dw):
-        # determine stats
-        dw_mean = np.mean(dw,axis=1)
-        dw_std = np.std(dw,axis=1)
-        dw_sem = stats.sem(dw,axis=1)
-        # create figure
-        self.fig_dw_mean = plt.figure()
-        # loop over n_pol
-        for field_i,field in enumerate(p['field']):
-            # plot
-            plt.errorbar(field_i,dw_mean[field_i],yerr=dw_sem[field_i],color = p['field_color'][field_i],fmt='.')
-        # save figure
-        self.fig_dw_mean.savefig(p['data_folder']+'fig_dw_mean'+'.png', dpi=250)
-        plt.close(self.fig_dw_mean)
-
-class Spikes():
-    """
-    detect spikes and determine where they originated
-    """
-    def __init__(self):
+#######################################################################################################################################################################################################################################
+# DEPRECATED
+#######################################################################################################################################################################################################################################
+class BuildFigDF:
+    '''
+    '''
+    def __init__(self, ):
+        '''
+        '''
         pass
 
-    def analysis_function(self, p):
-        self.initialize_vectors(p)
-        self.group_spikes(p)
-        self.spike_start(p)
-        self.save_spikes(p)
-        self.plot_spike_hist_soma(self.spiket_soma,p)
-        self.plot_spike_hist_dend(self.spike_dend_init,p)
+    def _shapeplot(self, ):
+        '''
+        '''
+        # print progress to terminal
+        #-----------------------------
+        print 'building figdf:', inspect.stack()[0][3]
 
-    def initialize_vectors(self,p):
-        self.n_pol = len(p['field'])
-        # initialize lists
-        self.spiket_soma = [] # soma spike times [polarity list][spikes array]
-        self.spiket_dend = [] # dendrite spike times [polarity list][spikes array]
-        self.sec_list = [] # keep track of sections (same dimensions as spiket_dend)
-        self.seg_list = [] # keep track of segments (same dimensions as spiket_dend)
-        self.cell_list_soma = []
-        self.cell_list_dend = []
-        self.win_list_soma = []
-        self.win_list_dend = []
-        # loop over polarity
-        for pol in range(self.n_pol):
-            self.spiket_soma.append(np.empty([1,0]))
-            self.spiket_dend.append(np.empty([1,0]))
-            self.sec_list.append([])
-            self.seg_list.append([])
-            self.cell_list_soma.append([])
-            self.cell_list_dend.append([])
-            self.win_list_soma.append([])
-            self.win_list_dend.append([])
+        # conditions for each figure
+        #----------------------------
+        figdict = {
+            # figure
+            #-------------------------------------------------
+            'anodal':{
+                # subgroup
+                'anodal':[
+                    # trace
+                    (20),
+                ]
+            },
+            'cathodal':{
+                # subgroup
+                'cathodal':[
+                    # trace
+                    (-20),
+                ]
+            },
+        }
+        # load default figure parameters and colors
+        #------------------------------------------
+        default     = self._default()
+        black       = self.black
+        gray        = self.gray
+        red         = self.red
+        red_light   = self.red_light
+        blue        = self.blue
+        blue_light  = self.blue_light
 
-    def group_spikes(self,p):
-        cell_num = -1   # track which cell number
-        for data_file in os.listdir(p['data_folder']):
-            # check for proper data file format
-            if 'data' in data_file:
-                cell_num+=1
-                # load data file
-                pkl_file = open(p['data_folder']+data_file, 'rb')
-                data = pickle.load(pkl_file)
-                # get parameters from specific experiment
-                self.p = data['p']
-                self.n_act_seg = len(self.p['seg_list'])
-                self.measure_spikes(data,self.p,cell_num)
+        # create figdf
+        #---------------------------------
+        figdf = self._build_figdf_from_dict(figdict)
+        # set trace level as index
+        figdf = figdf.reset_index().set_index('trace')
+        # get default parameters
+        figdf_default = pd.concat([default]*len(figdf))
+        # set index of defaultdf to match figdf
+        figdf_default.index=figdf.index
+        # add default df to figdf
+        figdf = pd.concat([figdf, figdf_default], axis=1, ignore_index=False)
 
-    def spike_window(self,p):
-        # determine windows for spike time detection [window number][min max]
-        bursts = range(p['bursts'])
-        pulses = range(p['pulses'])
-        burst_freq = p['burst_freq']
-        pulse_freq = p['pulse_freq']
-        nrn_fs = 1000.
-        fs = nrn_fs/p['dt']
-        warmup = p['warmup']
-        # for each input pulse their is a list containing the window start and stop time [window number][start,stop]
-        return [[warmup*fs+(burst)*fs/burst_freq+(pulse)*fs/pulse_freq,warmup*fs+(burst)*fs/burst_freq+(pulse+1)*fs/pulse_freq] for burst in bursts for pulse in pulses]
+        # fig parameters for all traces
+        #---------------------
+        # # figure level parameters
+        # # figdf['fig_topercent']=False
+        # figdf['fig_ylim_all']=False
+        # figdf['fig_xlim_all']=False
+        # # figdf['trace_markersize']=10
+        # # # print figdf.fig_nyticks
+        # # figdf['fig_nyticks']=5
+        # # figdf['fig_nxticks']=10
+        # figdf['fig_dyticks']=4
+        # figdf['fig_dxticks']=10
+        # # figdf['fig_ylim_all']=True
+        # # figdf['fig_xlim_all']=True
+        # figdf['fig_ymin']=-74
+        # figdf['fig_xmin']=0.
+        # # figdf['fig_xmax']=30.
+        # figdf['fig_ylabel']='Vm (mV)'
+        # figdf['fig_xlabel']='Time (ms)'
+        # # figdf['fig_dyticks']=.2
+        # # figdf['fig_dxticks']=20
+        # # # trace level parameters
+        # figdf['trace_ealpha']=.7
+        # figdf['error_style']='shade'
+        # figdf['trace_linewidth']=4
+        # # figdf['fig_xscale']=1./40
+        # # figdf['fig_barwidth']=0.8
+        # # figdf['fig_data_style']='point'
+        # figdf['fig_xtick_decimals']=0
+        # figdf['fig_ytick_decimals']=0
+        # # figdf['fig_set_xscale']='symlog'
 
-    def measure_spikes(self,data,p,cell_num=0):
-        # nrn_fs = 1000. # conversion from seconds to miliseconds
-        # fs = nrn_fs/p['dt'] # sampling rate in samples/second
-        window  = self.spike_window(p) # list of spike windows [window #][start,stop]
-        
-        # detect spikes for individual neurons
-        for pol in range(self.n_pol):
+
+
+        # # individual trace parameters
+        # #----------------------------
+        # # preallocate columns as object type
+        # figdf['trace_color']=None
+        # figdf['trace_ecolor']=None
+        # # figdf['fig_xticks']=None
+        # # reset index
+        # figdf = figdf.reset_index().set_index(['figure', 'subgroup', 'trace'])
+
+        # # get all figure, subgroup, trace combinations
+        # idx_keys = figdf.index.unique().values
+        # # iterate over combinations
+        # for key in idx_keys:
+
+        #     # set colors
+        #     #------------------------------------
+        #     # cathodal
+        #     if key[2][0]<0:
+        #         figdf.at[key, 'trace_color']=blue
+        #         figdf.at[key, 'trace_ecolor']=blue
+        #     # control
+        #     if key[2][0]==0:
+        #         figdf.at[key, 'trace_color']=black
+        #         figdf.at[key, 'trace_ecolor']=black
+        #     # anodal
+        #     if key[2][0]>0:
+        #         figdf.at[key, 'trace_color']=red
+        #         figdf.at[key, 'trace_ecolor']=red
+
+        return figdf
+
+    def _dose_response(self, ):
+        '''
+        '''
+        # print progress to terminal
+        #-----------------------------
+        print 'building figdf:', inspect.stack()[0][3]
+
+        # conditions for each figure
+        #----------------------------
+        figdict = {
+            # figure
+            #-------------------------------------------------
+            'all':{
+                # subgroup
+                'all':[
+                    # trace
+                    (-20, ),
+                    (-5, ),
+                    (-1, ),
+                    (-0.5, ),
+                    (0, ),
+                    (0.5, ),
+                    (1, ),
+                    (5, ),
+                    (20, ),
+                ]
+            },
+            # figure
+            # -------------------------------------------------
+            '6_8_10':{
+                # subgroup
+                '6_8_10':[
+                    # trace
+                    (-20, (6,8,10)),
+                    (-5, (6,8,10)),
+                    (-1, (6,8,10)),
+                    (-0.5, (6,8,10)),
+                    (0, (6,8,10)),
+                    (0.5, (6,8,10)),
+                    (1, (6,8,10)),
+                    (5, (6,8,10)),
+                    (20, (6,8,10)),
+                ]
+            },
+            # figure
+            # -------------------------------------------------
+            '6_8_10_12':{
+                # subgroup
+                '6_8_10_12':[
+                    # trace
+                    (-20, (6,8,10,12)),
+                    (-5, (6,8,10, 12)),
+                    (-1, (6,8,10,12)),
+                    (-0.5, (6,8,10,12)),
+                    (0, (6,8,10,12)),
+                    (0.5, (6,8,10,12)),
+                    (1, (6,8,10,12)),
+                    (5, (6,8,10,12)),
+                    (20, (6,8,10,12)),
+                ]
+            },
+            # figure
+            # -------------------------------------------------
+            '14':{
+                # subgroup
+                '14':[
+                    # trace
+                    (-20, 14),
+                    (-5, 14),
+                    (-1, 14),
+                    (-0.5, 14),
+                    (0, 14),
+                    (0.5, 14),
+                    (1, 14),
+                    (5, 14),
+                    (20, 14),
+                ]
+            },
+            '12':{
+                # subgroup
+                '12':[
+                    # trace
+                    (-20, 12),
+                    (-5, 12),
+                    (-1, 12),
+                    (-0.5, 12),
+                    (0, 12),
+                    (0.5, 12),
+                    (1, 12),
+                    (5, 12),
+                    (20, 12),
+                ]
+            },
+        }
+        # load default figure parameters and colors
+        #------------------------------------------
+        default   = self._default()
+        black       = self.black
+        gray        = self.gray
+        red         = self.red
+        red_light   = self.red_light
+        blue        = self.blue
+        blue_light  = self.blue_light
+
+        # create figdf
+        #---------------------------------
+        figdf = self._build_figdf_from_dict(figdict)
+        # set trace level as index
+        figdf = figdf.reset_index().set_index('trace')
+        # get default parameters
+        figdf_default = pd.concat([default]*len(figdf))
+        # set index of defaultdf to match figdf
+        figdf_default.index=figdf.index
+        # add default df to figdf
+        figdf = pd.concat([figdf, figdf_default], axis=1, ignore_index=False)
+
+        # fig parameters for all traces
+        #---------------------
+        # figure level parameters
+        # figdf['fig_topercent']=False
+        figdf['fig_ylim_all']=False
+        figdf['fig_xlim_all']=False
+        # figdf['trace_markersize']=10
+        # # print figdf.fig_nyticks
+        # figdf['fig_nyticks']=5
+        # figdf['fig_nxticks']=10
+        # figdf['fig_dyticks']=.2
+        figdf['fig_dxticks']=np.exp(10)
+        # figdf['fig_ylim_all']=True
+        # figdf['fig_xlim_all']=True
+        # figdf['fig_ymin']=1.2
+        figdf['fig_xmin']=-30.
+        figdf['fig_xmax']=30.
+        figdf['fig_ylabel']='Normalized weight'
+        figdf['fig_xlabel']='Electric field (V/m)'
+        # figdf['fig_dyticks']=.2
+        # figdf['fig_dxticks']=20
+        # # trace level parameters
+        # figdf['error_alpha']=1
+        # figdf['error_style']='shade'
+        # figdf['trace_linewidth']=4
+        # figdf.at[slice(None), 'trace_ecolor'] = gray
+        figdf['fig_xscale_log']=False
+        figdf['fig_barwidth']=0.8
+        figdf['fig_data_style']='point'
+        figdf['fig_xtick_decimals']=1
+        figdf['fig_ytick_decimals']=2
+        figdf['fig_set_xscale']='symlog'
+
+
+        # individual trace parameters
+        #----------------------------
+        # preallocate columns as object type
+        figdf['trace_color']=None
+        figdf['trace_ecolor']=None
+        figdf['fig_xticks']=None
+        # reset index
+        figdf = figdf.reset_index().set_index(['figure', 'subgroup', 'trace'])
+
+        locations = [-20, -5, -1, 0, 1, 5, 20]
+        locations_log = []
+        for location in locations:
+            if location<0:
+                new_loc = -np.log(np.abs(location)+1)
+            else:
+                new_loc = np.log(np.abs(location)+1)
+            locations_log.append(new_loc)
+
+
+
+        # get all figure, subgroup, trace combinations
+        idx_keys = figdf.index.unique().values
+        # iterate over combinations
+        for key in idx_keys:
+
+            # set trace location to field magnitude
+            #------------------------------------
+            # figdf.at[key, 'trace_location'] = locations.index(key[2][0])
+            figdf.at[key, 'trace_location'] = key[2][0]
+            # figdf.at[key, 'trace_location'] = locations_log[locations.index(key[2][0])]
+            # figdf.at[key, 'trace_location'] = np.log(key[2][0]+1)
+            figdf.at[key, 'trace_label'] = key[2][0]
+            figdf.at[key, 'fig_xticks'] = locations
+
+            # set colors
+            #------------------------------------
+            # cathodal
+            if key[2][0]<0:
+                figdf.at[key, 'trace_color']=blue
+            # control
+            if key[2][0]==0:
+                figdf.at[key, 'trace_color']=black
+            # anodal
+            if key[2][0]>0:
+                figdf.at[key, 'trace_color']=red
+
+            figdf.at[key, 'trace_ecolor']=gray
+
+
+
+
+
+            if 'control' in key[2]:
+                if key[2][0]=='weak5Hz':
+                    figdf.at[key, 'trace_color']=gray
+                    figdf.at[key, 'error_color']=gray
+                else:
+                    figdf.at[key, 'trace_color']=black
+                    figdf.at[key, 'error_color']=black
+            elif 'anodal' in key[2]:
+                if key[2][0]=='weak5Hz':
+                    figdf.at[key, 'trace_color']=red_light
+                    figdf.at[key, 'error_color']=red_light
+                else:
+                    figdf.at[key, 'trace_color']=red
+                    figdf.at[key, 'error_color']=red
+            elif 'cathodal' in key[2]:
+                figdf.at[key, 'trace_color']=blue
+                figdf.at[key, 'error_color']=blue
+            elif 'trough' in key[2]:
+                figdf.at[key, 'trace_color']=red
+                figdf.at[key, 'error_color']=red
+            elif 'peak' in key[2]:
+                figdf.at[key, 'trace_color']=blue
+                figdf.at[key, 'error_color']=blue
+
+        return figdf
+
+    def _trace_mean(self, ):
+        '''
+        '''
+        # print progress to terminal
+        #-----------------------------
+        print 'building figdf:', inspect.stack()[0][3]
+
+        # conditions for each figure
+        #----------------------------
+        figdict = {
+            # figure
+            #-------------------------------------------------
+            'all_soma':{
+                # subgroup
+                'all_soma':[
+                    # trace
+                    (-20, (6,8,10,12), 'soma'),
+                    # (-5, ),
+                    # (-1, ),
+                    # (-0.5, ),
+                    (0, (6,8,10,12), 'soma'),
+                    # (0.5, ),
+                    # (1, ),
+                    # (5, ),
+                    (20, (6,8,10,12), 'soma'),
+                ]
+            },
+            'all_axon':{
+                # subgroup
+                'all_axon':[
+                    # trace
+                    (-20, (6,8,10,12), 'axon'),
+                    # (-5, ),
+                    # (-1, ),
+                    # (-0.5, ),
+                    (0, (6,8,10,12), 'axon'),
+                    # (0.5, ),
+                    # (1, ),
+                    # (5, ),
+                    (20, (6,8,10,12), 'axon'),
+                ]
+            },
+            # figure
+            #-------------------------------------------------
+            'all_dendrite':{
+                # subgroup
+                'all_dendrite':[
+                    # trace
+                    (-20, (6,8,10,12), 'apical_tuft'),
+                    # (-5, ),
+                    # (-1, ),
+                    # (-0.5, ),
+                    (0, (6,8,10,12), 'apical_tuft'),
+                    # (0.5, ),
+                    # (1, ),
+                    # (5, ),
+                    (20, (6,8,10,12), 'apical_tuft'),
+                ]
+            },
+            # figure
+            #-------------------------------------------------
+            '14_dendrite':{
+                # subgroup
+                '14_dendrite':[
+                    # trace
+                    (-20, (14), 'apical_tuft'),
+                    # (-5, ),
+                    # (-1, ),
+                    # (-0.5, ),
+                    (0, (14), 'apical_tuft'),
+                    # (0.5, ),
+                    # (1, ),
+                    # (5, ),
+                    (20, (14), 'apical_tuft'),
+                ]
+            },
+        }
+        # load default figure parameters and colors
+        #------------------------------------------
+        default     = self._default()
+        black       = self.black
+        gray        = self.gray
+        red         = self.red
+        red_light   = self.red_light
+        blue        = self.blue
+        blue_light  = self.blue_light
+
+        # create figdf
+        #---------------------------------
+        figdf = self._build_figdf_from_dict(figdict)
+        # set trace level as index
+        figdf = figdf.reset_index().set_index('trace')
+        # get default parameters
+        figdf_default = pd.concat([default]*len(figdf))
+        # set index of defaultdf to match figdf
+        figdf_default.index=figdf.index
+        # add default df to figdf
+        figdf = pd.concat([figdf, figdf_default], axis=1, ignore_index=False)
+
+        # fig parameters for all traces
+        #---------------------
+        # figure level parameters
+        # figdf['fig_topercent']=False
+        figdf['fig_ylim_all']=False
+        figdf['fig_xlim_all']=False
+        # figdf['trace_markersize']=10
+        # # print figdf.fig_nyticks
+        # figdf['fig_nyticks']=5
+        # figdf['fig_nxticks']=10
+        figdf['fig_dyticks']=4
+        figdf['fig_dxticks']=10
+        # figdf['fig_ylim_all']=True
+        # figdf['fig_xlim_all']=True
+        figdf['fig_ymin']=-74
+        figdf['fig_xmin']=0.
+        # figdf['fig_xmax']=30.
+        figdf['fig_ylabel']='Vm (mV)'
+        figdf['fig_xlabel']='Time (ms)'
+        # figdf['fig_dyticks']=.2
+        # figdf['fig_dxticks']=20
+        # # trace level parameters
+        figdf['trace_ealpha']=.7
+        figdf['error_style']='shade'
+        figdf['trace_linewidth']=4
+        # figdf['fig_xscale']=1./40
+        # figdf['fig_barwidth']=0.8
+        # figdf['fig_data_style']='point'
+        figdf['fig_xtick_decimals']=0
+        figdf['fig_ytick_decimals']=0
+        # figdf['fig_set_xscale']='symlog'
+
+
+
+        # individual trace parameters
+        #----------------------------
+        # preallocate columns as object type
+        figdf['trace_color']=None
+        figdf['trace_ecolor']=None
+        # figdf['fig_xticks']=None
+        # reset index
+        figdf = figdf.reset_index().set_index(['figure', 'subgroup', 'trace'])
+
+        # get all figure, subgroup, trace combinations
+        idx_keys = figdf.index.unique().values
+        # iterate over combinations
+        for key in idx_keys:
+
+            # set colors
+            #------------------------------------
+            # cathodal
+            if key[2][0]<0:
+                figdf.at[key, 'trace_color']=blue
+                figdf.at[key, 'trace_ecolor']=blue
+            # control
+            if key[2][0]==0:
+                figdf.at[key, 'trace_color']=black
+                figdf.at[key, 'trace_ecolor']=black
+            # anodal
+            if key[2][0]>0:
+                figdf.at[key, 'trace_color']=red
+                figdf.at[key, 'trace_ecolor']=red
+
+        return figdf
+
+    def _default(self):
+        '''
+        '''
+        # set dpi for final png image
+        #----------------------------
+        self.dpi=350
+
+        # colors for plots
+        #-------------------
+        self.black = (0,0,0)
+        self.gray = (0.7,0.7, 0.7)
+        self.red = (1,0,0)
+        self.red_light = (1,0.7, 0.7)
+        self.blue=(0,0,1)
+        self.blue_light = (0.7, 0.7, 1)
+
+        all_dict={
+        # hide the top and right axes boundaries
+            'fig_dpi':350,
+            'fig_boxoff':True,
+            # axes and tick labels
+            'fig_axes_linewidth':[4],
+            'fig_xlabel_fontsize':[25],
+            'fig_ylabel_fontsize':[25],
+            'fig_xlabel_fontweight':'heavy',
+            'fig_ylabel_fontweight':'heavy',
+            'fig_xtick_fontsize':[15],
+            'fig_ytick_fontsize':[15],
+            'fig_xtick_fontweight':'heavy',
+            'fig_ytick_fontweight':'heavy',
+            # figure tight layout
+            'fig_tight_layout':True,
+        }
+        all_df = pd.DataFrame(all_dict, dtype='object')
+
+        return all_df
+
+    def _build_figdf_from_dict(self, figdict):
+        '''
+        '''
+        # build multiindex for trace parameters
+        multi_list = []
+        level_names = ['figure','subgroup', 'trace']
+        for level_1_key, level_1 in figdict.iteritems():
+            for level_2_key, level_2 in level_1.iteritems():
+                for level_3_i, level_3_key in enumerate(level_2):
+                    multi_list.append((level_1_key, level_2_key, level_3_key))
+
+        multiindex = pd.MultiIndex.from_tuples(multi_list, names=level_names)
+        # build dataframe
+        figdf = pd.DataFrame(index=multiindex, dtype='object')
+
+        return figdf
+
+class Stats:
+    '''
+    '''
+    def _pairwise_ttests(self, df_sorted, variable, array_funcs=[], array_func_kws=[]):
+        '''
+        '''
+        # stats
+
+        data={}
+        for tracekey in df_sorted.keys():
+            # get series from df sorted
+            trace_series = df_sorted[tracekey][variable]
+
+            # convert to array
+            data[tracekey] = functions._2array(trace_series, remove_nans=True, remove_nans_axis=1, array_funcs=array_funcs, array_func_kws=array_func_kws)#*1000
+
+            # FIXME how to apply array functions here
+            if type(data[tracekey])==np.ndarray and data[tracekey].shape[0]>0:
+                print tracekey, data[tracekey].shape
+                for i, array_func in enumerate(array_funcs):
+                    data[tracekey]= array_func(data[tracekey], **array_func_kws[i])
+
+        # get pairwise combinations of traces
+        combos = itertools.combinations(data.keys(), 2)
+        ttests = {}
+        for combo in combos:
+            # print combo[0], combo[1]
+            # print data[combo[0]]
+            # print data[combo[1]]
+            ttests[combo] = stats.ttest_ind(data[combo[0]], data[combo[1]])
+
+        return ttests
+
+
+    def _linregress(self, df_sorted, x_variable, y_variable, array_funcs_x=[], array_func_kws_x=[], array_funcs_y=[], array_func_kws_y=[]):
+        '''
+        '''
+        regressions={}
+        data_x={}
+        data_y={}
+        for tracekey in df_sorted:
+            trace_series_x = df_sorted[tracekey][x_variable]
+            trace_series_y = df_sorted[tracekey][y_variable]
+
+            data_x[tracekey] = functions._2array(trace_series_x, remove_nans=True, remove_nans_axis=1,)
+            data_y[tracekey] = functions._2array(trace_series_y, remove_nans=True, remove_nans_axis=1,)
+
+            # apply array functions
+            for i, array_func in enumerate(array_funcs_x):
+                data_x[tracekey]= array_func(data_x[tracekey], **array_func_kws[i])
+            for i, array_func in enumerate(array_funcs_y):
+                data_y[tracekey]= array_func(data_y[tracekey], **array_func_kws[i])
+
+            slope, intercept, r_value, p_value, std_err = stats.linregress(x=data_x[tracekey], y=data_y[tracekey])
+
+            regressions[tracekey]['x_variable'] = x_variable
+            regressions[tracekey]['y_variable'] = y_variable
+            regressions[tracekey]['slope'] = slope
+            regressions[tracekey]['intercept'] = intercept
+            regressions[tracekey]['r_value'] = r_value
+            regressions[tracekey]['p_value'] = p_value
+            regressions[tracekey]['std_err'] = std_err
             
-            # detect soma spikes
-            self.spikes_soma = self.detect_spikes(data['soma_v'][pol][0][0])['times']
-            if self.spikes_soma.size!=0:
-                
-                # add spike times to array
-                self.spiket_soma[pol] = np.append(self.spiket_soma[pol],self.spikes_soma*p['dt'],axis=1)
-
-                # track cell number
-                for spike_i,spike in enumerate(self.spikes_soma[0,:]):
-                    # detect the window that the spike occurred in, indexed by the onset time of the window
-                    spike_soma_win = [win[0] for win in window if (spike >= win[0]) and (spike < win[1]) ]
-                    self.cell_list_soma[pol].append(cell_num)
-                    self.win_list_soma[pol].append(spike_soma_win)
-            
-            # detect dendritic spikes and track location
-            cnt=-1
-            for sec_i,sec in enumerate(data[p['tree']+'_v'][pol]): # loop over sections
-                for seg_i,seg in enumerate(data[p['tree']+'_v'][pol][sec_i]): # loop over segemnts
-                    cnt+=1
-                    # detect spikes
-                    spikes_dend = self.detect_spikes(np.array(data[p['tree']+'_v'][pol][sec_i][seg_i]))['times']
-                    if spikes_dend.size!=0:
-                        # add spike times to array
-                        self.spiket_dend[pol] = np.append(self.spiket_dend[pol],spikes_dend,axis=1)
-                        # spiket_dend_track = np.append(spiket_dend_track,spikes_dend,axis=1)
-                        # for each spike store the section, segment, cell number in the appropriate list
-                        for spike in spikes_dend[0,:]:
-                            spike_dend_win = [win[0] for win in window if (spike >= win[0]) and (spike < win[1]) ]
-                            self.sec_list[pol].append(sec_i)
-                            self.seg_list[pol].append(seg_i)
-                            self.cell_list_dend[pol].append(cell_num)
-                            self.win_list_dend[pol].append(spike_dend_win)
-
-    def spike_start(self,p):
-        # determine windows for spike time detection [window number][min max]
-        bursts = range(p['bursts'])
-        pulses = range(p['pulses'])
-        burst_freq = p['burst_freq']
-        pulse_freq = p['pulse_freq']
-        fs = 1./p['dt']
-        warmup = p['warmup']
-        # for each input pulse their is a list containing the window start and stop time [window number][start,stop]
-        window =  [[warmup*fs+(burst)*1000*fs/burst_freq+(pulse)*1000*fs/pulse_freq,warmup*fs+(burst)*1000*fs/burst_freq+(pulse+1)*1000*fs/pulse_freq] for burst in bursts for pulse in pulses]
-
-        # numpy array for storing minumum spike time for each cell 
-        self.spike_dend_init = []   # minimum spike time for each cell
-        self.spike_dend_init_sec = []   # section where first spike occured
-        self.spike_dend_init_seg = []   # segment where first spike occured
-        self.spike_dend_init_cell = [] # keep track of cell number
-        self.spike_dend_init_win = [] # timing of presynaptic input 
-        # loop over polarities
-        for pol in range(self.n_pol):
-            # list all cells with a dendritic spike
-            cells = list(set(self.cell_list_dend[pol]))
-            # numpy array for storing minumum spike time for each cell 
-            self.spike_dend_init.append([]) # minimum spike time for each cell
-            self.spike_dend_init_sec.append([]) # section where first spike occured
-            self.spike_dend_init_seg.append([]) # segment where first spike occured
-            self.spike_dend_init_cell.append([]) # keep track of cell number
-            self.spike_dend_init_win.append([]) # keep track of cell number
-            # loop over cells
-            for cell_i,cell in enumerate(cells):
-                # print len(self.spiket_dend[pol][0,:])
-                # print len(self.cell_list_dend[pol])
-                # for each cell list all dendritic spike times
-                spiket_dend = [spikes for spike_i,spikes in enumerate(self.spiket_dend[pol][0,:]) if self.cell_list_dend[pol][spike_i]==cell]
-                # keep track of the index for in the full list of spike times
-                spikei_dend = [spike_i for spike_i,spikes in enumerate(self.spiket_dend[pol][0,:]) if self.cell_list_dend[pol][spike_i]==cell]
-                # loop over spike windows
-                for win in window:
-                    # return spikes for this cell that fit the window
-                    spiket_dend_win = [spike for spike in spiket_dend if spike >= win[0] and spike < win[1]]
-                    # keep track of indeces
-                    spikei_dend_win = [spike for spike_i,spike in enumerate(spikei_dend) if spiket_dend[spike_i] >= win[0] and spiket_dend[spike_i] < win[1]]
-                    # check if spike was found
-                    if spiket_dend_win:
-                        # print min(spiket_dend_win)/fs
-                        # index in full list for first spike in current time window in current cell
-                        spike_idx = spikei_dend_win[spiket_dend_win.index(min(spiket_dend_win))]
-                        # store minimum spike time and keep track of section, segment, and cell number
-                        self.spike_dend_init[pol].append(min(spiket_dend_win)/fs)
-                        self.spike_dend_init_sec[pol].append(self.sec_list[pol][spike_idx])
-                        self.spike_dend_init_seg[pol].append(self.seg_list[pol][spike_idx])
-                        self.spike_dend_init_cell[pol].append(cell)
-                        self.spike_dend_init_win[pol].append(win[0])
-            
-            self.spike_dend_init[pol] = np.array([self.spike_dend_init[pol]])
-
-    def spike_start_compare(self,p):
-        cell1 = cell.CellMigliore2005(p)
-        spikes = {}
-        for tree_i,tree in cell1.geo.iteritems():
-            spikes[tree_key] = []
-            for field_i,field in p['field']:
-                spikes[tree_key].append([])
-                for sec_i,sec in tree:
-                    spikes[tree_key][field_i].append([])
-                    for seg_i,seg in sec:
-                        spikes[tree_key][field_i][sec_i].append({})
-                        spikes[tree_key][field_i][sec_i][seg_i]['times'] = []
-                        spikes[tree_key][field_i][sec_i][seg_i]['train'] = []
-                        spikes[tree_key][field_i][sec_i][seg_i]['p'] = []
-                        spikes[tree_key][field_i][sec_i][seg_i]['xcorr'] = []
-
-
-        for data_file in os.listdir(p['data_folder']):
-            # check for proper data file format
-            if 'data' in data_file:
-                with open(p['data_folder']+data_file, 'rb') as pkl_file:
-                    data = pickle.load(pkl_file)
-
-                for tree_key,tree in spikes:
-                    for field_i,field in tree:
-                        for sec_i,sec in field:
-                            for seg_i,seg in sec:
-                                spike_temp = self.detect_spikes(data[tree_key+'_v'][field_i][sec_i][seg_i],thresshold=-20)
-                                if tree_key is 'soma':
-                                    spike_temp_soma =spike_temp 
-
-                                seg['times'].append(spike_temp['times'])
-                                seg['train'].append(spike_temp['train'])
-                                seg['p'].append(data['p'])
-                                if tree_key is not 'soma':
-                                    xcorr_temp = scipy.signal.correlate(spike_temp['train'],spikes['soma'][field_i])
-
-                                seg['xcorr'].append(spike_temp['xcorr'])
-                                
-
-
-                                spikes = self.detect_spikes(seg,threshold = -20)
-
-
-        # loop over polarities
-        # loop over cells
-        # loop over spike windows
-        # compare first dendritic spike to first somatic spike
-        # get cross correlation for all time delays
-        # determine whether these features influence field effects 
-
-    def save_spikes(self,p):
-        with open(p['data_folder']+'spiket_soma_all_'+p['experiment']+'.pkl', 'wb') as output:
-            pickle.dump(self.spiket_soma, output,protocol=pickle.HIGHEST_PROTOCOL)
-
-        with open(p['data_folder']+'spiket_dend_all_'+p['experiment']+'.pkl', 'wb') as output:
-            pickle.dump(self.spiket_dend, output,protocol=pickle.HIGHEST_PROTOCOL)
-
-    def plot_spike_hist_soma(self,data,p):
-        warmup = p['warmup']
-        finish = p['tstop']
-        bins = np.linspace(warmup,finish ,(finish-warmup)/p['dt'])
-        self.fig_spike_hist_soma = plt.figure()
-        for pol in range(self.n_pol):
-            plt.hist(data[pol][0,:],bins=bins,color = p['field_color'][pol])
-        plt.title('Somatic spike time histogram')
-        plt.xlabel('spike onset (ms)')
-        plt.ylabel('count')
-        # save figure
-        self.fig_spike_hist_soma.savefig(p['data_folder']+'fig_spike_hist_soma'+'.png', dpi=250)
-        plt.close(self.fig_spike_hist_soma)
-
-    def plot_spike_hist_dend(self,data,p):
-        warmup = p['warmup']
-        finish = p['tstop']
-        bins = np.linspace(warmup,finish ,(finish-warmup)/p['dt'])
-        self.fig_spike_hist_dend = plt.figure()
-        for pol in range(self.n_pol):
-            plt.hist(data[pol][0,:],bins=bins,color = p['field_color'][pol])
-        plt.title('Dendritic spike time histogram')
-        plt.xlabel('spike onset (ms)')
-        plt.ylabel('count')
-        self.fig_spike_hist_dend.savefig(p['data_folder']+'fig_spike_hist_dend'+'.png', dpi=250)
-        plt.close(self.fig_spike_hist_dend)
-
-    def spikes_xcorr(self,data1,data2,p):
-        pass
-        # 
-
-
-    def detect_spikes(self,data,threshold=-20):
-        """
-        """
-        spike_times = np.asarray(np.where(np.diff(np.sign(data-threshold))>0))
-        spike_train = np.zeros([1,len(data)])
-        for time in spike_times:
-            spike_train[0,time] = 1 
-        # detect indeces where vector crosses threshold in the positive direction
-        return {'times':spike_times,'train':spike_train}
-
-class PlotRangeVar():
-    """ plot different range variables over time 
-    """
-    def __init__(self):
-        pass
-
-    def plot_all(self, p):
-        """ Plot times series data for all data files in folder without replotting
-
-        Arguments:
-
-        p : parameter dictionary containing the following entries
-            'data_folder' : string specifying the folder containing data and plots
-
-            'tree' : neuron subtree containing the data to plot
-
-            'sec_idx' : list of section indeces to plot
-
-            'seg_idx' : list of segments for each section to plot [section_num][segment] 
-
-            'plot_variables' : list of range variables to plot; e.g. ['v', 'i_hd']
-
-        """
-        # all files in directory
-        files = os.listdir(p['data_folder'])
-        
-        # files containing plot figures
-        plot_files = [file for file in files if 'trace' in file]
-        
-        # data files
-        data_files = [file for file in files if 'data' in file]
-        
-        # unique identifiers for each file type
-        plot_files_id = [file[-39:-4] for file in files if 'trace' in file]
-        data_files_id= [file[-39:-4] for file in files if 'data' in file]
-        
-        # iterate over all data files in folder
-        for file_i, file in enumerate(data_files):
-            
-            # check if plot already exists matching uid's
-            if data_files_id[file_i] not in plot_files_id:
-                print data_files_id[file_i] 
-                # open data file
-                with open(p['data_folder']+file, 'rb') as pkl_file:
-                    data = pickle.load(pkl_file)
-
-                # update specific experiment parameters
-                p_data = data['p']
-                
-                for path_key, path in p_data['p_path'].iteritems():
-                    # plot range variables (automatically saved to same folder)
-                    self.plot_trace(data=data, 
-                        trees=path['trees'], 
-                        sec_idx=path['sec_idx'], 
-                        seg_idx=path['seg_idx'],
-                        variables=path['plot_variables'],
-                        x_variables=path['x_variables'],
-                        file_name=path['trial_id'],
-                        group_trees=path['group_trees'])
-
-    def plot_trace(self, data, sec_idx=[], seg_idx=[], soma=True, axon=True, group_trees=True, variables=['v'], x_variables='t', xlim=[], ylim=[], file_name=''):
-        """ Create a figure containing a subplot for each segment specified in seg_idx
-
-        variable is a list of range variable key words indicating which varaible to plot.  A new figure is created and saved for each variable
-
-        data structure organized as:  data{'polarity'}{'path number'}{'tree'}[section number][segment number][data vector]
-
-        parameters that are specific to a given pathway are stored in data{'p'}{'p_path'}[path number]
-
-
-        """
-        # load parameters
-        p = data['p']
-
-        # number field intensities/polarities
-        n_pol = len(p['field'])
-    
-        # dictionary to hold figures
-        fig={}  
-
-        # iterate over pathways
-        for path_key, path in p['p_path'].iteritems():
-            sec_idx = path['sec_idx']
-            seg_idx = path['seg_idx']
-            print seg_idx
-            print sec_idx
-            
-            fig[path_key]={}
-            # iterate over list of y variables to plot
-            for var in variables:
-
-                fig[path_key][var] = {}
-
-                # iterate over list of x variables to plot
-                for x_var in x_variables:
-
-
-                    # if data from all subtrees in one plot
-                    if group_trees:
-
-                        # create figure
-                        fig[path_key][var][x_var] = plt.figure()
-
-                        # number of segments to plot
-                        nseg =  sum([sum(seg_i+1 for seg_i,seg in enumerate(sec)) for tree_key, tree in seg_idx.iteritems() for sec in tree if tree_key in path['trees'] ])+1
-
-                        # print nseg
-                        # plot soma trace?
-                        if soma:
-                            nseg+=1
-                        if axon:
-                            nseg+=1
-
-                        # columns and rows for subplot array    
-                        cols = int(math.ceil(math.sqrt(nseg)))
-                        rows = int(math.ceil(math.sqrt(nseg)))
-
-                    
-                    # if each subtree to get its own figure
-                    elif not group_trees:
-                        
-                        # create another dimension to store each subtree figure separately
-                        fig[path_key][var][x_var]={}
-                
-                    # count segments
-                    cnt=0
-
-                    # iterate over trees
-                    for tree_key, tree in seg_idx.iteritems():
-
-                        if not group_trees:
-                            cnt=0
-
-                        # check that there are active sections in the tree
-                        if tree:
-
-                            # if each subtree gets its own figure
-                            if not group_trees:
-                                fig[path_key][var][x_var][tree_key] = plt.figure()
-
-                                # number of segments to plot
-                                nseg =  sum([sum(seg_i+1 for seg_i,seg in enumerate(sec)) for sec in tree])+1
-                                
-                                # print'nseg:',nseg
-                                # plot soma trace?
-                                if soma:
-                                    nseg+=1
-                                if axon:
-                                    nseg+=1
-
-                                # columns and rows for subplot array    
-                                cols = int(math.ceil(math.sqrt(nseg)))
-                                rows = int(math.ceil(math.sqrt(nseg)))
-
-                                # print 'rows,cols:',rows,cols
-
-                            # iterate over sections
-                            for sec_i,sec in enumerate(tree):
-
-                                # derive section number from index
-                                sec_num = sec_idx[tree_key][sec_i]
-                                
-                                # iterate over segments
-                                for seg_i, seg in enumerate(sec):
-                                    
-                                    # count subplots (segments)
-                                    cnt+=1
-                                    
-                                    # create subplot
-                                    plt.subplot(rows, cols, cnt)
-
-                                    # get segment distance from soma
-                                    seg_dist = p['seg_dist'][tree_key][sec_num][seg]
-                                    
-                                    # plot title
-                                    plt.title(tree_key + ('%.2f'%seg_dist) )
-
-                                    # adjust limits
-                                    if var is 'v':
-                                        if xlim:
-                                            plt.xlim(xlim)
-                                        if ylim:
-                                            plt.ylim(ylim)
-                                    
-                                    # iterate over stimulation polarity
-                                    for f_i, f in enumerate(p['field']):
-                                    
-                                        # check if variable exists in the current section
-                                        if data[str(f)][path_key][tree_key+'_'+var][sec_i]:
-
-                                            # if not plotting the soma trace
-                                            if soma and cnt<nseg:
-
-                                                # retrieve time series to plot
-                                                v = data[str(f)][path_key][tree_key+'_'+var][sec_i][seg_i]
-
-                                                # retrieve x variable
-                                                if x_var =='t':
-                                                    # time vector
-                                                    xv = data[str(f)][path_key]['t']
-
-                                                # other variable from arguments
-                                                else:
-                                                    xv = data[str(f)][path_key][tree_key+'_'+x_var][sec_i][seg_i]
-
-
-                                            # set plot color based on stimulation polarity
-                                            color = p['field_color'][f_i]
-                                            
-                                            # add trace to corresponding subplot
-                                            plt.plot(xv, v, color=color)
-                                            plt.xlabel(x_var)
-                                            plt.ylabel(var)
-
-                            if soma:
-                                cnt+=1
-
-                                # if plotting soma trace
-                                for f_i, f in enumerate(p['field']):
-
-        
-                                    # if variable exists in soma data
-                                    if 'soma_'+var in data[str(f)][path_key].keys():
-                                        if len(data[str(f)][path_key]['soma_'+var][0][0])>0:
-                                        
-                                            # subplot for soma trace
-                                            plt.subplot(rows, cols, cnt)
-
-                                            # adjust limits
-                                            if var is 'v':
-                                                if xlim:
-                                                    plt.xlim(xlim)
-                                                if ylim:
-                                                    plt.ylim(ylim)
-
-                                            # retrieve data to plot
-                                            v = data[str(f)][path_key]['soma_'+var][0][0] 
-
-                                            # determine x variable to plot
-                                            if x_var =='t':
-                                                # time vector
-                                                xv = data[str(f)][path_key]['t']
-                                            else:
-                                                xv = data[str(f)][path_key]['soma_'+x_var][0][0]
-                                            
-                                            # set plot color
-                                            color = p['field_color'][f_i]
-                                            
-                                            plt.plot(xv, v, color=color)
-                                            plt.title('soma')
-                                            plt.xlabel(x_var)
-                                            plt.ylabel(var)
-
-                            if axon:
-                                cnt+=1
-
-                                # if plotting soma trace
-                                for f_i, f in enumerate(p['field']):
-
-                                    # if variable exists in soma data
-                                    if 'axon_'+var in data[str(f)][path_key].keys():
-                                        if len(data[str(f)][path_key]['axon_'+var][0][0])>0:
-                                        
-                                            # subplot for soma trace
-                                            plt.subplot(rows, cols, cnt)
-
-                                            # adjust limits
-                                            if var is 'v':
-                                                if xlim:
-                                                    plt.xlim(xlim)
-                                                if ylim:
-                                                    plt.ylim(ylim)
-
-                                            # retrieve data to plot
-                                            v = data[str(f)][path_key]['axon_'+var][0][0] 
-
-                                            # determine x variable to plot
-                                            if x_var =='t':
-                                                # time vector
-                                                xv = data[str(f)][path_key]['t']
-                                            else:
-                                                xv = data[str(f)][path_key]['axon_'+x_var][0][0]
-                                            
-                                            # set plot color
-                                            color = p['field_color'][f_i]
-                                            
-                                            plt.plot(xv, v, color=color)
-                                            plt.title('axon')
-                                            plt.xlabel(x_var)
-                                            plt.ylabel(var)
-                            
-                            # save figure
-                            # if each tree has separate figure
-                            if not group_trees:
-                                
-                                # info to add to file name
-                                file_name_add = 'path_'+path_key+'_'+tree_key+'_trace_'+x_var+'_x_'+var
-
-                                # save figure
-                                fig[path_key][var][x_var][tree_key].savefig(p['data_folder']+file_name_add+file_name+'.png', dpi=300)
-
-                                # close figure
-                                plt.close(fig[path_key][var][x_var][tree_key])
-
-                        # if all trees are in the same figure
-                        if group_trees:
-                            all_trees =''
-                            for tree_key, tree in seg_idx.iteritems():
-                                all_trees = all_trees+tree_key+'_'
-
-                            # info to add to file name
-                            file_name_add = all_trees+'path_'+path_key+'_''trace_'+x_var+'_x_'+var
-
-
-                        # if all trees are in the same figure
-                        if group_trees:
-                            all_trees =''
-                            for tree_key, tree in seg_idx.iteritems():
-                                all_trees = all_trees+tree_key+'_'
-
-                            # info to add to file name
-                            file_name_add = all_trees+'path_'+path_key+'_''trace_'+x_var+'_x_'+var
-
-                            # save and close figure
-                            fig[path_key][var][x_var].savefig(p['data_folder']+file_name_add+file_name+'.png', dpi=300)
-
-                            plt.close(fig[path_key][var][x_var])
-
-class IO():
-    """ create shape plot 
-    """
-    pass
-
-class Experiment:
-    """analyses for individual experiments
-    """
+        return regressions
+
+    def _cca(self, df_sorted, x_variables, y_variables):
+        '''
+        '''
+        x_data={}
+        y_data={}
+        cca={}
+        transformed={}
+        for tracekey in df_sorted.keys():
+            x_data[tracekey] = []
+            for x_i, x_var in enumerate(x_variables):
+
+                # get series from df sorted
+                trace_series = df_sorted[tracekey][x_var]
+
+                x_data[tracekey].append(functions._2array(trace_series, remove_nans=True, remove_nans_axis=1))
+
+            x_data[tracekey] = np.array(x_data[tracekey]).squeeze().T
+            y_data[tracekey] = []
+            for y_i, y_var in enumerate(y_variables):
+
+                # get series from df sorted
+                trace_series = df_sorted[tracekey][x_var]
+                y_data[tracekey].append(functions._2array(trace_series, remove_nans=True, remove_nans_axis=1))
+            y_data[tracekey] = np.array(y_data[tracekey]).squeeze().T
+            if x_data[tracekey].shape[0]>0:
+                cca[tracekey] = CCA()
+                cca[tracekey].fit(x_data[tracekey], y_data[tracekey])
+                x_c, y_c = cca[tracekey].transform(x_data[tracekey], y_data[tracekey])
+                transformed[tracekey]=[x_c, y_c]
+
+        return cca, transformed
+
+    def _anova_ind(self, df_sorted, variable):
+        '''
+        '''
+        data={}
+        for tracekey in df_sorted.keys():
+            # get series from df sorted
+            trace_series = df_sorted[tracekey][variable]
+
+            # convert to array
+            data[tracekey] = functions._2array(trace_series, remove_nans=True, remove_nans_axis=1)#*1000
+
+        # get pairwise combinations of traces
+
+        combos = itertools.combinations(data.keys(), 2)
+        ttests = {}
+        for combo in combos:
+            ttests[combo] = stats.ttest_ind(data[combo[0]], data[combo[1]])
+
+class IndexGetter:
+    ''' class for slicing data array based on specified conditions
+
+    ==Methods==
+    -__init__ : creates variable called conditions to be passed to other methods
+                -conditions should be a list of tuples [(condition type, [list of specific conditions])]
+                        -e.g. conditions = [('polarity',['anodal','cathodal']),
+                        ('syn_num',[[6,8],[10,12]])]
+
+
+    '''
     def __init__(self, **kwargs):
-        experiment = getattr(self, kwargs['experiment'])
+        '''
+        '''
+        if 'conditions' in kwargs:
+            conditions=kwargs['conditions']
+        else:
+            conditions=[('polarity', ['anodal','cathodal','control']), ('syn_num',[[6,8,10]]), ('dist', [[[0,200],[0,300]]]), ('path',[['1']])]
+        if 'group_data' in kwargs and 'variable' in kwargs:
+            self.idx_sets, self.combos = self._get_idx(group_data=kwargs['group_data'], variable=kwargs['variable'], conditions=conditions)
 
-        experiment(**kwargs) 
+    def _match_idx(self, group_data, variable1, variable2, variable1_idx_sets):
+        '''
+        '''
+        # FIXME
+        variable2_idx_sets=[]
+        for idx_set_i, idx_set in enumerate(variable1_idx_sets):
+            locations1 = [group_data[variable1]['locations'][temp] for temp in idx_set]
+            fields1 = [group_data[variable1]['field'][temp] for temp in idx_set]
+            trial_ids1 = [group_data[variable1]['trial_id'][temp] for temp in idx_set]
 
-    def _sigmoid_opt(self, params, *data):
-        """ function for fitting a sigmoid to data
 
-        Positional Arguments
-        params = list with 3 entries corresponding to parameters ymax, x50, and s respectively
 
-        data[0] = input data values
-        data[1] = output data values
+            idx_set2=[]
+            for loc_i, loc in enumerate(locations1):
+                location2_idx = [ temp_i for temp_i, temp in enumerate(group_data[variable2]['locations']) if temp==loc]
+                field2_idx = [ temp_i for temp_i, temp in enumerate(group_data[variable2]['field']) if temp==group_data[variable1]['field'][loc_i]]
+                trial_id2_idx = [ temp_i for temp_i, temp in enumerate(group_data[variable2]['trial_id']) if temp==group_data[variable1]['trial_id'][loc_i]]
+                idx2 = sorted(list(set.intersection(set(location2_idx), set(field2_idx), set(trial_id2_idx))))[0]
+                idx_set2.append(idx2)
 
-        Return
-        ssq_error = sum of squares error between sigmoid with parameters in param and output values in data[1]
-        """
-        ymax = params[0]
-        x50 = params[1]
-        s = params[2]
-        x = data[0]
-        y = data[1]
-        y_fit = ymax/(1+np.exp((x50-x)/s))
-        ssq_error = np.sum(np.square(y-y_fit))
-        return ssq_error
+            variable2_idx_sets.append(idx_set2)
 
-    def _sigmoid2_opt(self, params, *data):
-        """
-        """
-        ymax_1 = params[0]
-        x50_1 = params[1]
-        s_1 = params[2]
-        ymax_2 = params[3]
-        x50_2 = params[4]
-        s_2 = params[5]
-        x = data[0]
-        y = data[1]
-        y_fit = ymax_1/(1+np.exp((x50_1-x)/s_1)) - ymax_2/(1+np.exp((x50_2-x)/s_2))
-        ssq_error = np.sum(np.square(y-y_fit))
-        return ssq_error
 
-    def _get_spikes(self, **kwargs):
-        """ Retrieve spike data from individual simulations
+        return variable2_idx_sets
+
+    def _get_idx(self, group_data, variable, conditions):
+        ''' get indices of data entries with specified conditions
+
+        ==Args==
+        -group_data : group data structure organize as group_data[variable][info/condition type][recorded segment]
+        -conditions : list of tuples to specifify desired conditions [(condition type, [list of specific conditions])]
+                        -e.g. conditions = [('polarity',['anodal','cathodal']),
+                        ('syn_num',[[6,8],[10,12]])]
+                        -all possible combinations of the specified conditions will be returned in idx sets
+
+        ==Out==
+        -idx_sets : nested list of indices. first dimension contains an entry for each combination of the conditions specified [condition combination][indices in group_data]
+        -combos :  list of conditions for each combination in idx sets (same organization as conditions)
+        '''
+        # print 'getting indices'
+        condition_types = zip(*conditions)[0]
+        condition_lists = zip(*conditions)[1]
+        condition_combos = [temp for temp in itertools.product(*condition_lists)]
+        att_list=dir(self)
+        idx={}
+        idx_sets=[]
+        combos=[]
+        for combo_i, combo in enumerate(condition_combos):
+
+            for condition_i, condition in enumerate(combo):
+                
+                condition_type = condition_types[condition_i]
+
+                att = [temp for temp_i, temp in enumerate(att_list) if condition_type in temp][0]
+                
+                type_func = getattr(self, att)
+                # print type_func
+
+                idx[condition_type] = type_func(group_data=group_data, variable=variable, conditions=condition)
+                # if len(idx[condition_type])!=0:
+                    # print 'idx found:',condition_type, condition
+
+
+            condition_sets=[]
+            for condition_type_key in idx.keys():
+                condition_set = set(idx[condition_type_key])
+                condition_sets.append(condition_set)
+
+            # print condition_sets
+            idx_sets.append(sorted(list(set.intersection(*condition_sets)))) 
+            # print idx_sets
+            combo_rezip = zip(condition_types, combo)
+            combos.append(combo_rezip)
+
+        return idx_sets, combos
+
+    def _get_dist(self, group_data, variable, conditions=[]):
+        '''
+        '''
+
+        if len(conditions)==0:
+
+            idx=  [temp_i for temp_i, temp in enumerate(group_data[variable]['path_name']) if temp[0]!='None']
         
-        ==
-        KEYWORD ARGUMENTS:
-        data= structure containing time series voltage data organized as data{'polarity'}{'pathway'}{'tree_variable'}[section number][segment number][time series]
-        data also contains a parameter dictionary in data['p']
-        individual parameter dictionaries are stored for each pathway in data['p']['p_path']
+        else:# distance info
+            dist=[]
+            for path_i, path in enumerate(group_data[variable]['path_name']):
+                if path[0]=='None':
+                    dist.append('None')
 
-        threshold= threshold for detecting spikes
+                else:
+                    dist.append(group_data[variable]['p'][path_i]['p_path'][path[0]]['syn_dist'])
 
-        weakpath_bins=whether to include strong path time bins in weak path spike detection
 
-        ==
-        RETURN:
-        A dictionary containing spike data organized as spike_dictionary{'polarity'}{'pathway'}{'data type'}
+            idx= [temp_i for temp_i, temp in enumerate(dist) if temp in conditions]
 
-        ==
-        DATATYPES:
-        spikes_dend= list of all dendritic spike times
+        return idx
+
+    def _get_syn_num(self, group_data, variable, conditions=[], **kwargs):
+        '''
+        '''
+        if len(conditions)==0:
+            idx = [temp_i for temp_i, temp in enumerate(group_data[variable]['p'])]
+        else:
+            syn_num = []
+            for p_i, p in enumerate(group_data[variable]['p']):
+                path_syn_num=[]
+                for path_key, path in p['p_path'].iteritems():
+                    path_syn_num.append(path['syn_num'])
+                syn_num.append(path_syn_num)
+
+            # syn_num = [temp['p_path']['1']['syn_num']for temp_i, temp in enumerate(group_data[variable]['p'])]
+            idx = [temp_i for temp_i, temp in enumerate(syn_num) if bool(set(temp)&set(conditions))]
+        return idx
+
+    def _get_path(self, group_data, variable, conditions=[]):
+        '''
+        '''
+        if len(conditions)==0:
+            idx = [temp_i for temp_i, temp in enumerate(group_data[variable]['path_name'])]
+
+        else:
+            idx = [temp_i for temp_i, temp in enumerate(group_data[variable]['path_name']) if bool(set(temp)&set(conditions))]
+
+        return idx
+
+    def _get_polarity(self, group_data, variable, conditions):
+        '''
+        '''
+        idx = [temp_i for temp_i, temp in enumerate(group_data[variable]['polarity']) if temp == conditions]
+        return idx
+
+    def _get_magnitude(self, group_data, variable, conditions):
+        '''
+        '''
+        idx = [temp_i for temp_i, temp in enumerate(group_data[variable]['field']) if temp in conditions]
+        return idx
+
+    def _get_stdp_dt(self, group_data, variable, conditions):
+        '''
+        '''
+        print conditions
+        print group_data[variable]['stdp_dt']
+        idx = [temp_i for temp_i, temp in enumerate(group_data[variable]['stdp_dt']) if bool(set(temp)& set(conditions))]
+
+        return idx
+
+    def _get_pulse_freq(self, group_data, variable, conditions):
+        '''
+        '''
+        idx = [[temp_i for temp_i, temp in enumerate(group_data[variable]['pulse_freq']) if temp in conditions]]
+
+    def _get_tree(self, group_data, variable, conditions,):
+        '''
+        '''
+        # print 'getting tree'
+        idx = [temp_i for temp_i, temp in enumerate(group_data[variable]['locations']) if bool(set(temp)& set(conditions))]
+        return idx
+    
+    def _find_soma(self, group_data, variable):
+        '''
+        '''
+        soma_idx=[]
+        for location_i, location in enumerate(group_data[variable]['locations']):
+            # get trial_id
+            trial_id = group_data[variable]['trial_id'][location_i]
+            field = group_data[variable]['field'][location_i]
+            trial_id_idx = [temp_i for temp_i, temp  in enumerate(group_data[variable]['trial_id']) if temp==trial_id]
+            field_idx = [temp_i for temp_i, temp  in enumerate(group_data[variable]['field']) if temp==field]
+
+            soma_i = [temp_i for temp_i, temp  in enumerate(group_data[variable]['locations']) if temp==('soma',0,0)]
+
+            soma_idx.append(list(set.intersection(set(trial_id_idx), set(field_idx), set(soma_i)))[0])
+
+        return soma_idx
+
+class Plots():
+
+    def __init__(self):
+        '''
+        '''
+        self.x=1
+        pass
+
+    def _range_variable_single_trial(self, data, y_variable, x_variable, **kwargs):
+        '''
+        '''
+        p = data[y_variable]['p']
+        t = data[y_variable]['t']
         
-        spikes_dend_dist= for each dendritic spike in 'spikes_dend', list the distance from the soma, [distances]
+        # unique list of recorded locations ()
+        locations_unique = list(set(data[y_variable]['locations']))
+
+        nseg = len(locations_unique)
+        cols = int(math.ceil(math.sqrt(nseg)))
+        print cols
+        rows = int(math.ceil(math.sqrt(nseg)))
+        fig, ax = plt.subplots(rows, cols)
+        # if only one subplot, cast as array
+        if type(ax) is not np.ndarray:
+            ax = np.array(ax).reshape(1,1)
+
+        print ax
+        # iterate over unique locations in data
+        row, col = 0,-1
+
+        for loc_i, loc in enumerate(locations_unique):
+            if col<cols-1:
+                col+=1
+            else:
+                col=0
+                row+=1
+            print row, col
+            tree, sec_num, seg_num = loc
+            
+            # get list of indices that match the current
+            locs_i = [seg_i for seg_i , seg in enumerate(data[y_variable]['locations']) if seg == locations_unique[loc_i]] 
+            print 'locs_i',locs_i
+            print data[y_variable]['field']
+            data_y = data[y_variable]['data'][locs_i,:]
+
+            # get x_data for the current location
+            if x_variable=='t':
+                data_x=np.tile(t, (len(locs_i),1))
+            else:
+                #FIXME x variable indices may be different
+                data_x = data[x_variable]['data'][locs_i,:]
+
+            # get list of field magnitudes that match the data for the current location
+            fields = [data[y_variable]['field'][i] for i in locs_i ]
+            print fields
+            
+            # get list of plot colors based on field magnitude
+            field_colors = [p['field_colors'][p['field'].index(field)] for field_i, field in enumerate(fields)]
+
+            # distance from soma
+            seg_dist = p['seg_dist'][tree][sec_num][seg_num]
+
+            # title segment location and distance from soma
+            title = loc[0] + ',' + str(loc[1]) + ',' + str(loc[2]) + ',' + ('%.2f'%seg_dist)
+
+            for field_i in range(data_y.shape[0]):
+            
+                ax[row,col].plot(data_x[field_i, :], data_y[field_i,:], color=field_colors[field_i], linewidth=0.5)
+
+            ax[row,col].set_title(title)
+            ax[row,col].set_ylabel(y_variable)
+            ax[row,col].set_xlabel(x_variable)    
+
+        plt.show()
+
+        return fig, ax
+
+    def _range_variable_group(self, group_data, x_variable, y_variable, conditions=[('polarity',['anodal','cathodal','control']),('dist',[[[0,200],[0,300]]]), ('syn_num',[[6]]),('path',[['1']])], plot_mean=True, plot_sem=True):
+        '''
+        '''
+        ig_y = IndexGetter(group_data=group_data, variable=y_variable, conditions=conditions)
+        self.idx_sets_y=ig_y.idx_sets
+        self.combos_y=ig_y.combos
+
+        if x_variable=='t':
+            self.idx_sets_x=self.idx_sets_y
+            self.combos_y=self.combos_y
+        else:
+            self.idx_sets_x = ig_y._match_idx(group_data=group_data, variable1=y_variable, variable2=x_variable, variable1_idx_sets=self.idx_sets_y)
+            self.combos_x=self.combos_y
+
+
+        polarities=['cathodal','anodal','control']
+        colors=['b','r','k']
+        std_colors = ['lightblue','coral','grey']
+        fig = plt.figure()
+        for idx_set_i, idx_set in enumerate(self.idx_sets_y):
+            # print idx_set
+            polarity = [cond[1] for cond_i, cond in enumerate(self.combos_y[idx_set_i]) if 'polarity' in cond][0]
+            color = colors[polarities.index(polarity)]
+            std_color = std_colors[polarities.index(polarity)]
+            
+            if x_variable=='t':
+                x_data = group_data[y_variable]['t']
+                x_data_mean=x_data
+            else:
+                x_data = group_data[x_variable]['data'][self.idx_sets_x[idx_set_i],:]
+                x_data_mean=np.mean(x_data, axis=0)
+                x_data_std=np.std(x_data, axis=0)
+                x_data_sem=stats.sem(x_data,axis=0)
+
+            y_data = group_data[y_variable]['data'][idx_set,:]
+            y_data_mean=np.mean(y_data,axis=0)
+            y_data_std=np.std(y_data,axis=0)
+            y_data_sem=stats.sem(y_data,axis=0)
+
+            if plot_mean and plot_sem:
+
+                plt.plot(x_data_mean, y_data_mean,color=color)
+                plt.fill_between(x_data_mean, y_data_mean-y_data_sem, y_data_mean+y_data_sem, color=color, alpha=0.5)
+
+            elif plot_mean:
+                plt.plot(x_data_mean, y_data_mean,color=color)
+
+            else:
+                plt.plot(x_data.transpose(),y_data.transpose(), color=color)
+        # plt.show(block=False)
+
+        return fig
+
+    def _stdp_frequency_weight(self, group_data):
+        '''
+        '''
+        # iterate over stdp delays
+        # iterate over stimulation frequencies
+            # get corresponding indices in group data
+            # get net weight change for each synapse
+            # get average and std for current frequency and store in array
+            # plot frequency vs average weight change
+
+        stdp_delays = list(set(group_data['clopath']['stdp_dt']))
+        stim_freqs = list(set([item for sublist in group_data['clopath']['pulse_freq'] for item in sublist]))
+
+        dw = {}
+        markers = ['.','x']
+        plt.figure()
+        for delay_i, delay  in enumerate(stdp_delays):
+            dw[str(delay)]={'freq':[],'dw':[]}
+            for stim_freq in stim_freqs:
+                dw[str(delay)]['freq'].append(stim_freq)
+                conditions = [('path',[['1']]),('stdp_dt',[[delay]]), ('pulse_freq',[[stim_freq]])]
+                ig = IndexGetter(group_data=group_data, variable='clopath', conditions=conditions)
+                self.idx_sets=ig.idx_sets
+                self.combos=ig.combos
+                dw[str(delay)]['dw'].append(group_data['clopath']['data'][idx_sets[0],-1]/group_data['clopath']['data'][idx_sets[0],0])
+
+                plt.plot(stim_freq, np.mean(dw[str(delay)]['dw'][-1]), marker=markers[delay_i])
+        plt.show(block=False)
+
+    def _dose_response_weight(self, group_data):
+        '''
+        '''
+        # get all intensities
+        intensities = np.array(sorted(list(set(group_data['clopath']['field']))))
+        x_locations=np.arange(intensities.shape[0])
+        dw_mean=np.zeros(intensities.shape[0])
+        dw_sem=np.zeros(intensities.shape[0])
+        colors=[]
+        for intensity_i, intensity in enumerate(intensities):
+            intensity_idx = [temp_i for temp_i, temp in enumerate(group_data['clopath']['field']) if temp==intensity]
+            dw_mean[intensity_i] = np.mean(group_data['clopath']['data'][intensity_idx,-1]/group_data['clopath']['data'][intensity_idx,0])
+            dw_sem[intensity_i] = stats.sem(group_data['clopath']['data'][intensity_idx,-1]/group_data['clopath']['data'][intensity_idx,0])
+            if intensity<0.:
+                colors.append('blue')
+            elif intensity==0.:
+                colors.append('black')
+            else:
+                colors.append('red')
+
+        fig, ax = plt.subplots()
+        plt.bar(x_locations, dw_mean, yerr=dw_sem, tick_label=intensities, color=colors)
+        plt.ylim((min(dw_mean-dw_sem),None))
+        plt.xlabel('Field magnitude (V/m)', fontsize=25, fontweight='heavy')
+        plt.ylabel('Norm. weight', fontsize=25, fontweight='heavy')
+        for temp in ax.get_xticklabels():
+            temp.set_fontweight('heavy')
+            temp.set_fontsize(12)
+        for temp in ax.get_yticklabels():
+            temp.set_fontweight('heavy')
+            temp.set_fontsize(12)
+        # set axes linewidth and tick position
+        #----------------------
+        # ax.spines['left'].set_linewidth(10)
+        # ax.spines['bottom'].set_linewidth(10)
+        # ax.xaxis.set_ticks_position('bottom')
+        # ax.yaxis.set_ticks_position('left')
+        plt.show(block=False)
+
+        return fig
+
+    def _weight_vs_distance(self, group_data, conditions=[('polarity', ['anodal','cathodal','control']), ('syn_num',[[8,]]), ('dist', [[[0,200],]]), ('path',[['1']])]):
+        '''
+        '''
+
+        ig = IndexGetter(group_data=group_data, conditions=conditions)
+        self.idx_sets=ig.idx_sets
+        self.combos=ig.combos
+
+        polarities=['cathodal','anodal','control']
+        colors=['b','r','k']
+        plt.figure()
+        for idx_set_i, idx_set in enumerate(self.idx_sets):
+            polarity = [cond[1] for cond_i, cond in enumerate(self.combos[idx_set_i]) if 'polarity' in cond][0]
+            color = colors[polarities.index(polarity)]
+            plt.plot(group_data['clopath']['t'], np.mean(group_data['clopath']['data'][idx_set,:],axis=0).transpose(),color=color)
+
+        plt.xlabel('time (ms)')
+        plt.ylabel('weight (AU)')
+        # plt.show(block=False)
+
+    def _final_weight_vs_distance(self, group_data, conditions):
+        '''
+        '''
+        ig = IndexGetter(group_data=group_data, conditions=conditions, variable='clopath')
+        self.idx_sets=ig.idx_sets
+        self.combos=ig.combos
+
+        polarities=['cathodal','anodal','control']
+        colors=['b','r','k']
+        plt.figure()
+        for idx_set_i, idx_set in enumerate(self.idx_sets):
+            polarity = [cond[1] for cond_i, cond in enumerate(self.combos[idx_set_i]) if 'polarity' in cond][0]
+            color = colors[polarities.index(polarity)]
+
+    def _xcorr_mean(self, group_data, conditions, dt=.025):
+        '''
+        '''
+        ig = IndexGetter(group_data=group_data, conditions=conditions, variable='soma_xcorr')
+        self.idx_sets=ig.idx_sets
+        self.combos=ig.combos
+
+        # print self.combos
+        polarities=['cathodal','anodal','control']
+        colors=['b','r','k']
+        fig = plt.figure()
+        for idx_set_i, idx_set in enumerate(self.idx_sets):
+            polarity = [cond[1] for cond_i, cond in enumerate(self.combos[idx_set_i]) if 'polarity' in cond][0]
+            color = colors[polarities.index(polarity)]
+            n_samples = group_data['soma_xcorr']['data'].shape[1]
+            n_trials=float(len(list(set([group_data['soma_xcorr']['trial_id'][temp] for temp in idx_set]))))
+            soma_xcorr_norm = group_data['soma_xcorr']['data'][idx_set,:]/n_trials
+            x_vector = dt*(np.arange(n_samples)-(n_samples+1)/2) 
+            plt.plot(x_vector, np.mean(soma_xcorr_norm,axis=0).transpose(),color=color)
+            plt.xlabel('delay (negative=dendrite first)')
+            plt.ylabel('probability density / correlation (spikes^2/trial)')
+
+        return fig
+
+class GroupData:
+    '''
+    ==Att==
+    -group_data :  dictionary for holding data for all simulations in a set of experiments; group_data{variable}{info type}[segment]
+
+    '''
+
+    def __init__(self, directory, file_name, **kwargs):
+        '''
+        '''
+        self.directory=directory
+        self.file_name=file_name
+        if 'group_data' in kwargs:
+            self.group_data=kwargs['group_data']
+        else:
+            self.group_data=self._load_group_data(directory=directory, file_name=file_name)
+
+        if 'rerun' in kwargs:
+            self.rerun=kwargs['rerun']
+        else:
+            self.rerun=False
+
+    def _standard_run(self, group_data, directory, file_name, search_string, clopath_param, variables, ):
+        '''
+        '''
+        self._add_files_to_group_data(group_data=group_data, directory=directory, search_string=search_string,variables=variables)
         
-        spikes_first= for each activated segment, whether there was a spike at all, and where it was initiated. 0= no spike, 1=dendrite first, 2=soma first
+        self._add_path_to_group_data(group_data=group_data)
+        self._add_input_array_to_group_data(group_data=group_data)
+        self._add_clopath_to_group_data(group_data=group_data, param=clopath_param, rerun = self.rerun)
+        self._add_polarity_to_group_data(group_data=group_data)
+        self._add_spikes_to_group_data(group_data=group_data, threshold=-30)
+            # self._add_xcorr_to_group_data(group_data=group_data)
+        return self.group_data
+        # self._save_group_data(group_data=group_data, directory=directory, file_name=file_name)
 
-        spike_times= list spike times for each segment, same organization as 'seg_idx', {tree_key}[sec_num][seg_num][spike_times].  If no spikes are found, returns empty list
-
-        dw= list weight change for each segment, same organization as 'seg_idx', {tree_key}[sec_num][seg_num=dw]
-
-        time_bins= nested list of time bins [bin number][time1, time2], where each bin corresponds to the time between input pulses
-
-        spikes_dend_bin= nested list of dendritic spike times [time bin][spike times]
-
-        spikes_som_bin= nested list of somatic spike times [time bin][spike times]
-
-        spikes_dend_bin_norm= nested list of dendritic spike times normalized to input pulse onset time [time bin][normalzied spike times]
-
-        spikes_soma_bin_norm= nested list of somatic spike times normalized to input pulse onset time [time bin][normalized spike times]
-
-        spikes_dend_dist_bin= nested list of dendritic spike distances [time bin][distances]
-
-        spikes_dend_diff_bin= nested list of timing difference between dendrite and soma [time bin][spike time differences], soma first=negative, dendrite first=positive, if no soma spike=no subtraction(positive)
-
-        syn_frac_bin= fraction of synapses with a spike in each bin, [time bin][fraction]
-        """
-        data = kwargs['data']
-        threshold = kwargs['threshold']
-
-        # parameter dictionary
-        p = data['p']
-
-        print p['path_combos']
-
-        # load spike analysis functions
-        spike_analysis = Spikes()
-
-        # temporary store for current trial data. all dictionary entries will be transferred to full data structure (all trials)
-        spike_dic = {}
-
-        # print trial
-        # parameter dictionary
-        spike_dic['p'] = copy.copy(p)
-
-        # iterate over polarity
-        for polarity_key, polarity in data.iteritems():
-
-            # exclude parameter dictionary
-            if polarity_key != 'p':
-
-                spike_dic[polarity_key]={}
-                # iterate over pathways
-                for path_key, path in polarity.iteritems():
-
-                    # exclude time vectors
-                    if path_key!='t':
-
-                        spike_dic[polarity_key][path_key]={}
-                        p_path = p['p_path'][path_key]
-
-                        # temporary dictionary
-                        dtemp={}
-
-                        dtemp['p'] = copy.copy(p)
-
-                        dtemp['p_path']=copy.copy(p_path)
-
-                        # list all dendritic spikes [spike times]
-                        dtemp['spikes_dend']=[] 
-                        # for each dendritic spike in 'spikes_dend', list the distance from the soma, [distances]
-                        dtemp['spikes_dend_dist']=[]
-                        # for each activated segment, whether there was a spike at all, and where it was initiated
-                        # 0= no spike, 1=dendrite first, 2=soma first
-                        dtemp['spikes_first'] = []
-                        # list spike times for each segment, same organization as 'seg_idx', {tree_key}[sec_num][seg_num][spike_times]
-                        dtemp['spike_times'] ={}
-                        # list weight change for each segment, same organization as 'seg_idx', {tree_key}[sec_num][seg_num=dw]
-                        dtemp['dw']={}
-
-                        # add soma data
-                        dtemp['spike_times']['soma'] = [[]]
-                        spike_times = spike_analysis.detect_spikes(data[polarity_key][path_key]['soma_v'][0][0], threshold=threshold)['times'][0]
-                        dtemp['spike_times']['soma'][0].append(spike_times)
-                        dtemp['spikes_soma'] = spike_times
-
-                        # iterate over trees
-                        for tree_key, tree in p_path['seg_idx'].iteritems():
-                            # add dimension
-                            dtemp['spike_times'][tree_key] =[]
-                            dtemp['dw'][tree_key] =[]
-                            # iterate over sections
-                            for sec_i, sec in enumerate(tree):
-                                # add dimensions
-                                dtemp['spike_times'][tree_key].append([])
-                                dtemp['dw'][tree_key].append([])
-                                sec_num = p['p_path'][path_key]['sec_idx'][tree_key][sec_i]
-                                # iterate over segments
-                                for seg_i, seg in enumerate(sec):
-                                    seg_num=seg
-                                    distance = p['seg_dist'][tree_key][sec_num][seg_num]
-
-                                    # list of spike times [spike_times]
-                                    spike_times = spike_analysis.detect_spikes(data[polarity_key][path_key][tree_key+'_v'][sec_i][seg_i], threshold=threshold)['times'][0]
-
-                                    # scalar weight change
-                                    dw = data[polarity_key][path_key][tree_key+'_gbar'][sec_i][seg_i][-1]/data[polarity_key][path_key][tree_key+'_gbar'][sec_i][seg_i][0]
-
-                                    # add to dtemp structure, each segment contains a list of spike times
-                                    dtemp['spike_times'][tree_key][sec_i].append(spike_times)
-                                    # each segment is a scalar weight change
-                                    dtemp['dw'][tree_key][sec_i].append(dw)
-
-                                    # record whether there was a spike in soma or dendrite first [all segments]
-                                    # no spike=0, dend first=1, soma first=2
-                                    # if there are dendritic spikes
-                                    if len(spike_times)>0:
-                                        
-                                        # iterate through spike times
-                                        for spike_i, spike_time in enumerate(spike_times):
-
-                                            # add to list of all dendritic spike times for this trial/cell
-                                            # [all dendritic spike times]
-                                            dtemp['spikes_dend'].append(spike_time)
-                                            # [all dendritic spike distances]
-                                            dtemp['spikes_dend_dist'].append(distance)
-
-                                            # if this is the first spike
-                                            if spike_i==0:
-                                                
-                                                # if there is also a somatic spike
-                                                if len(dtemp['spikes_soma'])>0:
-                                                    
-                                                    # if the somatic spike occurs first
-                                                    if spike_time > dtemp['spikes_soma'][0]:
-
-                                                        # store as soma first
-                                                        dtemp['spikes_first'].append(2)
-                                                    
-                                                    # otherwise the spike is dend first
-                                                    else:
-                                                        dtemp['spikes_first'].append(1)
-                                                
-                                                # if there is a dendritic but no somatic spike, it is dend first
-                                                else:
-                                                    dtemp['spikes_first'].append(1)
-                                    
-                                    # otherwise no spike at all
-                                    else:
-                                        dtemp['spikes_first'].append(0)
-
-                        # create nested list of spike times with dimensions [pulse time bin][spike times]
-                        # nested list of time bins [bin number][time1, time2]
-                        dtemp['time_bins'] = []
-                        # nested list of dendritic spike times [time bin][spike times]
-                        dtemp['spikes_dend_bin'] = []
-                        # nested list of somatic spike times [time bin][spike times]
-                        dtemp['spikes_soma_bin'] = []
-                        # nested list of dendritic spike times normalized to input pulse onset time [time bin][spike times]
-                        dtemp['spikes_dend_bin_norm'] = []
-                        # nested list of somatic spike times normalized to input pulse onset time [time bin][spike times]
-                        dtemp['spikes_soma_bin_norm'] = []
-                        # nested list of dendritic spike distances [time bin][distances]
-                        dtemp['spikes_dend_dist_bin'] = []
-                        # nested list of timing difference between dendrite and soma [time bin][spike time differences], soma first=negative, dendrite first=positive, if no soma spike=no subtraction(positive)
-                        dtemp['spikes_dend_diff_bin'] = []
-                        # fraction of synapses with a spike in each bin, [time bin][fraction]
-                        dtemp['syn_frac_bin'] = []
-
-                        if kwargs['weakpath_bins']:
-                            pulses = p['pulses']
-                        else:
-                            pulses = p['p_path'][path_key]['pulses']
-                        # iterate through pulses in the current pathway
-                        for pulse_i, pulse in enumerate(range(int(pulses))):
-
-                            if kwargs['weakpath_bins'] and path_key=='weak':
-                                # determine time bins
-                                dtemp['time_bins'].append([])
-                                time1 = (p['warmup'] + 1000/p['pulse_freq']*pulse_i)/p['dt'] +1 
-                                time2 = (p['warmup'] + 1000/p['pulse_freq']*(pulse_i+1))/p['dt']
-                                dtemp['time_bins'][pulse_i].append(time1)
-                                dtemp['time_bins'][pulse_i].append(time2)
-                            else:
-                                 # determine time bins
-                                dtemp['time_bins'].append([])
-                                time1 = (p_path['warmup'] + 1000/p_path['pulse_freq']*pulse_i)/p['dt'] +1 
-                                time2 = (p_path['warmup'] + 1000/p_path['pulse_freq']*(pulse_i+1))/p['dt']
-                                dtemp['time_bins'][pulse_i].append(time1)
-                                dtemp['time_bins'][pulse_i].append(time2)
-
-
-                            # get spike times that fall within the current bin 
-                            binned_spikes_dist = []
-                            binned_spikes_dend =[]
-                            binned_spikes_dend_norm =[]
-                            binned_spikes_soma = []
-                            binned_spikes_soma_norm = []
-                            
-                            # if there are any somatic spikes
-                            if len(dtemp['spikes_soma'])>0:
-                                # list spikes in current bin, return empty list if no spikes
-                                binned_spikes_soma = [spike for spike_i, spike in enumerate(dtemp['spikes_soma']) if (spike > time1 and spike <= time2)]
-                                # if there are spikes in the current bin, normalized to the pulse onset
-                                if len(binned_spikes_soma)>0:
-                                    binned_spikes_soma_norm = [spike-time1 for spike in binned_spikes_soma]
-                            
-                            # if there are any dendritic spikes
-                            if len(dtemp['spikes_dend'])>0:
-                                # list spikes in current bin, return empty list if no spikes
-                                binned_spikes_dend = [spike for spike_i, spike in enumerate(dtemp['spikes_dend']) if (spike > time1 and spike <= time2)]
-
-                                binned_spikes_dist = [dtemp['spikes_dend_dist'][spike_i] for spike_i, spike in enumerate(dtemp['spikes_dend']) if (spike > time1 and spike <= time2)]
-
-                                # if there are spikes in the current bin, normalized to the pulse onset
-                                if len(binned_spikes_dend)>0:
-                                    binned_spikes_dend_norm = [spike-time1 for spike in binned_spikes_dend]
-                                
-                            
-                            # difference between dendritic and somatic spike times (dendrite first is positive, soma first is negative)
-                            # if there are somatic and dendritic spikes in the current bin
-                            if len(binned_spikes_soma)>0 and len(binned_spikes_dend)>0:
-                                # list of time differences
-                                binned_spikes_dend_diff = [binned_spikes_soma[0]-spike for spike_i, spike in enumerate(binned_spikes_dend)]
-                            else: 
-                                # otherwise dendritic spiek list remains unchanged (positive)
-                                binned_spikes_dend_diff = binned_spikes_dend_norm
-
-                            # fraction of synapses that spike in current bin
-                            binned_distances =  list(set(binned_spikes_dist))
-                            binned_syn_frac = float(len(binned_distances))/float(p_path['syn_num'])
-                            
-
-                            # add spike times for current bin to list of all bins
-                            # [bin number][list of spike times]
-                            dtemp['spikes_dend_bin'].append(binned_spikes_dend)
-                            dtemp['spikes_soma_bin'].append(binned_spikes_soma)
-                            dtemp['spikes_dend_bin_norm'].append(binned_spikes_dend_norm)
-                            dtemp['spikes_soma_bin_norm'].append(binned_spikes_soma_norm)
-                            dtemp['spikes_dend_dist_bin'].append(binned_spikes_dist)
-                            dtemp['spikes_dend_diff_bin'].append(binned_spikes_dend_diff)
-                            dtemp['syn_frac_bin'].append(binned_syn_frac)
-
-                         # fraction of synapses that spike at all during simulation
-                        distances = list(set(dtemp['spikes_dend_dist']))
-                        dtemp['syn_frac'] = float(len(distances))/float(p_path['syn_num'])
-
-                        # update main data structure
-                        # for each data type
-                        for dtype_key, dtype in dtemp.iteritems():
-
-                            spike_dic[polarity_key][path_key][dtype_key]=dtype
-
-        return spike_dic
-
-    def _load_group_data(self, **kwargs):
+    def _conditional_run(self, group_data, directory, file_name, search_string, clopath_param, variables, parameter, parameter_value, path_parameter):
+        '''
+        '''
+        self._add_files_to_group_data_conditional_parameter(group_data=group_data, directory=directory, search_string=search_string,variables=variables, parameter=parameter, parameter_value=parameter_value, path_parameter=path_parameter)
+        if len(group_data['processed'])>0:
+            self._add_path_to_group_data(group_data=group_data)
+            self._add_input_array_to_group_data(group_data=group_data)
+            self._add_clopath_to_group_data(group_data=group_data, param=clopath_param, rerun = self.rerun)
+            self._add_polarity_to_group_data(group_data=group_data)
+            self._add_spikes_to_group_data(group_data=group_data, threshold=-30)
+        # self._add_xcorr_to_group_data(group_data=group_data)
+        return self.group_data
+        # self._save_group_data(group_data=group_data, directory=directory, file_name=file_name)
+    
+    def _load_group_data(self, directory='', file_name=''):
         """ Load group data from folder
         
-        ==
-        Keyword Arguments:
-        experiment: experiment name, typically a string of the form 'exp_4a'
+        ===Args===
+        -directory : directory where group data is stored including /
+        -file_name : file name for group data file, including .pkl
+                    -file_name cannot contain the string 'data', since this string is used t search for individual data files
 
-        save_string: string for saving pickled group data, must include .pkl suffix
-        
-        ==
-        Return:
-        group data, typically a dictionary.  If no file is found with the specified string, an empty dictionary is returned
+        ===Out===
+        -group_data  : typically a dictionary.  If no file is found with the specified string, an empty dictionary is returned
 
+        ===Updates===
+        -none
+
+        ===Comments===
         """
-
-        # identify data folder
-        data_folder = 'Data/'+kwargs['experiment']+'/'
         
         # all files in directory
-        files = os.listdir(data_folder)
-
-        save_string = kwargs['save_string']
+        files = os.listdir(directory)
+        
         # if data file already exists
-        if save_string in files:
+        if file_name in files:
             # load data
-            print 'group data found:', save_string
-            with open(data_folder+save_string, 'rb') as pkl_file:
+            print 'group data found:', file_name
+            with open(directory+file_name, 'rb') as pkl_file:
                 group_data= pickle.load(pkl_file)
             print 'group data loaded'
         # otherwise create data structure
@@ -2513,3111 +4770,610 @@ class Experiment:
             print 'no group data found'
             group_data= {}
 
+        return group_data 
+
+        # def _convert_groupdata_to_panel(self, group_data):
+        #     '''
+        #     '''
+        #     group_data_panel= {}
+        #     for variable_key, variable in group_data.iteritems():
+        #         group_data_panel[variable_key]= pd.DataFrame(variable)
+
+        #     group_panel = pd.Panel(group_data_panel)
+        #     return group_panel
+
+        # def _add_files_to_group_panel(self, directory, search_string, group_panel, variables, **kwargs):
+        #     '''
+        #     '''
+        #     # get list of all data files
+        #     data_files = glob.glob(directory+search_string)
+
+        #     # get list of processed data files
+        #     if group_data:
+        #         processed_data_files = group_data['processed']
+        #     else:
+        #         group_data['processed']=[]
+        #         processed_data_files = group_data['processed']
+
+    def _add_files_to_group_data(self, directory, search_string, group_data, variables=['v', 'input_times'], max_iter=1000):
+        '''
+        ===Args===
+        -directory : directory where group data is stored including /
+        -search_string : string that is unique individual data files to search directory.  typically '*data*'
+        -group_data : group data structure organized as group_data{variable}{data_type}
+                -group_data['v']['data_mat'] is a matrix with dimensions segments x samples
+
+        ===Out===
+        ===Updates===
+        ===Comments===
+        -group_data['processed'] = list of data file names that have already been added to the group 
+        -variable = variable type that was recorded from neuron simulaitons, e.g. 'v' or 'gbar'
+        -data_type for group_data structure:
+            -'data_mat' : matrix of time series data for the specified variable
+            -'input_mat': matrix of boolean time series of synpatic inputs for the corresponding data_mat (1=active input, 0=inactive input)
+            -'conditions' : 
+                    -'polarity', 'path', 'tree', 'sec_i', 'sec_num', 'seg_i', 'seg_num', 'input_times'
+                    -e.g. group_data['v']['conditions']['polarity'] returns a list of field polarities with indices corresponsponding to rows group_data['v']['data_mat']
+            't' : single 0D vector of time values (should be identical for all simulations in a given group data structure)
+        '''
+        # get list of new data files
+        #`````````````````````````````````````````````````````````````
+        # get list of all data files
+        data_files = glob.glob(directory+search_string)
+
+        # get list of processed data files
+        if group_data:
+            processed_data_files = group_data['processed']
+        else:
+            group_data['processed']=[]
+            processed_data_files = group_data['processed']
+
+        # get list of new data files
+        new_data_files = list(set(data_files)-set(processed_data_files))
+        print 'total data files:', len(data_files) 
+        print 'new data fies:', len(new_data_files)
+        
+        # iterate over new files and update group_data structure
+        #`````````````````````````````````````````````````````````````````
+        print 'updating group data structure'
+        # dictionary for temporary storage of individual simulation data
+
+        # iterate over new data files
+        for file_i, file in enumerate(new_data_files):
+
+            if file_i<max_iter:
+                print 'updating file',file_i,'of',len(new_data_files),'new files'
+
+                # load data file
+                with open(file, 'rb') as pkl_file:
+                    data = pickle.load(pkl_file)
+
+                # plt.figure()
+                # plt.plot(data['v']['data'].T)
+                # plt.show(block=False)
+                # FIXME add input times to variables for each data files
+                # iterate over variables to be updated
+                for variable_i, variable in enumerate(variables):
+
+                    if variable not in group_data:
+                        group_data[variable] = copy.copy(data[variable])
+                        group_data[variable]['p'] = [data[variable]['p'] for temp in  data[variable]['locations']]
+
+                    else:
+                        if variable=='input_times':
+                            group_data[variable]['data']+=data[variable]['data']
+                        else:
+                            print group_data[variable]['data'].shape, data[variable]['data'].shape
+                            group_data[variable]['data'] = np.append(group_data[variable]['data'], data[variable]['data'], axis=0)
+
+                        group_data[variable]['locations'] += data[variable]['locations']
+
+                        group_data[variable]['trial_id'] += data[variable]['trial_id']
+
+                        group_data[variable]['field'] += data[variable]['field']
+
+                        group_data[variable]['p'] += [data[variable]['p'] for temp in  data[variable]['locations']]
+
+                        if 'syn_types' in group_data[variable]:
+                            group_data[variable]['syn_types'] += data[variable]['syn_types']
+
+
+
+                    # add file to processed list to keep track of processed files
+                    group_data['processed'].append(file)
+
+        print 'finished updating group data structure'
+
+        print 'data shape:',group_data['v']['data'].shape
+        # ouput group data structure 
         return group_data
 
-    def exp_1a(self, **kwargs):
-        """ 
-        activate a varying number of synapses at varying frequency with varying distance from the soma.  Synapses are chosen from a window of 50 um, with the window moving along the apical dendrite.  As number of synapses is increased, multiple synapses may impinge on the same compartment/segment, effectively increasing the weight in that segment.  The threshold for generating a somatic or dendritic spike (in number of synapses) is measured as a function of mean distance from the soma and frequency of synaptic activity.  
+    def _add_files_to_group_data_conditional_parameter(self, directory, search_string, group_data, parameter='pulse_freq', parameter_value=50, path_parameter=False, variables=['v', 'input_times'], max_iter=1000):
+        '''
+        ===Args===
+        -directory : directory where group data is stored including /
+        -search_string : string that is unique individual data files to search directory.  typically '*data*'
+        -group_data : group data structure organized as group_data{variable}{data_type}
+                -group_data['v']['data_mat'] is a matrix with dimensions segments x samples
 
-        Plots: 
-        number of active synapse x fraction of synapses with at least one spike (somatically and dendritically driven spikes are separated)
+        ===Out===
+        ===Updates===
+        ===Comments===
+        -group_data['processed'] = list of data file names that have already been added to the group 
+        -variable = variable type that was recorded from neuron simulaitons, e.g. 'v' or 'gbar'
+        -data_type for group_data structure:
+            -'data_mat' : matrix of time series data for the specified variable
+            -'input_mat': matrix of boolean time series of synpatic inputs for the corresponding data_mat (1=active input, 0=inactive input)
+            -'conditions' : 
+                    -'polarity', 'path', 'tree', 'sec_i', 'sec_num', 'seg_i', 'seg_num', 'input_times'
+                    -e.g. group_data['v']['conditions']['polarity'] returns a list of field polarities with indices corresponsponding to rows group_data['v']['data_mat']
+            't' : single 0D vector of time values (should be identical for all simulations in a given group data structure)
+        '''
+        # get list of new data files
+        #`````````````````````````````````````````````````````````````
+        # get list of all data files
+        data_files = glob.glob(directory+search_string)
 
-        number of active synapses x total number of spikes (normalized to number of active synapses, somatic and dendritic spikes are separated)
-
-        number of active synapses x mean spike timing for each spike
-
-        """
-        # spike threshold 
-        threshold =-30
-
-        # identify data folder
-        data_folder = 'Data/'+kwargs['experiment']+'/'
-        
-        # all files in directory
-        files = os.listdir(data_folder)
-        
-        # data files
-        data_files = [file for file in files if 'data' in file]
-        plot_files = [file for file in files if 'trace' in file]
-        
-        # unique identifiers for each file type
-        data_files_id= [file[-36:-1] for file in files if 'data' in file]
-        plot_files_id = [file[-36:-1] for file in files if 'trace' in file]
-
-        # if list of processed files in folder, load list
-        id_list_string_spike_times = 'id_list_spike_times.pkl'
-        if id_list_string_spike_times in files:
-            print 'id_list found'
-            
-            with open(data_folder+id_list_string_spike_times, 'rb') as pkl_file:
-                id_list_spike_times = pickle.load(pkl_file)
-
-            print 'id list loaded'
-        
-        # otherwise create empty list
+        # get list of processed data files
+        if group_data:
+            processed_data_files = group_data['processed']
         else:
-            id_list_spike_times = []
+            group_data['processed']=[]
+            processed_data_files = group_data['processed']
 
-        # string to save group data
-        save_string_group_data_raw = 'spikes_grouped_raw'+'.pkl'
-        # if data file already exists
-        if save_string_group_data_raw in files:
-            # load data
-            print 'raw spike data found'
-            with open(data_folder+save_string_group_data_raw, 'rb') as pkl_file:
-                spike_data= pickle.load(pkl_file)
-            print 'raw spike data loaded'
-        # otherwise create data structure
-        else:
-            # data organized as {frequency}{syn_distance}{number of synapses}{polarity}[trial]{data type}{tree}[section][segment][spikes]
-            spike_data= {}
-
-        # load spike analysis functions
-        spike_analysis = Spikes()
-
-        # data types to be stored
-        dtypes = ['spike_times','dw','p']
-
-        # iterate over data files
-        for data_file_i, data_file in enumerate(data_files):
-
-            if data_file_i >=0:# and data_file_i <=1000:
-
-                # check if data has been processed already
-                if data_file not in id_list_spike_times:
-
-                    print data_file
-                    # open unprocessed data
-
-                    try:
-                        with open(data_folder+data_file, 'rb') as pkl_file:
-                            data = pickle.load(pkl_file)
-
-                        print 'data_file: ', data_file_i, ' out of ', len(data_files), ' opened'
-                    # if data file is corrupted, skip it
-                    except EOFError:
-                        'EOF error, file not opened'
-                        continue
-
-                    # add to processed list
-                    id_list_spike_times.append(data_file)
-
-                    # parameter dictionary
-                    p = data['p']
-
-                    # temporary store for current trial data. all dictionary entries will be transferred to full data structure (all trials)
-                    dtemp = {}
-
-                    # print trial
-                    # parameter dictionary
-                    dtemp['p'] = copy.copy(p)
-
-                    # retrieve experiment conditions
-                    freq = p['pulse_freq']
-                    syn_num = p['syn_num']
-                    syn_dist = p['syn_dist'][1] 
-                    freq_key = str(freq)
-                    syn_num_key =str(syn_num)
-                    syn_dist_key = str(syn_dist)
-
-                    # update data structure dimensions
-                    if str(freq) not in spike_data:
-                        spike_data[str(freq)]={}
-
-                    if str(syn_dist) not in spike_data[str(freq)]:
-                        spike_data[str(freq)][str(syn_dist)]={}
-
-                    if str(syn_num) not in spike_data[str(freq)][str(syn_dist)]:
-                        spike_data[str(freq)][str(syn_dist)][str(syn_num)]={}
-                        for polarity_i, polarity in enumerate(p['field']):
-                            spike_data[str(freq)][str(syn_dist)][str(syn_num)][str(polarity)]={}
-
-                    # iterate through polarities
-                    for polarity_i, polarity in enumerate(p['field']):
-                        polarity_key =str(polarity)
-
-                        # for each trial get a list of dendritic spike times and a corresponding list with the location (distance from soma) they occured
-                        dtemp['spikes_dend']=[] 
-                        dtemp['spikes_dend_dist']=[]
-                        dtemp['spikes_first'] = []
-                        dtemp['spike_times'] ={}
-                        dtemp['dw']={}
-
-                        # add soma data
-                        dtemp['spike_times']['soma'] = [[]]
-                        # list of spike times [spike times]
-                        spike_times = spike_analysis.detect_spikes(data[str(polarity)]['soma_v'][0][0], threshold=threshold)['times'][0]
-                        dtemp['spike_times']['soma'][0].append(spike_times)
-                        dtemp['spikes_soma'] = spike_times
-
-                        # iterate through tree, section, segment
-                        for tree_key, tree in p['sec_idx'].iteritems():
-                            dtemp['spike_times'][tree_key] =[]
-                            dtemp['dw'][tree_key] =[]
-                            for sec_i, sec in enumerate(tree):
-                                dtemp['spike_times'][tree_key].append([])
-                                dtemp['dw'][tree_key].append([])
-                                for seg_i, seg in enumerate(p['seg_idx'][tree_key][sec_i]):
-
-                                    # retrieve section and segment number, and associated distance from soma
-                                    sec_num = sec
-                                    seg_num = p['seg_idx'][tree_key][sec_i][seg_i]
-                                    distance = p['seg_dist'][tree_key][sec_num][seg_num]
-
-                                    # list of spike times [spike_times]
-                                    spike_times = spike_analysis.detect_spikes(data[str(polarity)][tree_key+'_v'][sec_i][seg_i], threshold=threshold)['times'][0]
-
-                                    # scalar weight change
-                                    dw = data[str(polarity)][tree_key+'_gbar'][sec_i][seg_i][-1]/data[str(polarity)][tree_key+'_gbar'][sec_i][seg_i][0]
-
-                                    # add to dtemp structure
-                                    dtemp['spike_times'][tree_key][sec_i].append(spike_times)
-                                    dtemp['dw'][tree_key][sec_i].append(dw)
-
-                                    # record whether there was a spike in soma or dendrite first [all dendritic spikes]
-                                    # no spike=0, dend first=1, soma first=2
-                                    # if there are dendritic spikes
-                                    if len(spike_times)>0:
-                                        # iterate through spike times
-                                        for spike_i, spike_time in enumerate(spike_times):
-
-                                            # add to list of all dendritic spike times for this trial/cell, regardless of location [spike times]
-                                            dtemp['spikes_dend'].append(spike_time)
-                                            # list of distances from soma [distances], indeces correspond with spikes_dend (there can be repeats, i.e. multiple spikes at the same location)
-                                            dtemp['spikes_dend_dist'].append(distance)
-
-                                            # if this is the first spike
-                                            if spike_i==0:
-                                                # and there is also a somatic spike
-                                                if len(dtemp['spikes_soma'])>0:
-                                                    # if the somatic spike occurs first
-                                                    if spike_time > dtemp['spikes_soma'][0]:
-
-                                                        # store as soma first
-                                                        dtemp['spikes_first'].append(2)
-                                                    # otherwise the spike is dend first
-                                                    else:
-                                                        dtemp['spikes_first'].append(1)
-                                                # if there is a dendritic but no somatic spike, it is dend first
-                                                else:
-                                                    dtemp['spikes_first'].append(1)
-                                    # otherwise no spike at all
-                                    else:
-                                        dtemp['spikes_first'].append(0)
-
-                        # create nested list of spike times with dimensions [pulse time bins][spike times]
-                        dtemp['time_bins'] = []
-                        dtemp['spikes_dend_bin'] = []
-                        dtemp['spikes_soma_bin'] = []
-                        dtemp['spikes_dend_dist_bin'] = []
-                        dtemp['spikes_dend_diff_bin'] = []
-                        dtemp['syn_frac_bin'] = []
-                        for pulse_i, pulse in enumerate(range(p['pulses'])):
-                            # determine time bins
-                            dtemp['time_bins'].append([])
-                            time1 = (p['warmup'] + 1000/p['pulse_freq']*pulse_i)/p['dt'] +1 
-                            time2 = (p['warmup'] + 1000/p['pulse_freq']*(pulse_i+1))/p['dt']
-                            dtemp['time_bins'][pulse_i].append(time1)
-                            dtemp['time_bins'][pulse_i].append(time2)
-
-                            # get spike times that fall within the current bin 
-                            binned_spikes_dist = []
-                            binned_spikes_dend =[]
-                            binned_spikes_soma = []
-                            # if theres is a somatic spike
-                            if len(dtemp['spikes_soma'])>0:
-                                # somatic spikes for the current bin [spike times]
-                                binned_spikes_soma = [spike for spike_i, spike in enumerate(dtemp['spikes_soma']) if (spike > time1 and spike <= time2)]
-                            # if there is a dendritic spike
-                            if len(dtemp['spikes_dend'])>0:
-                                # list of dendritic spikes in current bin [spike times] (for all locations)
-                                binned_spikes_dend = [spike for spike_i, spike in enumerate(dtemp['spikes_dend']) if (spike > time1 and spike <= time2)]
-                                # list of distances from soma for spikes in current bin [distances]
-                                binned_spikes_dist = [dtemp['spikes_dend_dist'][spike_i] for spike_i, spike in enumerate(dtemp['spikes_dend']) if (spike > time1 and spike <= time2)]
-
-                            # difference between dendritic and somatic spike times within the current bin (dendrite first is positive, soma first is negative)
-                            # if there is a dendritic and somatic spike
-                            if len(binned_spikes_soma)>0 and len(binned_spikes_dend)>0:
-                                # take the difference for the current bin
-                                binned_spikes_dend_diff = [binned_spikes_soma[0]-spike for spike_i, spike in enumerate(binned_spikes_dend)]
-                            # if there is no somatic spike, just copy dendritic spike times (positive spike time means dendrite first)
-                            else: 
-                                binned_spikes_dend_diff = binned_spikes_dend
-
-                            # fraction of synapses that spike in current bin
-                            binned_distances =  list(set(binned_spikes_dist))
-                            binned_syn_frac = float(len(binned_distances))/float(syn_num_key)
-
-
-                            # add spike times for current bin to list of all bins for current trial
-                            dtemp['spikes_dend_bin'].append(binned_spikes_dend)
-                            dtemp['spikes_soma_bin'].append(binned_spikes_soma)
-                            dtemp['spikes_dend_dist_bin'].append(binned_spikes_dist)
-                            dtemp['spikes_dend_diff_bin'].append(binned_spikes_dend_diff)
-                            dtemp['syn_frac_bin'].append(binned_syn_frac)
-
-                        # fraction of synapses that spike at all during simulation
-                        distances = list(set(dtemp['spikes_dend_dist']))
-                        dtemp['syn_frac'] = float(len(distances))/float(syn_num_key)
-
-                        # update main data structure
-                        # for each data type
-                        for dtype_key, dtype in dtemp.iteritems():
-                            
-                            # if this type does not already exist in main group data structure
-                            if dtype_key not in spike_data[freq_key][syn_dist_key][syn_num_key][polarity_key]:
-                                # create list to store data for each trial
-                                spike_data[freq_key][syn_dist_key][syn_num_key][polarity_key][dtype_key]=[]
-
-                            # add data for current trial to list 
-                            spike_data[freq_key][syn_dist_key][syn_num_key][polarity_key][dtype_key].append(dtype)
-
-        # save processed file list
-        with open(data_folder+id_list_string_spike_times, 'wb') as output:pickle.dump(id_list_spike_times, output,protocol=pickle.HIGHEST_PROTOCOL)
-        print 'id list saved'
+        # get list of new data files
+        new_data_files = list(set(data_files)-set(processed_data_files))
+        print 'total data files:', len(data_files) 
+        print 'new data fies:', len(new_data_files)
         
-        # save structure of all raw spike data
-        save_group_data = spike_data
-        with open(data_folder+save_string_group_data_raw, 'wb') as output:
-            pickle.dump(save_group_data, output,protocol=pickle.HIGHEST_PROTOCOL)
-        print 'spike data saved'
-
-        
-        # plot number of activated synapses vs. mean fraction of synapses with at least one soma/dendrite driven spike
-        plots={}
-        for freq_key, freq in spike_data.iteritems():
-            plots[freq_key] = {}
-            for syn_dist_key, syn_dist in freq.iteritems():
-                plots[freq_key][syn_dist_key] = plt.figure()
-                for syn_num_key, syn_num in syn_dist.iteritems():
-                    for polarity_key, polarity in syn_num.iteritems():
-
-                        # get polarity index
-                        polarity_i = [f_i for f_i, f in enumerate(polarity['p'][0]['field']) if str(f)==polarity_key][0]
-
-                        # plot color and marker
-                        color = polarity['p'][0]['field_color'][polarity_i]
-                        # size = 20.*float(syn_dist_key)/600.
-                        size = 10.
-                        opacity = 0.7
-                        marker_soma = '.'
-                        marker_dend= 'x'
-                        marker_all='^'
-
-                        # lsit of soma/dend spike fraction for each trial in current set of conditions, i.e. number of spikes/number of active synapses [trials]
-                        soma_frac=[]
-                        dend_frac=[]
-                        all_frac=[]
-                        syn_num_all=[]
-                        # iterate through trials
-                        for trial_i, trial in enumerate(polarity['spikes_first']):
-                            # soma and dendrite spikes
-                            # soma=2, dendrite=1
-                            # note that trial contains an entry for all activated synapses, a place is held for none spiking synapses by a 0
-                            soma_first = [spike_i for spike_i, spike_loc in enumerate(trial) if spike_loc==2]
-                            dend_first = [spike_i for spike_i, spike_loc in enumerate(trial) if spike_loc==1]
-                            # add to list with dimension [trials]
-                            soma_frac.append(float(len(soma_first))/float(len(trial)))
-                            dend_frac.append(float(len(dend_first))/float(len(trial)))
-                            all_frac.append(float(len(dend_first)+len(soma_first))/float(len(trial)))
-
-
-                        
-                        # group stats
-                        soma_frac_mean = np.mean(soma_frac)
-                        soma_frac_std = np.std(soma_frac)
-                        soma_frac_sem = stats.sem(soma_frac)
-                        dend_frac_mean = np.mean(dend_frac)
-                        dend_frac_std = np.std(dend_frac)
-                        dend_frac_sem = stats.sem(dend_frac)
-                        all_frac_mean = np.mean(all_frac)
-                        all_frac_std = np.std(all_frac)
-                        all_frac_sem = stats.sem(all_frac)
-
-                        # plot with errorbars
-                        plt.figure(plots[freq_key][syn_dist_key].number)
-                        plt.plot(float(syn_num_key), soma_frac_mean, color=color, marker=marker_soma, markersize=size, alpha=opacity)
-                        plt.plot(float(syn_num_key), dend_frac_mean, color=color, marker=marker_dend, markersize=size, alpha=opacity)
-                        plt.plot(float(syn_num_key), all_frac_mean, color=color, marker=marker_all, markersize=size, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), soma_frac_mean, yerr=soma_frac_sem, color=color, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), dend_frac_mean, yerr=dend_frac_sem, color=color, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), all_frac_mean, yerr=all_frac_sem, color=color, alpha=opacity)
-                        plt.xlabel('number of active synapses')
-                        plt.ylabel('fraction of spiking synapses')
-                        plt.title(freq_key + ' Hz, ' + syn_dist_key + ' um from soma')
-
-                # save and close figure
-                plt.figure(plots[freq_key][syn_dist_key].number)
-                plot_file_name = 'syn_num_x_spike_prob_location_'+freq_key+'Hz_' + syn_dist_key +'_um'
-                plots[freq_key][syn_dist_key].savefig(data_folder+plot_file_name+'.png', dpi=250)
-                with open(data_folder+plot_file_name+'.pkl', 'wb') as output:
-                    pickle.dump(plots[freq_key][syn_dist_key], output,protocol=pickle.HIGHEST_PROTOCOL)
-                print 'figure: ', plot_file_name, ' saved'
-                plt.close(plots[freq_key][syn_dist_key])
-        
-        
-        # plot number of synapses vs. total number of soma/dendritic spikes normalized to total number of synapses
-        plots={}
-        for freq_key, freq in spike_data.iteritems():
-            plots[freq_key] = {}
-            for syn_dist_key, syn_dist in freq.iteritems():
-                plots[freq_key][syn_dist_key] = plt.figure()
-                for syn_num_key, syn_num in syn_dist.iteritems():
-                    for polarity_key, polarity in syn_num.iteritems():
-
-                        # get polarity index
-                        polarity_i = [f_i for f_i, f in enumerate(polarity['p'][0]['field']) if str(f)==polarity_key][0]
-
-                        # plot color and marker
-                        color = polarity['p'][0]['field_color'][polarity_i]
-                        # size = 20.*float(syn_dist_key)/600.
-                        size = 10.
-                        opacity = 0.7
-                        marker_soma = '.'
-                        marker_dend= 'x'
-                        marker_all='^'
-
-                        # lsit of soma/dend spike fraction for each trial in current set of conditions
-
-                        # iterate through trials
-                        soma_spikes_total=[]
-                        dend_spikes_total=[]
-                        all_spikes_total=[]
-                        for trial_i, trial in enumerate(polarity['spikes_dend_diff_bin']):
-                            # count somatic/dendritic spikes for each trial
-                            soma_count =[]
-                            dend_count=[]
-                            for time_bin_i, time_bin in enumerate(trial):
-                                # list of spike indeces with soma/dend spikes
-                                soma_first = [spike_i for spike_i, spike_diff in enumerate(time_bin) if spike_diff<0.]
-                                dend_first = [spike_i for spike_i, spike_diff in enumerate(time_bin) if spike_diff>=0.]
-                                # count total spieks per time bin
-                                soma_count.append(float(len(soma_first)))
-                                dend_count.append(float(len(dend_first)))
-                            
-                            syn_num_unique = float(len([seg_i for tree_key, tree in polarity['p'][trial_i]['seg_idx'].iteritems() for sec_i, sec in enumerate(tree) for seg_i, seg in enumerate(sec)]))
-                            # syn_num_unique = len(polarity['p']['seg_list'])
-                            # number of unique synaptic locations
-                            # syn_num_unique = float(len(list(set(polarity['spikes_dend_dist'][trial_i]))))
-                            # total spikes per trial, normalized
-                            soma_spikes_norm = np.sum(soma_count)/syn_num_unique
-                            dend_spikes_norm = np.sum(dend_count)/syn_num_unique
-                            # add to list for all trials
-                            soma_spikes_total.append(soma_spikes_norm)
-                            dend_spikes_total.append(dend_spikes_norm)
-                            dend_spikes_total.append(dend_spikes_norm+soma_spikes_norm)
-                            
-                            # print 'dend_spikes_total:',dend_spikes_total
-                        
-                        # group stats
-                        soma_total_mean = np.mean(soma_spikes_total)
-                        soma_total_std = np.std(soma_spikes_total)
-                        soma_total_sem = stats.sem(soma_spikes_total)
-                        dend_total_mean = np.mean(dend_spikes_total)
-                        dend_total_std = np.std(dend_spikes_total)
-                        dend_total_sem = stats.sem(dend_spikes_total)
-                        all_total_mean = np.mean(all_spikes_total)
-                        all_total_std = np.std(all_spikes_total)
-                        all_total_sem = stats.sem(all_spikes_total)
-
-                        # plot with errorbars
-                        plt.figure(plots[freq_key][syn_dist_key].number)
-                        plt.plot(float(syn_num_key), soma_total_mean, color=color, marker=marker_soma, markersize=size, alpha=opacity)
-                        plt.plot(float(syn_num_key), dend_total_mean, color=color, marker=marker_dend, markersize=size, alpha=opacity)
-                        plt.plot(float(syn_num_key), all_total_mean, color=color, marker=marker_all, markersize=size, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), soma_total_mean, yerr=soma_total_sem, color=color, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), dend_total_mean, yerr=dend_total_sem, color=color, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), all_total_mean, yerr=all_total_sem, color=color, alpha=opacity)
-                        plt.xlabel('number of active synapses')
-                        plt.ylabel('Number of spikes/synapse')
-                        plt.title(freq_key + ' Hz, ' + syn_dist_key + ' um from soma')
-
-                # save and close figure
-                plt.figure(plots[freq_key][syn_dist_key].number)
-                plot_file_name = 'syn_num_x_spikes_total_'+freq_key+'Hz_' + syn_dist_key +'_um'
-                plots[freq_key][syn_dist_key].savefig(data_folder+plot_file_name+'.png', dpi=250)
-                with open(data_folder+plot_file_name+'.pkl', 'wb') as output:
-                    pickle.dump(plots[freq_key][syn_dist_key], output,protocol=pickle.HIGHEST_PROTOCOL)
-                print 'figure: ', plot_file_name, ' saved'
-                plt.close(plots[freq_key][syn_dist_key])
-        
-        
-        # plot number of synapses vs. mean spike timing
-        plots={}
-        for freq_key, freq in spike_data.iteritems():
-            plots[freq_key] = {}
-            for syn_dist_key, syn_dist in freq.iteritems():
-                plots[freq_key][syn_dist_key] = plt.figure()
-                for syn_num_key, syn_num in syn_dist.iteritems():
-                    for polarity_key, polarity in syn_num.iteritems():
-
-                        dt = polarity['p'][0]['dt']
-                        # get polarity index
-                        polarity_i = [f_i for f_i, f in enumerate(polarity['p'][0]['field']) if str(f)==polarity_key][0]
-
-                        # plot color and marker
-                        color = polarity['p'][0]['field_color'][polarity_i]
-                        # size = 20.*float(syn_dist_key)/600.
-                        size = 10.
-                        opacity = 0.7
-                        marker_soma = '.'
-                        marker_dend= 'x'
-
-                        # lsit of soma/dend spike fraction for each trial in current set of conditions
-                        soma_frac=[]
-                        dend_frac=[]
-                        # iterate through trials
-                        soma_timing=[]
-                        dend_timing=[]
-                        for trial_i, trial in enumerate(polarity['spikes_dend_diff_bin']):
-                            for time_bin_i, time_bin in enumerate(trial):
-                                onset = polarity['time_bins'][trial_i][time_bin_i][0]
-                                soma_first = [spike_i for spike_i, spike_diff in enumerate(time_bin) if spike_diff<0.]
-                                dend_first = [spike_i for spike_i, spike_diff in enumerate(time_bin) if spike_diff>=0.]
-                                soma_time = [polarity['spikes_dend_bin'][trial_i][time_bin_i][spike_i]-onset for spike_i in soma_first]
-                                dend_time = [polarity['spikes_dend_bin'][trial_i][time_bin_i][spike_i]-onset for spike_i in dend_first]
-                                soma_timing.append(soma_time)
-                                dend_timing.append(dend_time)
-
-                        soma_timing_flat = [time*dt for times in soma_timing for time in times]
-                        dend_timing_flat = [time*dt for times in dend_timing for time in times]
-                        
-                        # group stats
-                        soma_timing_mean = np.mean(soma_timing_flat)
-                        soma_timing_std = np.std(soma_timing_flat)
-                        soma_timing_sem = stats.sem(soma_timing_flat)
-                        dend_timing_mean = np.mean(dend_timing_flat)
-                        dend_timing_std = np.std(dend_timing_flat)
-                        dend_timing_sem = stats.sem(dend_timing_flat)
-
-                        # plot with errorbars
-                        plt.figure(plots[freq_key][syn_dist_key].number)
-                        plt.plot(float(syn_num_key), soma_timing_mean, color=color, marker=marker_soma, markersize=size, alpha=opacity)
-                        plt.plot(float(syn_num_key), dend_timing_mean, color=color, marker=marker_dend, markersize=size, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), soma_timing_mean, yerr=soma_timing_sem, color=color, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), dend_timing_mean, yerr=dend_timing_sem, color=color, alpha=opacity)
-                        plt.xlabel('number of active synapses')
-                        plt.ylabel('spike timing after epsp onset (ms)')
-                        plt.title(freq_key + ' Hz, ' + syn_dist_key + ' um from soma')
-
-                # save and close figure
-                plt.figure(plots[freq_key][syn_dist_key].number)
-                plot_file_name = 'syn_num_x_spikes_timing_'+freq_key+'Hz_' + syn_dist_key +'_um'
-                plots[freq_key][syn_dist_key].savefig(data_folder+plot_file_name+'.png', dpi=250)
-                with open(data_folder+plot_file_name+'.pkl', 'wb') as output:
-                    pickle.dump(plots[freq_key][syn_dist_key], output,protocol=pickle.HIGHEST_PROTOCOL)
-                print 'figure: ', plot_file_name, ' saved'
-                plt.close(plots[freq_key][syn_dist_key])
-
-    def exp_1b(self, **kwargs):
-        """
-        activate a varying number of synapses with varying distance from the soma.  Synapses are chosen from a window of 200 um, with the window moving along the apical dendrite.  As number of synapses is increased, multiple synapses may impinge on the same compartment/segment, effectively increasing the weight in that segment.  The threshold for generating a somatic or dendritic spike (in number of synapses) is measured as a function of mean distance from the soma and frequency of synaptic activity.  
-
-        Similar to 1a, with larger distance window for synapses to be activated
-
-        Plots: 
-        number of active synapse x fraction of synapses with at least one spike (somatically and dendritically driven spikes are separated)
-
-        number of active synapses x total number of spikes (normalized to number of active synapses, somatic and dendritic spikes are separated)
-
-        number of active synapses x mean spike timing for each spike
-        """
-        # spike threshold 
-        threshold =-30
-
-        # identify data folder
-        data_folder = 'Data/'+kwargs['experiment']+'/'
-        
-        # all files in directory
-        files = os.listdir(data_folder)
-        
-        # data files
-        data_files = [file for file in files if 'data' in file]
-        plot_files = [file for file in files if 'trace' in file]
-        
-        # unique identifiers for each file type
-        data_files_id= [file[-36:-1] for file in files if 'data' in file]
-        plot_files_id = [file[-36:-1] for file in files if 'trace' in file]
-
-        # if list of processed files in folder, load list
-        id_list_string_spike_times = 'id_list_spike_times.pkl'
-        if id_list_string_spike_times in files:
-            print 'id_list found'
-            
-            with open(data_folder+id_list_string_spike_times, 'rb') as pkl_file:
-                id_list_spike_times = pickle.load(pkl_file)
-
-            print 'id list loaded'
-        
-        # otherwise create empty list
-        else:
-            id_list_spike_times = []
-
-        # string to save group data
-        save_string_group_data_raw = 'spikes_grouped_raw'+'.pkl'
-        # if data file already exists
-        if save_string_group_data_raw in files:
-            # load data
-            print 'raw spike data found'
-            with open(data_folder+save_string_group_data_raw, 'rb') as pkl_file:
-                spike_data= pickle.load(pkl_file)
-            print 'raw spike data loaded'
-        # otherwise create data structure
-        else:
-            # data organized as {frequency}{syn distance}{number of synapses}{polarity}[trial]{data type}{tree}[section][segment][spikes]
-            spike_data= {}
-
-
-        # load spike analysis functions
-        spike_analysis = Spikes()
-
-        dtypes = ['spike_times','dw','p']
-    
-        # iterate over data files
-        for data_file_i, data_file in enumerate(data_files):
-
-            if data_file_i >=0:# and data_file_i <=1000:
-
-                # check if data has been processed already
-                if data_file not in id_list_spike_times:
-
-                    print data_file
-                    # open unprocessed data
-
-                    try:
-                        with open(data_folder+data_file, 'rb') as pkl_file:
-                            data = pickle.load(pkl_file)
-
-                        print 'data_file: ', data_file_i, ' out of ', len(data_files), ' opened'
-                    except EOFError:
-                        'EOF error, file not opened'
-                        continue
-
-                    # add to processed list
-                    id_list_spike_times.append(data_file)
-
-                    # parameter dictionary
-                    p = data['p']
-
-                    # temporary store for current trial data. all dictionary entries will be transferred to full data structure (all trials)
-                    dtemp = {}
-
-                    # print trial
-                    # parameter dictionary
-                    dtemp['p'] = copy.copy(p)
-
-                    # retrieve experiment conditions
-                    freq = p['pulse_freq']
-                    syn_num = p['syn_num']
-                    syn_dist = p['syn_dist'][1] 
-                    freq_key = str(freq)
-                    syn_num_key =str(syn_num)
-                    syn_dist_key = str(syn_dist)
-
-                    # update data structure dimensions
-                    if str(freq) not in spike_data:
-                        spike_data[str(freq)]={}
-
-                    if str(syn_dist) not in spike_data[str(freq)]:
-                        spike_data[str(freq)][str(syn_dist)]={}
-
-                    if str(syn_num) not in spike_data[str(freq)][str(syn_dist)]:
-                        spike_data[str(freq)][str(syn_dist)][str(syn_num)]={}
-                        for polarity_i, polarity in enumerate(p['field']):
-                            spike_data[str(freq)][str(syn_dist)][str(syn_num)][str(polarity)]={}
-
-                    # iterate through polarities
-                    for polarity_i, polarity in enumerate(p['field']):
-                        polarity_key =str(polarity)
-
-
-
-                        # for each trial get a list of dendritic spike times and a corresponding list with the location (distance from soma) they occured
-                        dtemp['spikes_dend']=[] 
-                        dtemp['spikes_dend_dist']=[]
-                        dtemp['spikes_first'] = []
-                        dtemp['spike_times'] ={}
-                        dtemp['dw']={}
-
-                        # add soma data
-                        dtemp['spike_times']['soma'] = [[]]
-                        spike_times = spike_analysis.detect_spikes(data[str(polarity)]['soma_v'][0][0], threshold=threshold)['times'][0]
-                        dtemp['spike_times']['soma'][0].append(spike_times)
-                        dtemp['spikes_soma'] = spike_times
-                        # print spike_times
-
-
-                        # iterate through tree, section, segment
-                        for tree_key, tree in p['sec_idx'].iteritems():
-                            dtemp['spike_times'][tree_key] =[]
-                            dtemp['dw'][tree_key] =[]
-                        
-                            for sec_i, sec in enumerate(tree):
-
-                                dtemp['spike_times'][tree_key].append([])
-                                dtemp['dw'][tree_key].append([])
-
-                                for seg_i, seg in enumerate(p['seg_idx'][tree_key][sec_i]):
-
-                                    sec_num = sec
-                                    seg_num = p['seg_idx'][tree_key][sec_i][seg_i]
-                                    distance = p['seg_dist'][tree_key][sec_num][seg_num]
-
-                                    # list of spike times [spike_times]
-                                    spike_times = spike_analysis.detect_spikes(data[str(polarity)][tree_key+'_v'][sec_i][seg_i], threshold=threshold)['times'][0]
-
-                                    # scalar weight change
-                                    dw = data[str(polarity)][tree_key+'_gbar'][sec_i][seg_i][-1]/data[str(polarity)][tree_key+'_gbar'][sec_i][seg_i][0]
-
-                                    # add to dtemp structure
-                                    dtemp['spike_times'][tree_key][sec_i].append(spike_times)
-                                    dtemp['dw'][tree_key][sec_i].append(dw)
-
-                                    # record whether whether there was a spike in soma or dendrite first [all dendritic spike]
-                                    # no spike=0, dend first=1, soma first=2
-                                    # if there are dendritic spikes
-                                    if len(spike_times)>0:
-                                        # iterate through spike times
-                                        for spike_i, spike_time in enumerate(spike_times):
-
-                                            # add to list of all dendritic spike times for this trial/cell
-                                            dtemp['spikes_dend'].append(spike_time)
-                                            dtemp['spikes_dend_dist'].append(distance)
-
-                                            # if this is the first spike
-                                            if spike_i==0:
-                                                # if there is also a somatic spike
-                                                if len(dtemp['spikes_soma'])>0:
-                                                    # if the somatic spike occurs first
-                                                    if spike_time > dtemp['spikes_soma'][0]:
-
-                                                        # store as soma first
-                                                        dtemp['spikes_first'].append(2)
-                                                    # otherwise the spike is dend first
-                                                    else:
-                                                        dtemp['spikes_first'].append(1)
-                                                # if there is a dendritic but no somatic spike, it is dend first
-                                                else:
-                                                    dtemp['spikes_first'].append(1)
-                                    # otherwise no spike at all
-                                    else:
-                                        dtemp['spikes_first'].append(0)
-
-                        # create nested list of spike times with dimensions [pulse time bins][spike times]
-                        dtemp['time_bins'] = []
-                        dtemp['spikes_dend_bin'] = []
-                        dtemp['spikes_soma_bin'] = []
-                        dtemp['spikes_dend_dist_bin'] = []
-                        dtemp['spikes_dend_diff_bin'] = []
-                        dtemp['syn_frac_bin'] = []
-                        for pulse_i, pulse in enumerate(range(p['pulses'])):
-                            # determine time bins
-                            dtemp['time_bins'].append([])
-                            time1 = (p['warmup'] + 1000/p['pulse_freq']*pulse_i)/p['dt'] +1 
-                            time2 = (p['warmup'] + 1000/p['pulse_freq']*(pulse_i+1))/p['dt']
-                            dtemp['time_bins'][pulse_i].append(time1)
-                            dtemp['time_bins'][pulse_i].append(time2)
-
-                            # get spike times that fall within the current bin 
-                            binned_spikes_dist = []
-                            binned_spikes_dend =[]
-                            binned_spikes_soma = []
-                            if len(dtemp['spikes_soma'])>0:
-                                # print dtemp['spikes_soma']
-                                binned_spikes_soma = [spike for spike_i, spike in enumerate(dtemp['spikes_soma']) if (spike > time1 and spike <= time2)]
-                            if len(dtemp['spikes_dend'])>0:
-                                binned_spikes_dend = [spike for spike_i, spike in enumerate(dtemp['spikes_dend']) if (spike > time1 and spike <= time2)]
-                                binned_spikes_dist = [dtemp['spikes_dend_dist'][spike_i] for spike_i, spike in enumerate(dtemp['spikes_dend']) if (spike > time1 and spike <= time2)]
-                            # difference between dendritic and somatic spike times (dendrite first is positive, soma first is negative)
-                            if len(binned_spikes_soma)>0 and len(binned_spikes_dend)>0:
-                                binned_spikes_dend_diff = [binned_spikes_soma[0]-spike for spike_i, spike in enumerate(binned_spikes_dend)]
-                            else: #len(binned_spikes_dend)>0:
-                                binned_spikes_dend_diff = binned_spikes_dend
-
-                            # fraction of synapses that spike in current bin
-                            binned_distances =  list(set(binned_spikes_dist))
-                            binned_syn_frac = float(len(binned_distances))/float(syn_num_key)
-                            
-
-                            # add spike times for current bin to list of all bins
-                            dtemp['spikes_dend_bin'].append(binned_spikes_dend)
-                            dtemp['spikes_soma_bin'].append(binned_spikes_soma)
-                            dtemp['spikes_dend_dist_bin'].append(binned_spikes_dist)
-                            dtemp['spikes_dend_diff_bin'].append(binned_spikes_dend_diff)
-                            dtemp['syn_frac_bin'].append(binned_syn_frac)
-
-                         # fraction of synapses that spike at all during simulation
-                        distances = list(set(dtemp['spikes_dend_dist']))
-                        dtemp['syn_frac'] = float(len(distances))/float(syn_num_key)
-
-                        # update main data structure
-                        # for each data type
-                        for dtype_key, dtype in dtemp.iteritems():
-                            
-                            # if this type does not already exist in main group data structure
-                            if dtype_key not in spike_data[freq_key][syn_dist_key][syn_num_key][polarity_key]:
-                                # create list to store data for each trial
-                                spike_data[freq_key][syn_dist_key][syn_num_key][polarity_key][dtype_key]=[]
-
-                            # add data for current trial to list 
-                            spike_data[freq_key][syn_dist_key][syn_num_key][polarity_key][dtype_key].append(dtype)
-
-        # save processed file list
-        with open(data_folder+id_list_string_spike_times, 'wb') as output:pickle.dump(id_list_spike_times, output,protocol=pickle.HIGHEST_PROTOCOL)
-        print 'id list saved'
-        
-        # save structure of all raw spike data
-        save_group_data = spike_data
-        with open(data_folder+save_string_group_data_raw, 'wb') as output:
-            pickle.dump(save_group_data, output,protocol=pickle.HIGHEST_PROTOCOL)
-        print 'spike data saved'
-
-
-        # plot number of activated synapses vs. mean fraction of synapses with at least one soma/dendrite driven spike
-        plots={}
-        plots_dw={}
-        for freq_key, freq in spike_data.iteritems():
-            plots[freq_key] = {}
-            plots_dw[freq_key] = {}
-            for syn_dist_key, syn_dist in freq.iteritems():
-                plots[freq_key][syn_dist_key] = plt.figure()
-                plots_dw[freq_key][syn_dist_key] = plt.figure()
-                for syn_num_key, syn_num in syn_dist.iteritems():
-                    for polarity_key, polarity in syn_num.iteritems():
-
-                        # get polarity index
-                        polarity_i = [f_i for f_i, f in enumerate(polarity['p'][0]['field']) if str(f)==polarity_key][0]
-
-                        # plot color and marker
-                        color = polarity['p'][0]['field_color'][polarity_i]
-                        # size = 20.*float(syn_dist_key)/600.
-                        size = 20.
-                        opacity = 0.7
-                        marker_soma = '.'
-                        marker_dend= 'x'
-                        marker_all= '^'
-
-                        # lsit of soma/dend spike fraction for each trial in current set of conditions, i.e. number of spikes/number of active synapses [trials]
-                        soma_frac=[]
-                        dend_frac=[]
-                        all_frac=[]
-                        dw_list=[]
-                        # iterate through trials
-                        for trial_i, trial in enumerate(polarity['spikes_first']):
-                            # soma and dendrite spikes
-                            # soma=2, dendrite=1
-                            # note that trial contains an entry for all activated synapses, a place is held for none spiking synapses by a 0
-                            soma_first = [spike_i for spike_i, spike_loc in enumerate(trial) if spike_loc==2]
-                            dend_first = [spike_i for spike_i, spike_loc in enumerate(trial) if spike_loc==1]
-                            # add to list with dimension [trials]
-                            soma_frac.append(float(len(soma_first))/float(len(trial)))
-                            dend_frac.append(float(len(dend_first))/float(len(trial)))
-                            all_frac.append(float(len(dend_first)+len(soma_first))/float(len(trial)))
-                            dw_all = polarity['dw'][trial_i]
-                            syn_count = 0
-                            dw_trial=[]
-                            for tree_key, tree in dw_all.iteritems():
-                                for sec_i, sec in enumerate(tree):
-                                    for seg_i, seg in enumerate(sec):
-                                        syn_count+=1
-                                        dw_trial.append(seg)
-                            dw_mean = sum(dw_trial)/float(syn_count)
-                            dw_list.append(dw_mean)
-
-                        dw_mean = np.mean(dw_list)
-                        dw_std = np.std(dw_list)
-                        dw_sem = stats.sem(dw_list)
-
-                        # group stats
-                        soma_frac_mean = np.mean(soma_frac)
-                        soma_frac_std = np.std(soma_frac)
-                        soma_frac_sem = stats.sem(soma_frac)
-                        dend_frac_mean = np.mean(dend_frac)
-                        dend_frac_std = np.std(dend_frac)
-                        dend_frac_sem = stats.sem(dend_frac)
-                        all_frac_mean = np.mean(all_frac)
-                        all_frac_std = np.std(all_frac)
-                        all_frac_sem = stats.sem(all_frac)
-
-                        # plot with errorbars
-                        plt.figure(plots[freq_key][syn_dist_key].number)
-                        plt.plot(float(syn_num_key), soma_frac_mean, color=color, marker=marker_soma, markersize=size, alpha=opacity)
-                        plt.plot(float(syn_num_key), dend_frac_mean, color=color, marker=marker_dend, markersize=size, alpha=opacity)
-                        plt.plot(float(syn_num_key), all_frac_mean, color=color, marker=marker_all, markersize=size, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), soma_frac_mean, yerr=soma_frac_sem, color=color, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), dend_frac_mean, yerr=dend_frac_sem, color=color, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), all_frac_mean, yerr=all_frac_sem, color=color, alpha=opacity)
-                        plt.xlabel('number of active synapses')
-                        plt.ylabel('fraction of spiking synapses')
-                        plt.title(freq_key + ' Hz, ' + syn_dist_key + ' um from soma')
-
-                         # plot dw with errorbars
-                        plt.figure(plots_dw[freq_key][syn_dist_key].number)
-                        plt.plot(float(syn_num_key), dw_mean, color=color, marker=marker_soma, markersize=size, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), dw_mean, yerr=dw_sem, color=color, alpha=opacity)
-                        plt.xlabel('number of active synapses')
-                        plt.ylabel('average weight change')
-                        plt.title(freq_key + ' Hz, ' + syn_dist_key + ' um from soma')
-
-                # save and close figure
-                plt.figure(plots[freq_key][syn_dist_key].number)
-                plot_file_name = 'syn_num_x_spike_prob_location_'+freq_key+'Hz_' + syn_dist_key +'_um'
-                plots[freq_key][syn_dist_key].savefig(data_folder+plot_file_name+'.png', dpi=250)
-                with open(data_folder+plot_file_name+'.pkl', 'wb') as output:
-                    pickle.dump(plots[freq_key][syn_dist_key], output,protocol=pickle.HIGHEST_PROTOCOL)
-                print 'figure: ', plot_file_name, ' saved'
-                plt.close(plots[freq_key][syn_dist_key])
-
-                # save and close figure
-                plt.figure(plots_dw[freq_key][syn_dist_key].number)
-                plot_file_name = 'syn_num_x_dw_'+freq_key+'Hz_' + syn_dist_key +'_um'
-                plots_dw[freq_key][syn_dist_key].savefig(data_folder+plot_file_name+'.png', dpi=250)
-                with open(data_folder+plot_file_name+'.pkl', 'wb') as output:
-                    pickle.dump(plots_dw[freq_key][syn_dist_key], output,protocol=pickle.HIGHEST_PROTOCOL)
-                print 'figure: ', plot_file_name, ' saved'
-                plt.close(plots_dw[freq_key][syn_dist_key])
-        
-        
-        # plot number of synapses vs. total number of soma/dendritic spikes normalized to total number of synapses
-        plots={}
-        for freq_key, freq in spike_data.iteritems():
-            plots[freq_key] = {}
-            for syn_dist_key, syn_dist in freq.iteritems():
-                plots[freq_key][syn_dist_key] = plt.figure()
-                for syn_num_key, syn_num in syn_dist.iteritems():
-                    for polarity_key, polarity in syn_num.iteritems():
-
-                        # get polarity index
-                        polarity_i = [f_i for f_i, f in enumerate(polarity['p'][0]['field']) if str(f)==polarity_key][0]
-
-                        # plot color and marker
-                        color = polarity['p'][0]['field_color'][polarity_i]
-                        # size = 20.*float(syn_dist_key)/600.
-                        size = 20.
-                        opacity = 0.7
-                        marker_soma = '.'
-                        marker_dend= 'x'
-                        marker_all='^'
-
-                        # lsit of soma/dend spike fraction for each trial in current set of conditions
-
-                        # iterate through trials
-                        soma_spikes_total=[]
-                        dend_spikes_total=[]
-                        all_spikes_total=[]
-                        for trial_i, trial in enumerate(polarity['spikes_dend_diff_bin']):
-                            # count somatic/dendritic spikes for each trial
-                            soma_count =[]
-                            dend_count=[]
-                            for time_bin_i, time_bin in enumerate(trial):
-                                # list of spike indeces with soma/dend spikes
-                                soma_first = [spike_i for spike_i, spike_diff in enumerate(time_bin) if spike_diff<0.]
-                                dend_first = [spike_i for spike_i, spike_diff in enumerate(time_bin) if spike_diff>=0.]
-                                # count total spieks per time bin
-                                soma_count.append(float(len(soma_first)))
-                                dend_count.append(float(len(dend_first)))
-                            
-                            syn_num_unique = float(len([seg_i for tree_key, tree in polarity['p'][trial_i]['seg_idx'].iteritems() for sec_i, sec in enumerate(tree) for seg_i, seg in enumerate(sec)]))
-                            # syn_num_unique = len(polarity['p']['seg_list'])
-                            # number of unique synaptic locations
-                            # syn_num_unique = float(len(list(set(polarity['spikes_dend_dist'][trial_i]))))
-                            # total spikes per trial, normalized
-                            soma_spikes_norm = np.sum(soma_count)/syn_num_unique
-                            dend_spikes_norm = np.sum(dend_count)/syn_num_unique
-                            # add to list for all trials
-                            soma_spikes_total.append(soma_spikes_norm)
-                            dend_spikes_total.append(dend_spikes_norm)
-                            all_spikes_total.append(dend_spikes_norm+soma_spikes_norm)
-                            
-                            # print 'dend_spikes_total:',dend_spikes_total
-                        
-                        # group stats
-                        soma_total_mean = np.mean(soma_spikes_total)
-                        soma_total_std = np.std(soma_spikes_total)
-                        soma_total_sem = stats.sem(soma_spikes_total)
-                        dend_total_mean = np.mean(dend_spikes_total)
-                        dend_total_std = np.std(dend_spikes_total)
-                        dend_total_sem = stats.sem(dend_spikes_total)
-                        all_total_mean = np.mean(all_spikes_total)
-                        all_total_std = np.std(all_spikes_total)
-                        all_total_sem = stats.sem(all_spikes_total)
-
-                        # plot with errorbars
-                        plt.figure(plots[freq_key][syn_dist_key].number)
-                        plt.plot(float(syn_num_key), soma_total_mean, color=color, marker=marker_soma, markersize=size, alpha=opacity, )
-                        plt.plot(float(syn_num_key), dend_total_mean, color=color, marker=marker_dend, markersize=size, alpha=opacity, )
-                        plt.plot(float(syn_num_key), all_total_mean, color=color, marker=marker_all, markersize=size, alpha=opacity, )
-                        plt.errorbar(float(syn_num_key), all_total_mean, yerr=all_total_sem, color=color, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), soma_total_mean, yerr=soma_total_sem, color=color, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), dend_total_mean, yerr=dend_total_sem, color=color, alpha=opacity)
-                        # plt.xlabel('Active synapses', fontsize=30, weight='bold')
-                        # plt.ylabel('Spikes/synapse', fontsize=30, weight='bold')
-                        # if syn_dist_key=='200':
-                        #     plt.xlim([0, 40])
-                        plt.xticks(fontsize=10, weight='bold')
-                        plt.yticks(fontsize=10, weight='bold')
-                        plt.title(syn_dist_key + ' um from soma', fontsize=30, weight='bold')
-                        # plt.legend()
-
-                # save and close figure
-                plt.figure(plots[freq_key][syn_dist_key].number)
-                black_patch = patches.Patch(color='black', label='Control')
-                red_patch =patches.Patch(color='red', label='Anodal')
-                blue_patch =patches.Patch(color='blue', label='Cathodal')
-                triangle = mlines.Line2D([], [], color='black', marker='^', linestyle='None', markersize=10, label='All spikes')
-                dot = mlines.Line2D([], [], color='black', marker='.', linestyle='None', markersize=10, label='Somatic')
-                cross = mlines.Line2D([], [], color='black', marker='x', linestyle='None', markersize=10, label='Dendritic')
-                # plt.legend(handles=[black_patch, red_patch, blue_patch, triangle, dot, cross])
-                plot_file_name = 'syn_num_x_spikes_total_'+freq_key+'Hz_' + syn_dist_key +'_um'
-                plots[freq_key][syn_dist_key].savefig(data_folder+plot_file_name+'.png', dpi=250, bbox_inches='tight')
-                with open(data_folder+plot_file_name+'.pkl', 'wb') as output:
-                    pickle.dump(plots[freq_key][syn_dist_key], output,protocol=pickle.HIGHEST_PROTOCOL)
-                print 'figure: ', plot_file_name, ' saved'
-                plt.close(plots[freq_key][syn_dist_key])
-        
-    
-        # plot number of synapses vs. mean spike timing
-        plots={}
-        for freq_key, freq in spike_data.iteritems():
-            plots[freq_key] = {}
-            for syn_dist_key, syn_dist in freq.iteritems():
-                plots[freq_key][syn_dist_key] = plt.figure()
-                for syn_num_key, syn_num in syn_dist.iteritems():
-                    for polarity_key, polarity in syn_num.iteritems():
-
-                        dt = polarity['p'][0]['dt']
-                        # get polarity index
-                        polarity_i = [f_i for f_i, f in enumerate(polarity['p'][0]['field']) if str(f)==polarity_key][0]
-
-                        # plot color and marker
-                        color = polarity['p'][0]['field_color'][polarity_i]
-                        # size = 20.*float(syn_dist_key)/600.
-                        size = 10.
-                        opacity = 0.7
-                        marker_soma = '.'
-                        marker_dend= 'x'
-
-                        # lsit of soma/dend spike fraction for each trial in current set of conditions
-                        soma_frac=[]
-                        dend_frac=[]
-                        # iterate through trials
-                        soma_timing=[]
-                        dend_timing=[]
-                        for trial_i, trial in enumerate(polarity['spikes_dend_diff_bin']):
-                            for time_bin_i, time_bin in enumerate(trial):
-                                onset = polarity['time_bins'][trial_i][time_bin_i][0]
-                                soma_first = [spike_i for spike_i, spike_diff in enumerate(time_bin) if spike_diff<0.]
-                                dend_first = [spike_i for spike_i, spike_diff in enumerate(time_bin) if spike_diff>=0.]
-                                soma_time = [polarity['spikes_dend_bin'][trial_i][time_bin_i][spike_i]-onset for spike_i in soma_first]
-                                dend_time = [polarity['spikes_dend_bin'][trial_i][time_bin_i][spike_i]-onset for spike_i in dend_first]
-                                soma_timing.append(soma_time)
-                                dend_timing.append(dend_time)
-
-                        soma_timing_flat = [time*dt for times in soma_timing for time in times]
-                        dend_timing_flat = [time*dt for times in dend_timing for time in times]
-                        
-                        # group stats
-                        soma_timing_mean = np.mean(soma_timing_flat)
-                        soma_timing_std = np.std(soma_timing_flat)
-                        soma_timing_sem = stats.sem(soma_timing_flat)
-                        dend_timing_mean = np.mean(dend_timing_flat)
-                        dend_timing_std = np.std(dend_timing_flat)
-                        dend_timing_sem = stats.sem(dend_timing_flat)
-
-                        # plot with errorbars
-                        plt.figure(plots[freq_key][syn_dist_key].number)
-                        plt.plot(float(syn_num_key), soma_timing_mean, color=color, marker=marker_soma, markersize=size, alpha=opacity)
-                        plt.plot(float(syn_num_key), dend_timing_mean, color=color, marker=marker_dend, markersize=size, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), soma_timing_mean, yerr=soma_timing_sem, color=color, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), dend_timing_mean, yerr=dend_timing_sem, color=color, alpha=opacity)
-                        plt.xlabel('Number of active synapses', fontsize=30, weight='bold')
-                        plt.ylabel('Spike timing after epsp onset (ms)', fontsize=30, weight='bold')
-                        plt.title(freq_key + ' Hz, ' + syn_dist_key + ' um from soma')
-
-                # save and close figure
-                plt.figure(plots[freq_key][syn_dist_key].number)
-                plot_file_name = 'syn_num_x_spikes_timing_'+freq_key+'Hz_' + syn_dist_key +'_um'
-                plots[freq_key][syn_dist_key].savefig(data_folder+plot_file_name+'.png', dpi=250)
-                with open(data_folder+plot_file_name+'.pkl', 'wb') as output:
-                    pickle.dump(plots[freq_key][syn_dist_key], output,protocol=pickle.HIGHEST_PROTOCOL)
-                print 'figure: ', plot_file_name, ' saved'
-                plt.close(plots[freq_key][syn_dist_key])
-
-    def exp_1c(self, **kwargs):
-        """ 
-        activate a varying number of synapses in proximal (0-200/0-300 um) and distal regions (400-600/300-600 um) simultameously.  Synapses are chosen from a window of 200 or 300 um.  As number of synapses is increased, multiple synapses may impinge on the same compartment/segment, effectively increasing the weight in that segment.  The threshold for generating a somatic or dendritic spike (in number of synapses) is measured as a function of nnumber of synapses. Does pairing with proximal inputs (e.g. 0-200 um) cause distal inputs (eg 400-600 um) to come under greater control from the soma? 
-
-        Similar to 1a and 1b, now pairing two distance windows (proximal and distal)
-
-        Plots: 
-        number of active synapse x fraction of synapses with at least one spike (somatically and dendritically driven spikes are separated)
-
-        number of active synapses x total number of spikes (normalized to number of active synapses, somatic and dendritic spikes are separated)
-
-        number of active synapses x mean spike timing for each spike
-
-        """
-        # spike threshold 
-        threshold =-30
-
-        # identify data folder
-        data_folder = 'Data/'+kwargs['experiment']+'/'
-        
-        # all files in directory
-        files = os.listdir(data_folder)
-        
-        # data files
-        data_files = [file for file in files if 'data' in file]
-        plot_files = [file for file in files if 'trace' in file]
-        
-        # unique identifiers for each file type
-        data_files_id= [file[-36:-1] for file in files if 'data' in file]
-        plot_files_id = [file[-36:-1] for file in files if 'trace' in file]
-
-        # if list of processed files in folder, load list
-        id_list_string_spike_times = 'id_list_spike_times.pkl'
-        if id_list_string_spike_times in files:
-            print 'id_list found'
-            
-            with open(data_folder+id_list_string_spike_times, 'rb') as pkl_file:
-                id_list_spike_times = pickle.load(pkl_file)
-
-            print 'id list loaded'
-        
-        # otherwise create empty list
-        else:
-            id_list_spike_times = []
-
-        # string to save group data
-        save_string_group_data_raw = 'spikes_grouped_raw'+'.pkl'
-        # if data file already exists
-        if save_string_group_data_raw in files:
-            # load data
-            print 'raw spike data found'
-            with open(data_folder+save_string_group_data_raw, 'rb') as pkl_file:
-                spike_data= pickle.load(pkl_file)
-            print 'raw spike data loaded'
-        # otherwise create data structure
-        else:
-            # data organized as {frequency}{syn distance}{number of synapses}{polarity}[trial]{data type}{tree}[section][segment][spikes]
-            spike_data= {}
-
-        # load spike analysis functions
-        spike_analysis = Spikes()
-
-        dtypes = ['spike_times','dw','p']
-        
-        # iterate over data files
-        for data_file_i, data_file in enumerate(data_files):
-
-            if data_file_i >=0:# and data_file_i <=1000:
-
-                # check if data has been processed already
-                if data_file not in id_list_spike_times:
-
-                    print data_file
-                    # open unprocessed data
-
-                    try:
-                        with open(data_folder+data_file, 'rb') as pkl_file:
-                            data = pickle.load(pkl_file)
-
-                        print 'data_file: ', data_file_i, ' out of ', len(data_files), ' opened'
-                    except EOFError:
-                        'EOF error, file not opened'
-                        continue
-
-                    # add to processed list
-                    id_list_spike_times.append(data_file)
-
-                    # parameter dictionary
-                    p = data['p']
-
-                    # temporary store for current trial data. all dictionary entries will be transferred to full data structure (all trials)
-                    dtemp = {}
-
-                    # print trial
-                    # parameter dictionary
-                    dtemp['p'] = copy.copy(p)
-
-                    # retrieve experiment conditions
-                    freq = p['pulse_freq']
-                    syn_num = p['syn_num']
-                    syn_dist = p['syn_dist'][-1] 
-                    freq_key = str(freq)
-                    syn_num_key =str(syn_num)
-                    syn_dist_key = str(syn_dist)
-
-                    # update data structure dimensions
-                    if str(freq) not in spike_data:
-                        spike_data[str(freq)]={}
-
-                    if str(syn_dist) not in spike_data[str(freq)]:
-                        spike_data[str(freq)][str(syn_dist)]={}
-
-                    if str(syn_num) not in spike_data[str(freq)][str(syn_dist)]:
-                        spike_data[str(freq)][str(syn_dist)][str(syn_num)]={}
-                        for polarity_i, polarity in enumerate(p['field']):
-                            spike_data[str(freq)][str(syn_dist)][str(syn_num)][str(polarity)]={}
-
-                    # iterate through polarities
-                    for polarity_i, polarity in enumerate(p['field']):
-                        polarity_key =str(polarity)
-
-
-
-                        # for each trial get a list of dendritic spike times and a corresponding list with the location (distance from soma) they occured
-                        dtemp['spikes_dend']=[] 
-                        dtemp['spikes_dend_dist']=[]
-                        dtemp['spikes_first'] = []
-                        dtemp['spike_times'] ={}
-                        dtemp['dw']={}
-
-                        # add soma data
-                        dtemp['spike_times']['soma'] = [[]]
-                        spike_times = spike_analysis.detect_spikes(data[str(polarity)]['soma_v'][0][0], threshold=threshold)['times'][0]
-                        dtemp['spike_times']['soma'][0].append(spike_times)
-                        dtemp['spikes_soma'] = spike_times
-                        # print spike_times
-
-
-                        # iterate through tree, section, segment
-                        for tree_key, tree in p['sec_idx'].iteritems():
-                            dtemp['spike_times'][tree_key] =[]
-                            dtemp['dw'][tree_key] =[]
-                        
-                            for sec_i, sec in enumerate(tree):
-
-                                dtemp['spike_times'][tree_key].append([])
-                                dtemp['dw'][tree_key].append([])
-
-                                for seg_i, seg in enumerate(p['seg_idx'][tree_key][sec_i]):
-
-                                    sec_num = sec
-                                    seg_num = p['seg_idx'][tree_key][sec_i][seg_i]
-                                    distance = p['seg_dist'][tree_key][sec_num][seg_num]
-
-                                    # distance requirement, only include synapses in the distal region
-                                    if distance > p['syn_dist'][-1][0] and distance <= p['syn_dist'][-1][1]:  
-
-
-                                        # list of spike times [spike_times]
-                                        spike_times = spike_analysis.detect_spikes(data[str(polarity)][tree_key+'_v'][sec_i][seg_i], threshold=threshold)['times'][0]
-
-                                        # scalar weight change
-                                        dw = data[str(polarity)][tree_key+'_gbar'][sec_i][seg_i][-1]/data[str(polarity)][tree_key+'_gbar'][sec_i][seg_i][0]
-
-                                        # add to dtemp structure
-                                        dtemp['spike_times'][tree_key][sec_i].append(spike_times)
-                                        dtemp['dw'][tree_key][sec_i].append(dw)
-
-                                        # record whether whether there was a spike in soma or dendrite first [all dendritic spike]
-                                        # no spike=0, dend first=1, soma first=2
-                                        # if there are dendritic spikes
-                                        if len(spike_times)>0:
-                                            # iterate through spike times
-                                            for spike_i, spike_time in enumerate(spike_times):
-
-                                                # add to list of all dendritic spike times for this trial/cell
-                                                dtemp['spikes_dend'].append(spike_time)
-                                                dtemp['spikes_dend_dist'].append(distance)
-                                                print 'distance:',distance
-
-                                                # if this is the first spike
-                                                if spike_i==0:
-                                                    # if there is also a somatic spike
-                                                    if len(dtemp['spikes_soma'])>0:
-                                                        # if the somatic spike occurs first
-                                                        if spike_time > dtemp['spikes_soma'][0]:
-
-                                                            # store as soma first
-                                                            dtemp['spikes_first'].append(2)
-                                                        # otherwise the spike is dend first
-                                                        else:
-                                                            dtemp['spikes_first'].append(1)
-                                                    # if there is a dendritic but no somatic spike, it is dend first
-                                                    else:
-                                                        dtemp['spikes_first'].append(1)
-                                        # otherwise no spike at all
-                                        else:
-                                            dtemp['spikes_first'].append(0)
-
-                        # create nested list of spike times with dimensions [pulse time bins][spike times]
-                        dtemp['time_bins'] = []
-                        dtemp['spikes_dend_bin'] = []
-                        dtemp['spikes_soma_bin'] = []
-                        dtemp['spikes_dend_dist_bin'] = []
-                        dtemp['spikes_dend_diff_bin'] = []
-                        dtemp['syn_frac_bin'] = []
-                        for pulse_i, pulse in enumerate(range(p['pulses'])):
-                            # determine time bins
-                            dtemp['time_bins'].append([])
-                            time1 = (p['warmup'] + 1000/p['pulse_freq']*pulse_i)/p['dt'] +1 
-                            time2 = (p['warmup'] + 1000/p['pulse_freq']*(pulse_i+1))/p['dt']
-                            dtemp['time_bins'][pulse_i].append(time1)
-                            dtemp['time_bins'][pulse_i].append(time2)
-
-                            # get spike times that fall within the current bin 
-                            binned_spikes_dist = []
-                            binned_spikes_dend =[]
-                            binned_spikes_soma = []
-                            if len(dtemp['spikes_soma'])>0:
-                                # print dtemp['spikes_soma']
-                                binned_spikes_soma = [spike for spike_i, spike in enumerate(dtemp['spikes_soma']) if (spike > time1 and spike <= time2)]
-                            if len(dtemp['spikes_dend'])>0:
-                                binned_spikes_dend = [spike for spike_i, spike in enumerate(dtemp['spikes_dend']) if (spike > time1 and spike <= time2)]
-                                binned_spikes_dist = [dtemp['spikes_dend_dist'][spike_i] for spike_i, spike in enumerate(dtemp['spikes_dend']) if (spike > time1 and spike <= time2)]
-                            # difference between dendritic and somatic spike times (dendrite first is positive, soma first is negative)
-                            if len(binned_spikes_soma)>0 and len(binned_spikes_dend)>0:
-                                binned_spikes_dend_diff = [binned_spikes_soma[0]-spike for spike_i, spike in enumerate(binned_spikes_dend)]
-                            else: #len(binned_spikes_dend)>0:
-                                binned_spikes_dend_diff = binned_spikes_dend
-
-                            # fraction of synapses that spike in current bin
-                            binned_distances =  list(set(binned_spikes_dist))
-                            binned_syn_frac = float(len(binned_distances))/float(syn_num_key)
-                            
-
-                            # add spike times for current bin to list of all bins
-                            dtemp['spikes_dend_bin'].append(binned_spikes_dend)
-                            dtemp['spikes_soma_bin'].append(binned_spikes_soma)
-                            dtemp['spikes_dend_dist_bin'].append(binned_spikes_dist)
-                            dtemp['spikes_dend_diff_bin'].append(binned_spikes_dend_diff)
-                            dtemp['syn_frac_bin'].append(binned_syn_frac)
-
-                         # fraction of synapses that spike at all during simulation
-                        distances = list(set(dtemp['spikes_dend_dist']))
-                        dtemp['syn_frac'] = float(len(distances))/float(syn_num_key)
-
-                        # update main data structure
-                        for dtype_key, dtype in dtemp.iteritems():
-                            if dtype_key not in spike_data[freq_key][syn_dist_key][syn_num_key][polarity_key]:
-                                spike_data[freq_key][syn_dist_key][syn_num_key][polarity_key][dtype_key]=[]
-                            spike_data[freq_key][syn_dist_key][syn_num_key][polarity_key][dtype_key].append(dtype)
-
-        # save processed file list
-        with open(data_folder+id_list_string_spike_times, 'wb') as output:pickle.dump(id_list_spike_times, output,protocol=pickle.HIGHEST_PROTOCOL)
-        print 'id list saved'
-        
-        # save structure of all raw spike data
-        save_group_data = spike_data
-        with open(data_folder+save_string_group_data_raw, 'wb') as output:
-            pickle.dump(save_group_data, output,protocol=pickle.HIGHEST_PROTOCOL)
-        print 'spike data saved'
-
-        
-        # plot number of synapses vs. mean fraction of synapses with at least one soma/dendrite driven spike
-        plots={}
-        for freq_key, freq in spike_data.iteritems():
-            plots[freq_key] = {}
-            for syn_dist_key, syn_dist in freq.iteritems():
-                plots[freq_key][syn_dist_key] = plt.figure()
-                for syn_num_key, syn_num in syn_dist.iteritems():
-                    for polarity_key, polarity in syn_num.iteritems():
-
-                        # get polarity index
-                        polarity_i = [f_i for f_i, f in enumerate(polarity['p'][0]['field']) if str(f)==polarity_key][0]
-
-                        # plot color and marker
-                        color = polarity['p'][0]['field_color'][polarity_i]
-                        # size = 20.*float(syn_dist_key)/600.
-                        size = 10.
-                        opacity = 0.7
-                        marker_soma = '.'
-                        marker_dend= 'x'
-                        marker_all= '^'
-
-                        # lsit of soma/dend spike fraction for each trial in current set of conditions
-                        soma_frac=[]
-                        dend_frac=[]
-                        all_frac=[]
-                        # iterate through trials
-                        for trial_i, trial in enumerate(polarity['spikes_first']):
-                            # soma and dendrite spikes
-                            # soma=2, dendrite=1
-                            soma_first = [spike_i for spike_i, spike_loc in enumerate(trial) if spike_loc==2]
-                            dend_first = [spike_i for spike_i, spike_loc in enumerate(trial) if spike_loc==1]
-                            # add to list with dimension [trials]
-                            soma_frac.append(float(len(soma_first))/float(len(trial)))
-                            dend_frac.append(float(len(dend_first))/float(len(trial)))
-                            all_frac.append(float(len(dend_first)+len(soma_first))/float(len(trial)))
-
-                        # group stats
-                        soma_frac_mean = np.mean(soma_frac)
-                        soma_frac_std = np.std(soma_frac)
-                        soma_frac_sem = stats.sem(soma_frac)
-                        dend_frac_mean = np.mean(dend_frac)
-                        dend_frac_std = np.std(dend_frac)
-                        dend_frac_sem = stats.sem(dend_frac)
-                        all_frac_mean = np.mean(all_frac)
-                        all_frac_std = np.std(all_frac)
-                        all_frac_sem = stats.sem(all_frac)
-
-                        # plot with errorbars
-                        plt.figure(plots[freq_key][syn_dist_key].number)
-                        plt.plot(float(syn_num_key), soma_frac_mean, color=color, marker=marker_soma, markersize=size, alpha=opacity)
-                        plt.plot(float(syn_num_key), dend_frac_mean, color=color, marker=marker_dend, markersize=size, alpha=opacity)
-                        plt.plot(float(syn_num_key), all_frac_mean, color=color, marker=marker_all, markersize=size, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), soma_frac_mean, yerr=soma_frac_sem, color=color, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), dend_frac_mean, yerr=dend_frac_sem, color=color, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), all_frac_mean, yerr=all_frac_sem, color=color, alpha=opacity)
-                        plt.xlabel('number of active synapses')
-                        plt.ylabel('fraction of spiking synapses')
-                        plt.title(freq_key + ' Hz, ' + syn_dist_key + ' um from soma')
-
-                # save and close figure
-                plt.figure(plots[freq_key][syn_dist_key].number)
-                plot_file_name = 'syn_num_x_spike_prob_location_'+freq_key+'Hz_' + syn_dist_key +'_um'
-                plots[freq_key][syn_dist_key].savefig(data_folder+plot_file_name+'.png', dpi=250)
-                with open(data_folder+plot_file_name+'.pkl', 'wb') as output:
-                    pickle.dump(plots[freq_key][syn_dist_key], output,protocol=pickle.HIGHEST_PROTOCOL)
-                print 'figure: ', plot_file_name, ' saved'
-                plt.close(plots[freq_key][syn_dist_key])
-        
-        
-        # plot number of synapses vs. total number of soma/dendritic spikes normalized to total number of synapses
-        plots={}
-        for freq_key, freq in spike_data.iteritems():
-            plots[freq_key] = {}
-            for syn_dist_key, syn_dist in freq.iteritems():
-                plots[freq_key][syn_dist_key] = plt.figure()
-                for syn_num_key, syn_num in syn_dist.iteritems():
-                    for polarity_key, polarity in syn_num.iteritems():
-
-
-                        # get polarity index
-                        polarity_i = [f_i for f_i, f in enumerate(polarity['p'][0]['field']) if str(f)==polarity_key][0]
-
-                        # plot color and marker
-                        color = polarity['p'][0]['field_color'][polarity_i]
-                        # size = 20.*float(syn_dist_key)/600.
-                        size = 10.
-                        opacity = 0.7
-                        marker_soma = '.'
-                        marker_dend= 'x'
-                        marker_all= '^'
-
-                        # lsit of soma/dend spike fraction for each trial in current set of conditions
-
-                        # iterate through trials
-                        soma_spikes_total=[]
-                        dend_spikes_total=[]
-                        all_spikes_total=[]
-                        for trial_i, trial in enumerate(polarity['spikes_dend_diff_bin']):
-                            # count somatic/dendritic spikes for each trial
-                            soma_count =[]
-                            dend_count=[]
-                            for time_bin_i, time_bin in enumerate(trial):
-                                # list of spike indeces with soma/dend spikes
-                                soma_first = [spike_i for spike_i, spike_diff in enumerate(time_bin) if spike_diff<0.]
-                                dend_first = [spike_i for spike_i, spike_diff in enumerate(time_bin) if spike_diff>=0.]
-                                # count total spieks per time bin
-                                soma_count.append(float(len(soma_first)))
-                                dend_count.append(float(len(dend_first)))
-                            
-                            syn_num_unique = float(len([seg_i for tree_key, tree in polarity['p'][trial_i]['seg_idx'].iteritems() for sec_i, sec in enumerate(tree) for seg_i, seg in enumerate(sec)]))
-                            # syn_num_unique = len(polarity['p']['seg_list'])
-                            # number of unique synaptic locations
-                            # syn_num_unique = float(len(list(set(polarity['spikes_dend_dist'][trial_i]))))
-                            # total spikes per trial, normalized
-                            soma_spikes_norm = np.sum(soma_count)/syn_num_unique
-                            dend_spikes_norm = np.sum(dend_count)/syn_num_unique
-                            # add to list for all trials
-                            soma_spikes_total.append(soma_spikes_norm)
-                            dend_spikes_total.append(dend_spikes_norm)
-                            all_spikes_total.append(soma_spikes_norm+dend_spikes_norm)
-                            
-                            # print 'dend_spikes_total:',dend_spikes_total
-                        
-                        # group stats
-                        soma_total_mean = np.mean(soma_spikes_total)
-                        soma_total_std = np.std(soma_spikes_total)
-                        soma_total_sem = stats.sem(soma_spikes_total)
-                        dend_total_mean = np.mean(dend_spikes_total)
-                        dend_total_std = np.std(dend_spikes_total)
-                        dend_total_sem = stats.sem(dend_spikes_total)
-                        all_total_mean = np.mean(all_spikes_total)
-                        all_total_std = np.std(all_spikes_total)
-                        all_total_sem = stats.sem(all_spikes_total)
-
-                        # plot with errorbars
-                        plt.figure(plots[freq_key][syn_dist_key].number)
-                        plt.plot(float(syn_num_key), soma_total_mean, color=color, marker=marker_soma, markersize=size, alpha=opacity)
-                        plt.plot(float(syn_num_key), dend_total_mean, color=color, marker=marker_dend, markersize=size, alpha=opacity)
-                        plt.plot(float(syn_num_key), all_total_mean, color=color, marker=marker_all, markersize=size, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), soma_total_mean, yerr=soma_total_sem, color=color, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), dend_total_mean, yerr=dend_total_sem, color=color, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), all_total_mean, yerr=all_total_sem, color=color, alpha=opacity)
-                        plt.xlabel('number of active synapses')
-                        plt.ylabel('Number of spikes/synapse')
-                        soma_frac=[]
-                        dend_frac=[]
-                        all_frac=[]
-                        # iterate through trials
-                        for trial_i, trial in enumerate(polarity['spikes_first']):
-                            # soma and dendrite spikes
-                            # soma=2, dendrite=1
-                            soma_first = [spike_i for spike_i, spike_loc in enumerate(trial) if spike_loc==2]
-                            dend_first = [spike_i for spike_i, spike_loc in enumerate(trial) if spike_loc==1]
-                            # add to list with dimension [trials]
-                            soma_frac.append(float(len(soma_first))/float(len(trial)))
-                            dend_frac.append(float(len(dend_first))/float(len(trial)))
-                            all_frac.append(float(len(dend_first)+len(soma_first))/float(len(trial)))
-
-                        # group stats
-                        soma_frac_mean = np.mean(soma_frac)
-                        soma_frac_std = np.std(soma_frac)
-                        soma_frac_sem = stats.sem(soma_frac)
-                        dend_frac_mean = np.mean(dend_frac)
-                        dend_frac_std = np.std(dend_frac)
-                        dend_frac_sem = stats.sem(dend_frac)
-                        all_frac_mean = np.mean(all_frac)
-                        all_frac_std = np.std(all_frac)
-                        all_frac_sem = stats.sem(all_frac)
-
-                        # plot with errorbars
-                        plt.figure(plots[freq_key][syn_dist_key].number)
-                        plt.plot(float(syn_num_key), soma_frac_mean, color=color, marker=marker_soma, markersize=size, alpha=opacity)
-                        plt.plot(float(syn_num_key), dend_frac_mean, color=color, marker=marker_dend, markersize=size, alpha=opacity)
-                        plt.plot(float(syn_num_key), all_frac_mean, color=color, marker=marker_all, markersize=size, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), soma_frac_mean, yerr=soma_frac_sem, color=color, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), dend_frac_mean, yerr=dend_frac_sem, color=color, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), all_frac_mean, yerr=all_frac_sem, color=color, alpha=opacity)
-                        plt.xlabel('number of active synapses')
-                        plt.ylabel('fraction of spiking synapses')
-                        plt.title(freq_key + ' Hz, ' + syn_dist_key + ' um from soma')
-
-                # save and close figure
-                plt.figure(plots[freq_key][syn_dist_key].number)
-                plot_file_name = 'syn_num_x_spikes_total_'+freq_key+'Hz_' + syn_dist_key +'_um'
-                plot_file_name = 'syn_num_x_spike_prob_location_'+freq_key+'Hz_' + syn_dist_key +'_um'
-                plots[freq_key][syn_dist_key].savefig(data_folder+plot_file_name+'.png', dpi=250)
-                with open(data_folder+plot_file_name+'.pkl', 'wb') as output:
-                    pickle.dump(plots[freq_key][syn_dist_key], output,protocol=pickle.HIGHEST_PROTOCOL)
-                print 'figure: ', plot_file_name, ' saved'
-                plt.close(plots[freq_key][syn_dist_key])
-        
-        
-        # plot number of synapses vs. mean spike timing
-        # plot number of synapses vs. total number of soma/dendritic spikes normalized to total number of synapses
-        plots={}
-        for freq_key, freq in spike_data.iteritems():
-            plots[freq_key] = {}
-            for syn_dist_key, syn_dist in freq.iteritems():
-                plots[freq_key][syn_dist_key] = plt.figure()
-                for syn_num_key, syn_num in syn_dist.iteritems():
-                    for polarity_key, polarity in syn_num.iteritems():
-
-                        dt = polarity['p'][0]['dt']
-                        # get polarity index
-                        polarity_i = [f_i for f_i, f in enumerate(polarity['p'][0]['field']) if str(f)==polarity_key][0]
-
-                        # plot color and marker
-                        color = polarity['p'][0]['field_color'][polarity_i]
-                        # size = 20.*float(syn_dist_key)/600.
-                        size = 10.
-                        opacity = 0.7
-                        marker_soma = '.'
-                        marker_dend= 'x'
-                        marker_all='^'
-
-                        # lsit of soma/dend spike fraction for each trial in current set of conditions
-                        soma_frac=[]
-                        dend_frac=[]
-                        # iterate through trials
-                        soma_timing=[]
-                        dend_timing=[]
-                        for trial_i, trial in enumerate(polarity['spikes_dend_diff_bin']):
-                            for time_bin_i, time_bin in enumerate(trial):
-                                onset = polarity['time_bins'][trial_i][time_bin_i][0]
-                                soma_first = [spike_i for spike_i, spike_diff in enumerate(time_bin) if spike_diff<0.]
-                                dend_first = [spike_i for spike_i, spike_diff in enumerate(time_bin) if spike_diff>=0.]
-                                soma_time = [polarity['spikes_dend_bin'][trial_i][time_bin_i][spike_i]-onset for spike_i in soma_first]
-                                dend_time = [polarity['spikes_dend_bin'][trial_i][time_bin_i][spike_i]-onset for spike_i in dend_first]
-                                soma_timing.append(soma_time)
-                                dend_timing.append(dend_time)
-
-                        soma_timing_flat = [time*dt for times in soma_timing for time in times]
-                        dend_timing_flat = [time*dt for times in dend_timing for time in times]
-                        all_timing_flat = soma_timing_flat+dend_timing_flat
-                        
-                        # group stats
-                        soma_timing_mean = np.mean(soma_timing_flat)
-                        soma_timing_std = np.std(soma_timing_flat)
-                        soma_timing_sem = stats.sem(soma_timing_flat)
-                        dend_timing_mean = np.mean(dend_timing_flat)
-                        dend_timing_std = np.std(dend_timing_flat)
-                        dend_timing_sem = stats.sem(dend_timing_flat)
-                        all_timing_mean = np.mean(all_timing_flat)
-                        all_timing_std = np.std(all_timing_flat)
-                        all_timing_sem = stats.sem(all_timing_flat)
-
-                        # plot with errorbars
-                        plt.figure(plots[freq_key][syn_dist_key].number)
-                        plt.plot(float(syn_num_key), soma_timing_mean, color=color, marker=marker_soma, markersize=size, alpha=opacity)
-                        plt.plot(float(syn_num_key), dend_timing_mean, color=color, marker=marker_dend, markersize=size, alpha=opacity)
-                        plt.plot(float(syn_num_key), all_timing_mean, color=color, marker=marker_all, markersize=size, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), soma_timing_mean, yerr=soma_timing_sem, color=color, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), dend_timing_mean, yerr=dend_timing_sem, color=color, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), all_timing_mean, yerr=all_timing_sem, color=color, alpha=opacity)
-                        plt.xlabel('number of active synapses')
-                        plt.ylabel('spike timing after epsp onset (ms)')
-                        marker_all= '^'
-
-                        # lsit of soma/dend spike fraction for each trial in current set of conditions
-
-                        # iterate through trials
-                        soma_spikes_total=[]
-                        dend_spikes_total=[]
-                        all_spikes_total=[]
-                        for trial_i, trial in enumerate(polarity['spikes_dend_diff_bin']):
-                            # count somatic/dendritic spikes for each trial
-                            soma_count =[]
-                            dend_count=[]
-                            for time_bin_i, time_bin in enumerate(trial):
-                                # list of spike indeces with soma/dend spikes
-                                soma_first = [spike_i for spike_i, spike_diff in enumerate(time_bin) if spike_diff<0.]
-                                dend_first = [spike_i for spike_i, spike_diff in enumerate(time_bin) if spike_diff>=0.]
-                                # count total spieks per time bin
-                                soma_count.append(float(len(soma_first)))
-                                dend_count.append(float(len(dend_first)))
-                            
-                            syn_num_unique = float(len([seg_i for tree_key, tree in polarity['p'][trial_i]['seg_idx'].iteritems() for sec_i, sec in enumerate(tree) for seg_i, seg in enumerate(sec)]))
-                            # syn_num_unique = len(polarity['p']['seg_list'])
-                            # number of unique synaptic locations
-                            # syn_num_unique = float(len(list(set(polarity['spikes_dend_dist'][trial_i]))))
-                            # total spikes per trial, normalized
-                            soma_spikes_norm = np.sum(soma_count)/syn_num_unique
-                            dend_spikes_norm = np.sum(dend_count)/syn_num_unique
-                            # add to list for all trials
-                            soma_spikes_total.append(soma_spikes_norm)
-                            dend_spikes_total.append(dend_spikes_norm)
-                            all_spikes_total.append(soma_spikes_norm+dend_spikes_norm)
-                            
-                            # print 'dend_spikes_total:',dend_spikes_total
-                        
-                        # group stats
-                        soma_total_mean = np.mean(soma_spikes_total)
-                        soma_total_std = np.std(soma_spikes_total)
-                        soma_total_sem = stats.sem(soma_spikes_total)
-                        dend_total_mean = np.mean(dend_spikes_total)
-                        dend_total_std = np.std(dend_spikes_total)
-                        dend_total_sem = stats.sem(dend_spikes_total)
-                        all_total_mean = np.mean(all_spikes_total)
-                        all_total_std = np.std(all_spikes_total)
-                        all_total_sem = stats.sem(all_spikes_total)
-
-                        # plot with errorbars
-                        plt.figure(plots[freq_key][syn_dist_key].number)
-                        plt.plot(float(syn_num_key), soma_total_mean, color=color, marker=marker_soma, markersize=size, alpha=opacity)
-                        plt.plot(float(syn_num_key), dend_total_mean, color=color, marker=marker_dend, markersize=size, alpha=opacity)
-                        plt.plot(float(syn_num_key), all_total_mean, color=color, marker=marker_all, markersize=size, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), soma_total_mean, yerr=soma_total_sem, color=color, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), dend_total_mean, yerr=dend_total_sem, color=color, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), all_total_mean, yerr=all_total_sem, color=color, alpha=opacity)
-                        plt.xlabel('number of active synapses')
-                        plt.ylabel('Number of spikes/synapse')
-                        plt.title(freq_key + ' Hz, ' + syn_dist_key + ' um from soma')
-
-                # save and close figure
-                plt.figure(plots[freq_key][syn_dist_key].number)
-                plot_file_name = 'syn_num_x_spikes_timing_'+freq_key+'Hz_' + syn_dist_key +'_um'
-                plot_file_name = 'syn_num_x_spikes_total_'+freq_key+'Hz_' + syn_dist_key +'_um'
-                plots[freq_key][syn_dist_key].savefig(data_folder+plot_file_name+'.png', dpi=250)
-                with open(data_folder+plot_file_name+'.pkl', 'wb') as output:
-                    pickle.dump(plots[freq_key][syn_dist_key], output,protocol=pickle.HIGHEST_PROTOCOL)
-                print 'figure: ', plot_file_name, ' saved'
-                plt.close(plots[freq_key][syn_dist_key])
-
-        
-        
-        # plot number of synapses vs. mean spike timing
-        plots={}
-        for freq_key, freq in spike_data.iteritems():
-            plots[freq_key] = {}
-            for syn_dist_key, syn_dist in freq.iteritems():
-                plots[freq_key][syn_dist_key] = plt.figure()
-                for syn_num_key, syn_num in syn_dist.iteritems():
-                    for polarity_key, polarity in syn_num.iteritems():
-
-                        dt = polarity['p'][0]['dt']
-                        # get polarity index
-                        polarity_i = [f_i for f_i, f in enumerate(polarity['p'][0]['field']) if str(f)==polarity_key][0]
-
-                        # plot color and marker
-                        color = polarity['p'][0]['field_color'][polarity_i]
-                        # size = 20.*float(syn_dist_key)/600.
-                        size = 10.
-                        opacity = 0.7
-                        marker_soma = '.'
-                        marker_dend= 'x'
-                        marker_all='^'
-
-                        # lsit of soma/dend spike fraction for each trial in current set of conditions
-                        soma_frac=[]
-                        dend_frac=[]
-                        # iterate through trials
-                        soma_timing=[]
-                        dend_timing=[]
-                        for trial_i, trial in enumerate(polarity['spikes_dend_diff_bin']):
-                            for time_bin_i, time_bin in enumerate(trial):
-                                onset = polarity['time_bins'][trial_i][time_bin_i][0]
-                                soma_first = [spike_i for spike_i, spike_diff in enumerate(time_bin) if spike_diff<0.]
-                                dend_first = [spike_i for spike_i, spike_diff in enumerate(time_bin) if spike_diff>=0.]
-                                soma_time = [polarity['spikes_dend_bin'][trial_i][time_bin_i][spike_i]-onset for spike_i in soma_first]
-                                dend_time = [polarity['spikes_dend_bin'][trial_i][time_bin_i][spike_i]-onset for spike_i in dend_first]
-                                soma_timing.append(soma_time)
-                                dend_timing.append(dend_time)
-
-                        soma_timing_flat = [time*dt for times in soma_timing for time in times]
-                        dend_timing_flat = [time*dt for times in dend_timing for time in times]
-                        all_timing_flat = soma_timing_flat+dend_timing_flat
-                        
-                        # group stats
-                        soma_timing_mean = np.mean(soma_timing_flat)
-                        soma_timing_std = np.std(soma_timing_flat)
-                        soma_timing_sem = stats.sem(soma_timing_flat)
-                        dend_timing_mean = np.mean(dend_timing_flat)
-                        dend_timing_std = np.std(dend_timing_flat)
-                        dend_timing_sem = stats.sem(dend_timing_flat)
-                        all_timing_mean = np.mean(all_timing_flat)
-                        all_timing_std = np.std(all_timing_flat)
-                        all_timing_sem = stats.sem(all_timing_flat)
-
-                        # plot with errorbars
-                        plt.figure(plots[freq_key][syn_dist_key].number)
-                        plt.plot(float(syn_num_key), soma_timing_mean, color=color, marker=marker_soma, markersize=size, alpha=opacity)
-                        plt.plot(float(syn_num_key), dend_timing_mean, color=color, marker=marker_dend, markersize=size, alpha=opacity)
-                        plt.plot(float(syn_num_key), all_timing_mean, color=color, marker=marker_all, markersize=size, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), soma_timing_mean, yerr=soma_timing_sem, color=color, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), dend_timing_mean, yerr=dend_timing_sem, color=color, alpha=opacity)
-                        plt.errorbar(float(syn_num_key), all_timing_mean, yerr=all_timing_sem, color=color, alpha=opacity)
-                        plt.xlabel('number of active synapses')
-                        plt.ylabel('spike timing after epsp onset (ms)')
-                        plt.title(freq_key + ' Hz, ' + syn_dist_key + ' um from soma')
-
-                # save and close figure
-                plt.figure(plots[freq_key][syn_dist_key].number)
-                plot_file_name = 'syn_num_x_spikes_timing_'+freq_key+'Hz_' + syn_dist_key +'_um'
-                plots[freq_key][syn_dist_key].savefig(data_folder+plot_file_name+'.png', dpi=250)
-                with open(data_folder+plot_file_name+'.pkl', 'wb') as output:
-                    pickle.dump(plots[freq_key][syn_dist_key], output,protocol=pickle.HIGHEST_PROTOCOL)
-                print 'figure: ', plot_file_name, ' saved'
-                plt.close(plots[freq_key][syn_dist_key])
-
-
-        # create least squares fit for syn_num vs spike_num curves
-
-    def exp_2c(self, **kwargs):
-        """ activate synapse in each segment until a spike either occurs in the soma or dendrite.  Plot the number of synapses(weight) required at each segment as a function of distance from soma
-        """
-        # number of stimulation polarities tested
-        n_pol =3
-        # spike threshold
-        threshold = -30
-
-        # instantiate default parameter class
-        p_class = param.Default()
-        p_temp = p_class.p
-        # load cell and store in parameter dictionary
-        cell1 = cell.CellMigliore2005(p_temp)
-        cell1.geometry(p_temp)
-        # insert mechanisms
-        cell1.mechanisms(p_temp)
-        # measure distance of each segment from the soma and store in parameter dictionary
-        p_class.seg_distance(cell1)
-
-        p_temp['morpho'] = p_class.create_morpho(cell1.geo)
-
-
-        # identify data folder
-        data_folder = 'Data/'+kwargs['experiment']+'/'
-        # all files in directory
-        files = os.listdir(data_folder)
-        # data files
-        data_files = [file for file in files if 'data' in file]
-        plot_files = [file for file in files if 'trace' in file]
-        # unique identifiers for each file type
-        data_files_id= [file[-36:-1] for file in files if 'data' in file]
-        plot_files_id = [file[-36:-1] for file in files if 'trace' in file]
-
-        id_list_string_spike_times = 'id_list_spike_times.pkl'
-        # if list of processed files in folder, load list
-        if id_list_string_spike_times in files:
-            print 'id_list found'
-            
-            with open(data_folder+id_list_string_spike_times, 'rb') as pkl_file:
-                    id_list_spike_times = pickle.load(pkl_file)
-        
-        # otherwise create empty list
-        else:
-            id_list_spike_times = []
-
-        # string to save group data
-        save_string_group_data = 'spikes_grouped'+'.pkl'
-        # if data file already exists
-        if save_string_group_data in files:
-            # load data
-            with open(data_folder+save_string_group_data, 'rb') as pkl_file:
-                spike_data= pickle.load(pkl_file)
-        # otherwise create data structure
-        else:
-            # data organized as {location}{data_type}[trials][polarity]
-            spike_data= {}
-
-        variables = ['spikes', 'peak', 'distance', 'weight', 'seg_idx']
-        # load spike analysis functions
-        spike_analysis = Spikes()
-
-        # iterate over data files
-        for data_file_i, data_file in enumerate(data_files):
-
-            if data_file_i >=0:
-                # print 'data_file:', data_file_i, 'out of', len(data_files)
-
-                # check if data has been processed already
-                if data_file not in id_list_spike_times:
-
-                    # open unprocessed data
-                    with open(data_folder+data_file, 'rb') as pkl_file:
-                        data = pickle.load(pkl_file)
-
-                    print 'data_file: ', data_file_i, ' out of ', len(data_files), ' opened'
-
-                    # parameter dictionary
-                    p = data['p']
-
-                    if 'morpho' not in p.keys():
-                        p['morpho'] = p_temp['morpho']
-                        with open(data_folder+data_file, 'wb')  as output:
-                            pickle.dump(data, output,protocol=pickle.HIGHEST_PROTOCOL)
-
-                    if len(spike_data)==0:
-                        for tree_key, tree in p['seg_dist'].iteritems():
-                            spike_data[tree_key]=[]
-                            for sec_i, sec in enumerate(tree):
-                                spike_data[tree_key].append([])
-                                for seg_i, seg in enumerate(sec):
-                                    spike_data[tree_key][sec_i].append([])
-                                    for pol_i, pol in enumerate(p['field']):
-                                        spike_data[tree_key][sec_i][seg_i].append({'soma':{}, 'dend':{}})
-                                        for loc_i, loc in spike_data[tree_key][sec_i][seg_i][pol_i].iteritems():
-                                            for variable_i, variable in enumerate(variables):
-                                                loc[variable]=[]
-
-                    
-                    # add to processed list
-                    id_list_spike_times.append(data_file)
-
-                    # get tree, section, segment info (only one segment is active)
-                    tree = p['trees'][0]
-                    sec = p['sec_idx'][tree][0]
-                    sec_i=0
-                    seg = p['seg_idx'][tree][0][0]
-                    seg_i=0
-
-                    # iterate over field polarities
-                    for f_i, f in enumerate(p['field']):
-
-                        # detect spikes in dendrite
-                        spike_data[tree][sec][seg][f_i]['dend']['spikes'].append(spike_analysis.detect_spikes(data[str(f)][tree+'_v'][sec_i][seg_i], threshold=threshold)['times'][0])
-
-                        # detect spikes in soma
-                        spike_data[tree][sec][seg][f_i]['soma']['spikes'].append(spike_analysis.detect_spikes(data[str(f)]['soma_v'][0][0], threshold=threshold)['times'][0])
-
-                        # peak dendrite voltage
-                        peak_dend = np.amax(data[str(f)][tree+'_v'][sec_i][seg_i][int(p['warmup']/p['dt']):])
-                        # peak soma voltage
-                        peak_soma = np.amax(data[str(f)]['soma_v'][0][0][int(p['warmup']/p['dt']):])
-
-                        # store peak voltages
-                        spike_data[tree][sec][seg][f_i]['dend']['peak'].append(peak_dend)
-                        spike_data[tree][sec][seg][f_i]['soma']['peak'].append(peak_soma)
-
-                        # store distance from soma for each spike
-                        spike_data[tree][sec][seg][f_i]['dend']['distance'].append(p['seg_dist'][tree][sec][seg])
-
-                        # store synaptic weight
-                        spike_data[tree][sec][seg][f_i]['dend']['weight'].append(p['w_mean'])
-
-                        # store segment info
-                        spike_data[tree][sec][seg][f_i]['dend']['seg_idx'].append(p['seg_idx'])
-
-        # save processed file list
-        with open(data_folder+id_list_string_spike_times, 'wb') as output:pickle.dump(id_list_spike_times, output,protocol=pickle.HIGHEST_PROTOCOL)
-        
-        # save structure of all spike data
-        save_group_data = spike_data
-        with open(data_folder+save_string_group_data, 'wb') as output:
-            pickle.dump(save_group_data, output,protocol=pickle.HIGHEST_PROTOCOL)
-
-        # plot number of synapses required for spike as a function of distance from the soma, with separate markers when spike initiated in soma or dendrite
-        plot_file_name = 'distance_x_weight_spike_init'
-        if plot_file_name + '.png' not in files: 
-            distance_plot = plt.figure()
-            plot_handles=[]
-
-            for tree_key, tree in spike_data.iteritems():
-                for sec_i, sec in enumerate(tree):
-                    for seg_i, seg in enumerate(sec):
-                        for f_i, f in enumerate(seg):
-
-                            if len(f['dend']['weight'])>0 and tree_key is not 'soma' :
-
-                                soma = f['soma']['spikes']
-                                
-                                # distance from soma
-                                dist = [dist
-                                for dist_i, dist 
-                                in enumerate(f['dend']['distance']) 
-                                if len(f['dend']['spikes'][dist_i]) > 0 
-                                or len(soma[dist_i]) > 0]
-
-                                if len(dist)>0:
-                                    dist=dist[0]
-                                
-                                # weight
-                                weight = [weight
-                                for weight_i, weight 
-                                in enumerate(f['dend']['weight']) 
-                                if len(f['dend']['spikes'][weight_i]) > 0 
-                                or len(soma[weight_i]) > 0]
-
-                                if len(weight)>0:
-                                    weight=weight[0]
-                                
-                                # plot color
-                                color = p_temp['field_color'][f_i]
-                                
-                                # list of dendritic spike time (if no spike it is empty list)
-                                dend = [spike[0] 
-                                for spike_i, spike 
-                                in enumerate(f['dend']['spikes'])
-                                if len(spike) > 0]
-
-                                soma = [spike[0] 
-                                for spike_i, spike 
-                                in enumerate(soma) 
-                                if len(spike) > 0]
-
-                                    # for storing whether dendritic or soamtic spike occured first
-
-                                if len(dend)>0:
-                                    dend = [dend[0]]
-
-                                if len(soma)>0:
-                                    soma=soma[0]
-                                
-
-                                dend_first=False
-                                soma_first=False
-                                # if there are both dendritic and somatic spikes
-                                if dend and soma:
-                                    # if dendrite first
-                                    if (dend < soma):
-                                        dend_first=True
-                                        marker = 'o'
-                                        label='dendrite first'
-                                    # if soma first, if tie soma wins
-                                    else:
-                                        soma_first=True
-                                        marker = 'x'
-                                        label = 'soma_first'
-                                # if only dendritic spike
-                                elif dend and not soma:
-                                    dend_first=True
-                                    marker = 'o'
-                                    label='dendrite first'
-
-                                # if only somatic spike
-                                elif soma and not dend:
-                                    soma_first=True
-                                    marker = 'x'
-                                    label = 'soma_first'
-
-                                if dend_first:
-                                    f['dend']['first_spike'] = 'dend'
-                                elif soma_first:
-                                    f['dend']['first_spike'] = 'soma'
-                                elif dend_first and soma_first:
-                                    f['dend']['first_spike'] = 'none'
-                                else:
-                                    f['dend']['first_spike'] = 'none'
-
-
-                                if dend_first or soma_first:
-
-                                    f['dend']['first_spike_weight'] = weight
-
-                                    # plot trial and add to list for legend
-                                    plot_handles.append(plt.plot(dist, weight, color+marker, label=label))
-                                    # labels
-                                    plt.xlabel('distance from soma (um)')
-                                    plt.ylabel('number of synapses/weight (uS)')
-
-                                else:
-                                    f['dend']['first_spike_weight'] = f['dend']['weight'][-1]
-                        # legend
-                        # plt.legend(handles=plot_handles)
-
-            # save and close figure
-            distance_plot.savefig(data_folder+plot_file_name+'.png', dpi=250)
-            plt.close(distance_plot)
-
-        # save structure of all spike data
-        save_group_data = spike_data
-        with open(data_folder+save_string_group_data, 'wb') as output:
-            pickle.dump(save_group_data, output,protocol=pickle.HIGHEST_PROTOCOL)
-
-        # plot peak soma vs peak dendrite voltage for each segment
-        distances = [[0,100],[100,200],[200,300],[300,600]]
-        reset = -65
-        peak_plot = []
-        plot_handles=[]
-        for distance_i, distance in enumerate(distances):
-            plot_file_name = 'peak_voltage_distance_'+str(distance[0])+'_'+str(distance[1])
-            if plot_file_name+'.png' not in files:
-
-                peak_plot.append(plt.figure())
-                plot_handles.append([])
-                for tree_key, tree in spike_data.iteritems():
-                    for sec_i, sec in enumerate(tree):
-                        for seg_i, seg in enumerate(sec):
-                            for f_i, f in enumerate(seg):
-                                if len(f['dend']['weight'])>0 and tree_key is not 'soma' :
-
-                                    # plot color
-                                    color = p_temp['field_color'][f_i]
-                                    # peak dendrite voltage
-                                    dend_peak = f['dend']['peak']
-                                    # peak soma voltage
-                                    soma_peak = f['soma']['peak']
-
-                                    weight = f['dend']['weight']
-
-                                    dist = f['dend']['distance']
-
-                                    soma = f['soma']['spikes']
-
-                                    # list of dendritic spike time (if no spike it is empty list)
-                                    dend = [spike[0] 
-                                    for spike_i, spike 
-                                    in enumerate(f['dend']['spikes'])
-                                    if len(spike) > 0]
-
-                                    soma = [spike[0] 
-                                    for spike_i, spike 
-                                    in enumerate(soma) 
-                                    if len(spike) > 0]
-
-                                        # for storing whether dendritic or soamtic spike occured first
-
-                                    if len(dend)>0:
-                                        dend = dend[0]
-
-                                    if len(soma)>0:
-                                        soma=soma[0]
-                                    
-
-                                    dend_first=False
-                                    soma_first=False
-                                    # if there are both dendritic and somatic spikes
-                                    if dend and soma:
-                                        # if dendrite first
-                                        if (dend < soma):
-                                            dend_first=True
-                                            marker = 'o'
-                                            label='dendrite first'
-                                        # if soma first, if tie soma wins
-                                        else:
-                                            soma_first=True
-                                            marker = 'x'
-                                            label = 'soma_first'
-                                    # if only dendritic spike
-                                    elif dend and not soma:
-                                        dend_first=True
-                                        marker = 'o'
-                                        label='dendrite first'
-
-                                    # if only somatic spike
-                                    elif soma and not dend:
-                                        soma_first=True
-                                        marker = 'x'
-                                        label = 'soma_first'
-
-                                    for trial_i, trial in enumerate(dend_peak):
-                                        if soma_peak[trial_i]>threshold:
-                                            soma_peak[trial_i]=reset
-                                        if  dend_peak[trial_i] >threshold:
-                                            dend_peak[trial_i]=reset
-
-                                        if dist[trial_i]>=distance[0] and dist[trial_i] < distance[1]: 
-                                            # plot trial and add to list for legend
-                                            plot_handles[distance_i].append(plt.plot(dend_peak[trial_i], soma_peak[trial_i], color+marker, label=label))
-                                            # labels
-                                            plt.xlabel('peak dendrite voltage (mV)')
-                                            plt.ylabel('peak soma voltage (mV)')
-                                            plt.title('distnace from soma:' + str(distance[0]) + ' to ' + str(distance[1]) + ' um')
-                            # legend
-                            # plt.legend(handles=plot_handles[distance_i])
-
-                    # save and close figure
-                peak_plot[distance_i].savefig(data_folder+plot_file_name+'.png', dpi=250)
-                plt.close(peak_plot[distance_i])
-
-        # save structure of all spike data
-        save_group_data = spike_data
-        with open(data_folder+save_string_group_data, 'wb') as output:
-            pickle.dump(save_group_data, output,protocol=pickle.HIGHEST_PROTOCOL)
-
-
-        # create shapeplot of spike threshold for each polarity
-        # iterate over field polarities
-        # create data structure to pass to morph plot for each field
-        # iterate through spike data structure, just storing spike threshold weight for each segment, if soma first weights are negative, if dendrite first weights are positive
-        morphplot_data = []
-        for f_i, f in enumerate(p_temp['field']):
-            morphplot_data.append({})
-            for tree_key, tree in spike_data.iteritems():
-                morphplot_data[f_i][tree_key]=[]
-                for sec_i, sec in enumerate(tree):
-                    morphplot_data[f_i][tree_key].append([])
-                    for seg_i, seg in enumerate(sec):
-                        if 'first_spike' not in seg[f_i]['dend'].keys():
-                            # print 'first spike not found'
-                            seg[f_i]['dend']['first_spike'] = 'none'
-
-                        first = seg[f_i]['dend']['first_spike']
-                        # print 'first spike:', first
-                        if first=='soma':
-                            weight = -1*seg[f_i]['dend']['first_spike_weight']
-                        elif first=='dend':
-                            weight = seg[f_i]['dend']['first_spike_weight']
-                        elif first=='none':
-                            weight= 0.
-
-                        # print 'weight threshold:', weight
-                        morphplot_data[f_i][tree_key][sec_i].append(weight)
-
-        fig, ax = plt.subplots(nrows=1, ncols=len(p_temp['field']))
-        plot_file_name = 'spike_threshold_shapeplots' 
-        file_name = data_folder + plot_file_name + '.png'
-        for f_i, f in enumerate(p_temp['field']):
-            ShapePlot().basic(morpho=p_temp['morpho'], data=morphplot_data[f_i], axes=ax[f_i])
-
-        fig.savefig(file_name, dpi=250)
-
-    def exp_2d(self, **kwargs):
-        """ Apply a single theta burst for each segment, one segment at a time.  Step through increasing number of synapses (weight) to detect thresholds
-
-        plot number of spikes
-        """
-        # number of stimulation polarities tested
-        n_pol =3
-        # spike threshold
-        threshold = -30
-
-        # instantiate default parameter class
-        p_class = param.Default()
-        p_temp = p_class.p
-        # load cell and store in parameter dictionary
-        cell1 = cell.CellMigliore2005(p_temp)
-        cell1.geometry(p_temp)
-        # insert mechanisms
-        cell1.mechanisms(p_temp)
-        # measure distance of each segment from the soma and store in parameter dictionary
-        p_class.seg_distance(cell1)
-
-        p_temp['morpho'] = p_class.create_morpho(cell1.geo)
-
-        # identify data folder
-        data_folder = 'Data/'+kwargs['experiment']+'/'
-        # all files in directory
-        files = os.listdir(data_folder)
-        # data files
-        data_files = [file for file in files if 'data' in file]
-        plot_files = [file for file in files if 'trace' in file]
-        # unique identifiers for each file type
-        data_files_id= [file[-36:-1] for file in files if 'data' in file]
-        plot_files_id = [file[-36:-1] for file in files if 'trace' in file]
-
-        id_list_string_spike_times = 'id_list_spike_times.pkl'
-        # if list of processed files in folder, load list
-        if id_list_string_spike_times in files:
-            print 'id_list found'
-            
-            with open(data_folder+id_list_string_spike_times, 'rb') as pkl_file:
-                    id_list_spike_times = pickle.load(pkl_file)
-        
-        # otherwise create empty list
-        else:
-            id_list_spike_times = []
-
-        # string to save group data
-        save_string_group_data = 'spikes_grouped'+'.pkl'
-        # if data file already exists
-        if save_string_group_data in files:
-            # load data
-            with open(data_folder+save_string_group_data, 'rb') as pkl_file:
-                spike_data= pickle.load(pkl_file)
-        # otherwise create data structure
-        else:
-            # data organized as {location}{data_type}[trials][polarity]
-            spike_data= {}
-
-        variables = ['spikes', 'peak', 'distance', 'weight', 'seg_idx']
-        # load spike analysis functions
-        spike_analysis = Spikes()
-
-        # iterate over data files
-        for data_file_i, data_file in enumerate(data_files):
-
-            if data_file_i >=0:
-
-                # check if data has been processed already
-                if data_file not in id_list_spike_times:
-
-                    # open unprocessed data
-                    with open(data_folder+data_file, 'rb') as pkl_file:
-                        data = pickle.load(pkl_file)
-
-                    print 'data_file: ', data_file_i, ' out of ', len(data_files), ' opened'
-
-                    # parameter dictionary
-                    p = data['p']
-
-                    if 'morpho' not in p.keys():
-                        p['morpho'] = p_temp['morpho']
-                        with open(data_folder+data_file, 'wb')  as output:
-                            pickle.dump(data, output,protocol=pickle.HIGHEST_PROTOCOL)
-
-                    if len(spike_data)==0:
-                        for tree_key, tree in p['seg_dist'].iteritems():
-                            spike_data[tree_key]=[]
-                            for sec_i, sec in enumerate(tree):
-                                spike_data[tree_key].append([])
-                                for seg_i, seg in enumerate(sec):
-                                    spike_data[tree_key][sec_i].append([])
-                                    for pol_i, pol in enumerate(p['field']):
-                                        spike_data[tree_key][sec_i][seg_i].append({'soma':{}, 'dend':{}})
-                                        for loc_i, loc in spike_data[tree_key][sec_i][seg_i][pol_i].iteritems():
-                                            for variable_i, variable in enumerate(variables):
-                                                loc[variable]=[]
-
-                    
-                    # add to processed list
-                    id_list_spike_times.append(data_file)
-
-                    # get tree, section, segment info (only one segment is active)
-                    tree = p['trees'][0]
-                    sec = p['sec_idx'][tree][0]
-                    sec_i=0
-                    seg = p['seg_idx'][tree][0][0]
-                    seg_i=0
-
-                    # iterate over field polarities
-                    for f_i, f in enumerate(p['field']):
-
-                        # detect spikes in dendrite
-                        spike_data[tree][sec][seg][f_i]['dend']['spikes'].append(spike_analysis.detect_spikes(data[str(f)][tree+'_v'][sec_i][seg_i], threshold=threshold)['times'][0])
-
-                        # detect spikes in soma
-                        spike_data[tree][sec][seg][f_i]['soma']['spikes'].append(spike_analysis.detect_spikes(data[str(f)]['soma_v'][0][0], threshold=threshold)['times'][0])
-
-                        # peak dendrite voltage
-                        peak_dend = np.amax(data[str(f)][tree+'_v'][sec_i][seg_i][int(p['warmup']/p['dt']):])
-                        # peak soma voltage
-                        peak_soma = np.amax(data[str(f)]['soma_v'][0][0][int(p['warmup']/p['dt']):])
-
-                        # store peak voltages
-                        spike_data[tree][sec][seg][f_i]['dend']['peak'].append(peak_dend)
-                        spike_data[tree][sec][seg][f_i]['soma']['peak'].append(peak_soma)
-
-                        # store distance from soma for each spike
-                        spike_data[tree][sec][seg][f_i]['dend']['distance'].append(p['seg_dist'][tree][sec][seg])
-
-                        # store synaptic weight
-                        spike_data[tree][sec][seg][f_i]['dend']['weight'].append(p['w_mean'])
-
-                        # store segment info
-                        spike_data[tree][sec][seg][f_i]['dend']['seg_idx'].append(p['seg_idx'])
-
-        # save processed file list
-        with open(data_folder+id_list_string_spike_times, 'wb') as output:pickle.dump(id_list_spike_times, output,protocol=pickle.HIGHEST_PROTOCOL)
-        
-        # save structure of all spike data
-        save_group_data = spike_data
-        with open(data_folder+save_string_group_data, 'wb') as output:
-            pickle.dump(save_group_data, output,protocol=pickle.HIGHEST_PROTOCOL)
-
-        # plot number of synapses required for spike as a function of distance from the soma, with separate markers when spike initiated in soma or dendrite
-        plot_file_name = 'distance_x_weight_spike_init'
-        if plot_file_name + '.png' not in files: 
-            distance_plot = plt.figure()
-            plot_handles=[]
-
-            for tree_key, tree in spike_data.iteritems():
-                for sec_i, sec in enumerate(tree):
-                    for seg_i, seg in enumerate(sec):
-                        for f_i, f in enumerate(seg):
-
-                            if len(f['dend']['weight'])>0 and tree_key is not 'soma' :
-
-                                soma = f['soma']['spikes']
-                                
-                                # distance from soma
-                                dist = [dist
-                                for dist_i, dist 
-                                in enumerate(f['dend']['distance']) 
-                                if len(f['dend']['spikes'][dist_i]) > 0 
-                                or len(soma[dist_i]) > 0]
-
-                                if len(dist)>0:
-                                    dist=dist[0]
-                                
-                                # weight
-                                weight = [weight
-                                for weight_i, weight 
-                                in enumerate(f['dend']['weight']) 
-                                if len(f['dend']['spikes'][weight_i]) > 0 
-                                or len(soma[weight_i]) > 0]
-
-                                if len(weight)>0:
-                                    weight=weight[0]
-                                
-                                # plot color
-                                color = p_temp['field_color'][f_i]
-                                
-                                # list of dendritic spike time (if no spike it is empty list)
-                                dend = [spike[0] 
-                                for spike_i, spike 
-                                in enumerate(f['dend']['spikes'])
-                                if len(spike) > 0]
-
-                                soma = [spike[0] 
-                                for spike_i, spike 
-                                in enumerate(soma) 
-                                if len(spike) > 0]
-
-                                    # for storing whether dendritic or soamtic spike occured first
-
-                                if len(dend)>0:
-                                    dend = [dend[0]]
-
-                                if len(soma)>0:
-                                    soma=soma[0]
-                                
-
-                                dend_first=False
-                                soma_first=False
-                                # if there are both dendritic and somatic spikes
-                                if dend and soma:
-                                    # if dendrite first
-                                    if (dend < soma):
-                                        dend_first=True
-                                        marker = 'o'
-                                        label='dendrite first'
-                                    # if soma first, if tie soma wins
-                                    else:
-                                        soma_first=True
-                                        marker = 'x'
-                                        label = 'soma_first'
-                                # if only dendritic spike
-                                elif dend and not soma:
-                                    dend_first=True
-                                    marker = 'o'
-                                    label='dendrite first'
-
-                                # if only somatic spike
-                                elif soma and not dend:
-                                    soma_first=True
-                                    marker = 'x'
-                                    label = 'soma_first'
-
-                                if dend_first:
-                                    f['dend']['first_spike'] = 'dend'
-                                elif soma_first:
-                                    f['dend']['first_spike'] = 'soma'
-                                elif dend_first and soma_first:
-                                    f['dend']['first_spike'] = 'none'
-                                else:
-                                    f['dend']['first_spike'] = 'none'
-
-
-                                if dend_first or soma_first:
-
-                                    f['dend']['first_spike_weight'] = weight
-
-                                    # plot trial and add to list for legend
-                                    plot_handles.append(plt.plot(dist, weight, color+marker, label=label))
-                                    # labels
-                                    plt.xlabel('distance from soma (um)')
-                                    plt.ylabel('number of synapses/weight (uS)')
-
-                                else:
-                                    f['dend']['first_spike_weight'] = f['dend']['weight'][-1]
-                        # legend
-                        # plt.legend(handles=plot_handles)
-
-            # save and close figure
-            distance_plot.savefig(data_folder+plot_file_name+'.png', dpi=250)
-            plt.close(distance_plot)
-
-        # save structure of all spike data
-        save_group_data = spike_data
-        with open(data_folder+save_string_group_data, 'wb') as output:
-            pickle.dump(save_group_data, output,protocol=pickle.HIGHEST_PROTOCOL)
-
-        # plot peak soma vs peak dendrite voltage for each segment
-        distances = [[0,100],[100,200],[200,300],[300,600]]
-        reset = -65
-        peak_plot = []
-        plot_handles=[]
-        for distance_i, distance in enumerate(distances):
-            plot_file_name = 'peak_voltage_distance_'+str(distance[0])+'_'+str(distance[1])
-            if plot_file_name+'.png' not in files:
-
-                peak_plot.append(plt.figure())
-                plot_handles.append([])
-                for tree_key, tree in spike_data.iteritems():
-                    for sec_i, sec in enumerate(tree):
-                        for seg_i, seg in enumerate(sec):
-                            for f_i, f in enumerate(seg):
-                                if len(f['dend']['weight'])>0 and tree_key is not 'soma' :
-
-                                    # plot color
-                                    color = p_temp['field_color'][f_i]
-                                    # peak dendrite voltage
-                                    dend_peak = f['dend']['peak']
-                                    # peak soma voltage
-                                    soma_peak = f['soma']['peak']
-
-                                    weight = f['dend']['weight']
-
-                                    dist = f['dend']['distance']
-
-                                    soma = f['soma']['spikes']
-
-                                    # list of dendritic spike time (if no spike it is empty list)
-                                    dend = [spike[0] 
-                                    for spike_i, spike 
-                                    in enumerate(f['dend']['spikes'])
-                                    if len(spike) > 0]
-
-                                    soma = [spike[0] 
-                                    for spike_i, spike 
-                                    in enumerate(soma) 
-                                    if len(spike) > 0]
-
-                                        # for storing whether dendritic or soamtic spike occured first
-
-                                    if len(dend)>0:
-                                        dend = dend[0]
-
-                                    if len(soma)>0:
-                                        soma=soma[0]
-                                    
-
-                                    dend_first=False
-                                    soma_first=False
-                                    # if there are both dendritic and somatic spikes
-                                    if dend and soma:
-                                        # if dendrite first
-                                        if (dend < soma):
-                                            dend_first=True
-                                            marker = 'o'
-                                            label='dendrite first'
-                                        # if soma first, if tie soma wins
-                                        else:
-                                            soma_first=True
-                                            marker = 'x'
-                                            label = 'soma_first'
-                                    # if only dendritic spike
-                                    elif dend and not soma:
-                                        dend_first=True
-                                        marker = 'o'
-                                        label='dendrite first'
-
-                                    # if only somatic spike
-                                    elif soma and not dend:
-                                        soma_first=True
-                                        marker = 'x'
-                                        label = 'soma_first'
-
-                                    for trial_i, trial in enumerate(dend_peak):
-                                        if soma_peak[trial_i]>threshold:
-                                            soma_peak[trial_i]=reset
-                                        if  dend_peak[trial_i] >threshold:
-                                            dend_peak[trial_i]=reset
-
-                                        if dist[trial_i]>=distance[0] and dist[trial_i] < distance[1]: 
-                                            # plot trial and add to list for legend
-                                            plot_handles[distance_i].append(plt.plot(dend_peak[trial_i], soma_peak[trial_i], color+marker, label=label))
-                                            # labels
-                                            plt.xlabel('peak dendrite voltage (mV)')
-                                            plt.ylabel('peak soma voltage (mV)')
-                                            plt.title('distnace from soma:' + str(distance[0]) + ' to ' + str(distance[1]) + ' um')
-                            # legend
-                            # plt.legend(handles=plot_handles[distance_i])
-
-                    # save and close figure
-                peak_plot[distance_i].savefig(data_folder+plot_file_name+'.png', dpi=250)
-                plt.close(peak_plot[distance_i])
-
-        # save structure of all spike data
-        save_group_data = spike_data
-        with open(data_folder+save_string_group_data, 'wb') as output:
-            pickle.dump(save_group_data, output,protocol=pickle.HIGHEST_PROTOCOL)
-
-
-        # create shapeplot of spike threshold for each polarity
-        # iterate over field polarities
-        # create data structure to pass to morph plot for each field
-        # iterate through spike data structure, just storing spike threshold weight for each segment, if soma first weights are negative, if dendrite first weights are positive
-        morphplot_data = []
-        soma_count=[]
-        dend_count=[]
-        min_val=0.
-        max_val=0.
-        for f_i, f in enumerate(p_temp['field']):
-            soma_count.append([])
-            dend_count.append([])
-            morphplot_data.append({})
-            for tree_key, tree in spike_data.iteritems():
-                morphplot_data[f_i][tree_key]=[]
-                for sec_i, sec in enumerate(tree):
-                    morphplot_data[f_i][tree_key].append([])
-                    for seg_i, seg in enumerate(sec):
-                        if 'first_spike' not in seg[f_i]['dend'].keys():
-                            # print 'first spike not found'
-                            seg[f_i]['dend']['first_spike'] = 'none'
-
-                        first = seg[f_i]['dend']['first_spike']
-                        # print 'first spike:', first
-                        if first=='soma':
-                            weight = -1*seg[f_i]['dend']['first_spike_weight']
-                            soma_count[f_i].append(weight)
-                        elif first=='dend':
-                            weight = seg[f_i]['dend']['first_spike_weight']
-                            dend_count[f_i].append(weight)
-                        elif first=='none':
-                            weight= 0.02
-                            dend_count[f_i].append(weight)
-
-
-                        # print 'weight threshold:', weight
-                        morphplot_data[f_i][tree_key][sec_i].append(weight)
-                        if weight< min_val:
-                            min_val=weight
-                        elif weight>max_val:
-                            max_val=weight
-
-        # soma
-        fig = plt.figure()
-        # plot_locs = [[0,1], [3,4], [6,7]]
-        plot_locs = [[0], [1], [2]]
-        plot_colors = ['blue','black','red']
-        for f_i, f in enumerate(soma_count):
-            count = float(len(soma_count[f_i]))/float(len(dend_count[f_i])+len(soma_count[f_i]))
-            plt.bar(plot_locs[f_i][0], count, facecolor=plot_colors[f_i], edgecolor='pink')
-            # plt.bar(plot_locs[f_i][1], len(dend_count[f_i]), facecolor=plot_colors[f_i], edgecolor='pink')
-        plt.title('Soma-controlled synapses',fontsize=25, weight='bold')
-        plt.ylabel('Fraction of total synapses',fontsize=20, weight='bold')
-        plt.xticks([0,1,2], ['Cathodal','Control','Anodal'],fontsize=20, weight='bold')
-        plt.yticks(fontsize=8, weight='bold')
-        plt.ylim([0.06, 0.14])
-        plot_file_name = 'soma fraction' 
-        file_name = data_folder + plot_file_name + '.png'
-        fig.savefig(file_name, dpi=250)
-
-
-        # soma average threshold
-        fig = plt.figure()
-        # plot_locs = [[0,1], [3,4], [6,7]]
-        plot_locs = [[0], [1], [2]]
-        plot_colors = ['blue','black','red']
-        for f_i, f in enumerate(soma_count):
-            count = float(len(soma_count[f_i]))/float(len(dend_count[f_i])+len(soma_count[f_i]))
-            mean = -1*np.mean(soma_count[f_i])
-            sem = stats.sem(soma_count[f_i])
-            plt.bar(plot_locs[f_i][0], mean, facecolor=plot_colors[f_i], edgecolor='pink')
-            plt.errorbar(plot_locs[f_i][0], mean, sem, color=plot_colors[f_i])
-            # plt.bar(plot_locs[f_i][1], len(dend_count[f_i]), facecolor=plot_colors[f_i], edgecolor='pink')
-        plt.title('Somatic Threshold',fontsize=25, weight='bold')
-        plt.ylabel('Threshold synaptic weight',fontsize=20, weight='bold')
-        plt.xticks([0,1,2], ['Cathodal','Control','Anodal'],fontsize=20, weight='bold')
-        plt.yticks(fontsize=8, weight='bold')
-        plt.ylim([0.006, 0.016])
-        plot_file_name = 'soma threshold change' 
-        file_name = data_folder + plot_file_name + '.png'
-        fig.savefig(file_name, dpi=250)
-
-        # dednritic average threshold
-        fig = plt.figure()
-        # plot_locs = [[0,1], [3,4], [6,7]]
-        plot_locs = [[0], [1], [2]]
-        plot_colors = ['blue','black','red']
-        for f_i, f in enumerate(soma_count):
-            count = float(len(soma_count[f_i]))/float(len(dend_count[f_i])+len(soma_count[f_i]))
-            mean = np.mean(dend_count[f_i])
-            sem = stats.sem(dend_count[f_i])
-            plt.bar(plot_locs[f_i][0], mean, facecolor=plot_colors[f_i], edgecolor='pink')
-            plt.errorbar(plot_locs[f_i][0], mean, sem, color=plot_colors[f_i])
-            # plt.bar(plot_locs[f_i][1], len(dend_count[f_i]), facecolor=plot_colors[f_i], edgecolor='pink')
-        plt.title('Dendritic Threshold', fontsize=25, weight='bold')
-        plt.ylabel('Threshold synaptic weight',fontsize=20, weight='bold')
-        plt.xticks([0,1,2], ['Cathodal','Control','Anodal'], fontsize=20, weight='bold')
-        plt.yticks(fontsize=8, weight='bold')
-        plt.ylim([0.006, 0.016])
-        plot_file_name = 'dendrite threshold change' 
-        file_name = data_folder + plot_file_name + '.png'
-        fig.savefig(file_name, dpi=250)
-
-
-
-
-
-        # morphplot_data_diff=[]
-        # for f_i, f in enumerate(morphplot_data):
-        #     morphplot_data_diff.append({})
-        #     for tree_key, tree in spike_data.iteritems():
-        #         morphplot_data_diff[f_i][tree_key]=[]
-        #         for sec_i, sec in enumerate(tree):
-        #             morphplot_data_diff[f_i][tree_key].append([])
-        #             for seg_i, seg in enumerate(sec):
-        #                 weight_stim = morphplot_data[f_i][tree_key][sec_i][seg_i]
-        #                 weight_control = morphplot_data[1][tree_key][sec_i][seg_i]
-        #                 weight_diff = weight_stim-weight_control
-        #                 diff = morphplot_data[f_i][tree_key][sec_i][seg_i] - morphplot_data[1][tree_key][sec_i][seg_i]
-        #                 morphplot_data_diff[f_i][tree_key][sec_i].append(diff)
-
-
-        print min_val, max_val
-
-        fig, ax = plt.subplots(nrows=1, ncols=len(p_temp['field']))
-        patch_coll=[]
-        plot_file_name = 'spike_threshold_shapeplots' 
-        file_name = data_folder + plot_file_name + '.png'
-        plot_labels = ['Cathodal', 'Control', 'Anodal']
-        plot_label_colors = ['blue','black','red']
-        for f_i, f in enumerate(p_temp['field']):
-            patch_coll.append(ShapePlot().basic(morpho=p_temp['morpho'], data=morphplot_data[f_i], axes=ax[f_i], colormap=colormap.PiYG, width_scale=4))
-            patch_coll[f_i].set_clim([min_val,max_val])
-            ax[f_i].add_collection(patch_coll[f_i])
-            ax[f_i].autoscale()
-            ax[f_i].set_title(plot_labels[f_i], color=plot_label_colors[f_i], fontsize=20)
-            ax[f_i].set_yticks([])
-            ax[f_i].set_xticks([])
-        # ax[0].set_ylabel('Distance from soma (um)', fontsize=20)
-        # ax[1].set_xlabel('Distance from soma (um)', fontsize=20)
-        cbar = plt.colorbar(patch_coll[f_i], ax=ax[f_i], ticks=None, orientation='vertical')
-        cbar.set_label('Threshold synaptic input', fontsize=20)
-        cbar.set_ticks([min_val,0, max_val])
-        cbar.set_ticklabels(['Max','0','Max'])
-        # cbar.set_ticks([])
-        # cbar.set_ticklabels([])
-        red_patch =patches.Patch(color='green', label='Dendrite first')
-        blue_patch =patches.Patch(color='pink', label='Soma first')
-        plt.legend(handles=[red_patch, blue_patch], bbox_to_anchor=(0.,0), loc="upper left", frameon=False)
-
-
-        fig.savefig(file_name, dpi=250)
-
-    def exp_4a(self, **kwargs):
-        """ Associative plasticity experiment
-
-        Activate a strong (100 Hz burst) and weak (single pulse in the middle of burst) pathway (separately or together).
-        Vary which pathways are active (strong only, weak only, strong+weak)
-        Vary the distance from soma of each pathway (0-200,200-400,400-600 um).
-        Vary the number of synapses in each pathway (10, 20, 40).
-        Synapse locations are generated randomly with param.choose_seg_rand(). Multiple synapses can be placed on the same segment.  The weight is then multiplied by the number of "synapses"
-
-        Plots: 
-        number of active synapse x associativity factor (ratio of normalized number of spikes (number of spikes/number of active synapses) when pathways are paired vs unpaired)
-
-        """
-        # spike threshold 
-        threshold =-30
-
-        # identify data folder
-        data_folder = 'Data/'+kwargs['experiment']+'/'
-        
-        # all files in directory
-        files = os.listdir(data_folder)
-        
-        # data files
-        data_files = [file for file in files if 'data' in file]
-        plot_files = [file for file in files if 'trace' in file]
-        
-        # unique identifiers for each file type
-        data_files_id= [file[-36:-1] for file in files if 'data' in file]
-        plot_files_id = [file[-36:-1] for file in files if 'trace' in file]
-
-        save_string = 'group_data'+'.pkl'
-        self.group_spike_data = self._load_group_data(experiment=kwargs['experiment'], save_string=save_string)
-        id_list_key = 'id_list'
-
-        if save_string in data_files:
-            data_files.remove(save_string)
-        # data organized as {pathway combo}{syn distance}{number of synapses}{polarity}{pathway}{data type}[trial]{tree}[section][segment][spikes]
-
-
-        # iterate over data files
-        for data_file_i, data_file in enumerate(data_files):
-
-            if data_file_i >=0:# and data_file_i <=1000:
-                # if no id list, create one
-                if id_list_key not in self.group_spike_data:
-                    self.group_spike_data[id_list_key]=[]
-                        
-                # check if data has been processed already
-                if data_file not in self.group_spike_data[id_list_key]:
-
-                    print data_file
-                    # open unprocessed data
-
-                    try:
-                        with open(data_folder+data_file, 'rb') as pkl_file:
-                            data = pickle.load(pkl_file)
-
-                        print 'data_file: ', data_file_i, ' out of ', len(data_files), ' opened'
-                    # if data file is corrupted, skip it
-                    except EOFError:
-                        'EOF error, file not opened'
-                        continue
-
-                    # spike_dictionary{'polarity'}{'pathway'}{'data type'}
-                    spike_data = self._get_spikes(data=data, threshold=threshold, weakpath_bins=True)
-
-                    p = spike_data['p']
-                    p_path = p['p_path']
-
-                    # retrieve experimental conditions
-                    if 'path_combo' not in p:
-                        path_combo_key=''
-                        for key in p_path:
-                            if len(path_combo_key)==0:
-                                path_combo_key+=key
+        # iterate over new files and update group_data structure
+        #`````````````````````````````````````````````````````````````````
+        print 'updating group data structure'
+        # dictionary for temporary storage of individual simulation data
+
+        # iterate over new data files
+        for file_i, file in enumerate(new_data_files):
+
+            if file_i<max_iter:
+                print 'updating file',file_i,'of',len(new_data_files),'new files'
+
+                # load data file
+                with open(file, 'rb') as pkl_file:
+                    data = pickle.load(pkl_file)
+
+                add_file=False
+                if not path_parameter:
+                    if parameter_value==data['v']['p'][parameter]:
+                        add_file=True
+                else: 
+                    for path_key, path in data['v']['p']['p_path'].iteritems():
+                        # print path_key, parameter
+                        if parameter in path:
+                            # print path
+                            if parameter_value==path[parameter]:
+                                print parameter_value, path[parameter]
+                                add_file=True
+                # print add_file
+                if add_file:
+                    print 'adding file to group_data'
+                    # FIXME add input times to variables for each data files
+                    # iterate over variables to be updated
+                    for variable_i, variable in enumerate(variables):
+
+                        if variable not in group_data:
+                            group_data[variable] = copy.copy(data[variable])
+                            group_data[variable]['p'] = [data[variable]['p'] for temp in  data[variable]['locations']]
+
+                        else:
+                            if variable=='input_times':
+                                group_data[variable]['data']+=data[variable]['data']
                             else:
-                                path_combo_key+='_'+key
-                    else:
-                        path_combo_key = str(p['path_combo'])
-                    syn_dist_key = str(p['syn_dist'])
+                                print group_data[variable]['data'].shape, data[variable]['data'].shape
+                                group_data[variable]['data'] = np.append(group_data[variable]['data'], data[variable]['data'], axis=0)
 
-                    # FIXME
-                    if isinstance(p['syn_num'][0], list):
-                        for polarity_key, pathway in spike_data.iteritems():
-                            if polarity_key != 'p':
-                                for pathway_key, data_dic in pathway.iteritems():
-                                    syn_num_path = data_dic['p_path']['syn_num']
-                                    for syn_num_range in p['syn_num']:
-                                        if syn_num_path in syn_num_range:
-                                            syn_num_key=str(syn_num_path)
-                    else:
-                        syn_num_key=str(p['syn_num'][0])
+                            group_data[variable]['locations'] += data[variable]['locations']
 
-                    # update data structure dimensions
-                    if path_combo_key not in self.group_spike_data:
-                        self.group_spike_data[path_combo_key]={}
+                            group_data[variable]['trial_id'] += data[variable]['trial_id']
 
-                    if syn_dist_key not in self.group_spike_data[path_combo_key]:
-                        self.group_spike_data[path_combo_key][syn_dist_key]={}
+                            group_data[variable]['field'] += data[variable]['field']
 
-                    if syn_num_key not in self.group_spike_data[path_combo_key][syn_dist_key]:
-                        self.group_spike_data[path_combo_key][syn_dist_key][syn_num_key]={}
+                            group_data[variable]['p'] += [data[variable]['p'] for temp in  data[variable]['locations']]
 
-                    for polarity_key, pathway in spike_data.iteritems():
-                        if polarity_key != 'p':
-                            if polarity_key not in self.group_spike_data[path_combo_key][syn_dist_key][syn_num_key]:
-                                self.group_spike_data[path_combo_key][syn_dist_key][syn_num_key][polarity_key]={}
-                            for pathway_key, data_dic in pathway.iteritems():
-                                if pathway_key not in self.group_spike_data[path_combo_key][syn_dist_key][syn_num_key][polarity_key]:
-                                    self.group_spike_data[path_combo_key][syn_dist_key][syn_num_key][polarity_key][pathway_key]={}
+                            if 'syn_types' in group_data[variable]:
+                                group_data[variable]['syn_types'] += data[variable]['syn_types']
 
-                                for dtype_key, dtype in data_dic.iteritems():
-                                    if dtype_key not in self.group_spike_data[path_combo_key][syn_dist_key][syn_num_key][polarity_key][pathway_key]:
-                                        self.group_spike_data[path_combo_key][syn_dist_key][syn_num_key][polarity_key][pathway_key][dtype_key]=[]
-                                    
-                                    self.group_spike_data[path_combo_key][syn_dist_key][syn_num_key][polarity_key][pathway_key][dtype_key].append(dtype)
 
-                    self.group_spike_data[id_list_key].append(data_file)
 
-        # save structure of all raw spike data
-        save_group_data = self.group_spike_data
-        with open(data_folder+save_string, 'wb') as output:
-            pickle.dump(save_group_data, output,protocol=pickle.HIGHEST_PROTOCOL)
-        print 'spike data saved'
+                        # add file to processed list to keep track of processed files
+                    group_data['processed'].append(file)
+
+        print 'finished updating group data structure'
+
+        # print 'data shape:',group_data['v']['data'].shape
+        # ouput group data structure 
+        print group_data.keys()
+        return group_data
+    
+    def _add_clopath_to_group_data(self, group_data, param, rerun=False):
+        '''
+        ==Args==
+        ==Out==
+        ==Updates==
+        ==Comments==
+        '''
+        self.clopath = Clopath()
+        if 'clopath' not in group_data:
+
+            group_data['clopath']=copy.deepcopy(group_data['v'])
+            group_data['clopath']['data']=self.clopath._clopath(x=group_data['input_array']['data'], u=group_data['v']['data'], param=param)
+
+        elif rerun==True:
+            group_data['clopath']['data']=self.clopath._clopath(x=group_data['input_array']['data'], u=group_data['v']['data'], param=param)
+
+        elif rerun==False:
+            ntotal = group_data['v']['data'].shape[0]
+            nclopath =group_data['clopath']['data'].shape[0]
+            ndiff = ntotal-nclopath
+            group_data['clopath']['data'] = np.append(group_data['clopath']['data'], np.zeros((ndiff, group_data['clopath']['data'].shape[1])), axis=0)
+            group_data['clopath']['data'][nclopath:,:] = self.clopath._clopath(x=group_data['input_array']['data'][nclopath:,:], u=group_data['v']['data'][nclopath:,:], param=param)
+            for key, val in group_data['v'].iteritems():
+                if key != 'data':
+                    group_data['clopath'][key]=copy.deepcopy(val)
+
+        return group_data
+
+    def _add_input_array_to_group_data(self, group_data):
+        ''' add boolean array of input times to group data
+
+            ==Args==
+            -group_data :  organized as group_data{variable}{data_type}
+                        -must contain group_data['input_times']['data'] as nested list of input times [segment/burst number][1d array of input times]
+                                -note that each location can contain multiple entries, dependending on the number of bursts
+            ==Out==
+            -group_data : boolean input array (1=input, 0=no input) with same dimensions data['v']['data'] is stored
+            ==Updates==
+            ==Comments==
+        '''
+        # check if input array already in group data
+        if 'input_array' not in group_data:
+            # number of segments already in group_data
+            ninput=0
+
+        else:
+            # number of segemnts already in group data
+            ninput =group_data['input_array']['data'].shape[0]
+
+        # time vector
+        t = group_data['v']['t']
+        # total number of segments in voltage data (input array to have same dimensions)
+        ntotal = group_data['v']['data'].shape[0]
+        # difference between final and current number of segments in input array
+        ndiff = ntotal-ninput
         
-        
-        # plot number of synapses vs. total number of spikes normalized to total number of synapses in weak pathway under paired and unpaired condition
-        spikes_temp ={}
-        for path_combo_key, path_combo in self.group_spike_data.iteritems():
-            if path_combo_key != id_list_key:
-                spikes_temp[path_combo_key]={}
-                for syn_dist_key, syn_dist in path_combo.iteritems():
-                    spikes_temp[path_combo_key][syn_dist_key]={}
-                    sig_data=[]
-                    for syn_num_key, syn_num in syn_dist.iteritems():
-                        spikes_temp[path_combo_key][syn_dist_key][syn_num_key]={}
-                        for polarity_key, polarity in syn_num.iteritems():
-                            spikes_temp[path_combo_key][syn_dist_key][syn_num_key][polarity_key]={}
-                            for pathway_key, pathway in polarity.iteritems():
-                                spikes_temp[path_combo_key][syn_dist_key][syn_num_key][polarity_key][pathway_key]={}
-                                dtemp = spikes_temp[path_combo_key][syn_dist_key][syn_num_key][polarity_key][pathway_key]
+        # print len(group_data['v']['locations'])
+        # print len(group_data['v']['trial_id'])
+        # preallocate temporary input for new data
+        input_array_temp = np.zeros((ndiff,t.shape[0]))
+        # iterate over locations in voltage data
+        for location_i, location in enumerate(group_data['v']['locations']):
+            # if location is not in input array
+            if location_i >= ninput:
+                # get field magnitude/polarity for the current location
+                field = group_data['v']['field'][location_i]
+                # get trial id for current location
+                trial_id = group_data['v']['trial_id'][location_i]
+                # get indices of corresponding locations and field magnitudes in the 'input_times' array
+                input_i = [
+                temp_i 
+                for temp_i,temp in enumerate(group_data['input_times']['locations']) 
+                if temp==location 
+                and group_data['input_times']['field'][temp_i]==field 
+                and group_data['input_times']['trial_id'][temp_i]==trial_id
+                ]
 
-                                # get polarity index
-                                polarity_i = [f_i for f_i, f in enumerate(pathway['p'][0]['field']) if str(f)==polarity_key][0]
-
-                                # plot color and marker
-                                color = pathway['p'][0]['field_color'][polarity_i]
-                                # size = 20.*float(syn_dist_key)/600.
-                                size = 10.
-                                opacity = 0.7
-                                marker_soma = '.'
-                                marker_dend= 'x'
-                                marker_all= '^'
-
-
-                                # lsit of soma/dend spike fraction for each trial in current set of conditions
-
-                                # iterate through trials
-                                soma_spikes_total=[]
-                                dend_spikes_total=[]
-                                all_spikes_total=[]
-                                dw_list=[]
-                                
-                                # spikes_dend_diff_bin = [trial][time bin][dendritic spike time], where soma first is negative, dendrite first is positive
-                                for trial_i, trial in enumerate(pathway['spikes_dend_diff_bin']):
-
-
-                                    # count somatic/dendritic spikes for each trial
-                                    soma_count =[]
-                                    dend_count=[]
-                                    for time_bin_i, time_bin in enumerate(trial):
-                                        # list of spike indeces with soma/dend spikes
-                                        soma_first = [spike_i for spike_i, spike_diff in enumerate(time_bin) if spike_diff<0.]
-                                        dend_first = [spike_i for spike_i, spike_diff in enumerate(time_bin) if spike_diff>=0.]
-                                        # count total spieks per time bin
-                                        soma_count.append(float(len(soma_first)))
-                                        dend_count.append(float(len(dend_first)))
-                                    
-                                    syn_num_unique = float(len([seg_i for tree_key, tree in pathway['p_path'][trial_i]['seg_idx'].iteritems() for sec_i, sec in enumerate(tree) for seg_i, seg in enumerate(sec)]))
-
-                                    # total spikes per trial, normalized
-                                    soma_spikes_norm = np.sum(soma_count)/syn_num_unique
-                                    dend_spikes_norm = np.sum(dend_count)/syn_num_unique
-                                    # add to list for all trials
-                                    soma_spikes_total.append(soma_spikes_norm)
-                                    dend_spikes_total.append(dend_spikes_norm)
-                                    all_spikes_total.append(soma_spikes_norm+dend_spikes_norm)
-
-                                    dw_all = pathway['dw'][trial_i]
-                                    syn_count = 0
-                                    dw_trial=[]
-                                    for tree_key, tree in dw_all.iteritems():
-                                        for sec_i, sec in enumerate(tree):
-                                            for seg_i, seg in enumerate(sec):
-                                                syn_count+=1
-                                                dw_trial.append(seg)
-                                    dw_mean = sum(dw_trial)/float(syn_count)
-                                    dw_list.append(dw_mean)
-
-                                dw_mean = np.mean(dw_list)
-                                dw_std = np.std(dw_list)
-                                dw_sem = stats.sem(dw_list)
-                                
-                                # group stats
-                                soma_total_mean = np.mean(soma_spikes_total)
-                                soma_total_std = np.std(soma_spikes_total)
-                                soma_total_sem = stats.sem(soma_spikes_total)
-                                dend_total_mean = np.mean(dend_spikes_total)
-                                dend_total_std = np.std(dend_spikes_total)
-                                dend_total_sem = stats.sem(dend_spikes_total)
-                                all_total_mean = np.mean(all_spikes_total)
-                                all_total_std = np.std(all_spikes_total)
-                                all_total_sem = stats.sem(all_spikes_total)
-
-                                # find max number of synapses while all conditions have <1 spike per synapse
-
-                                # print path_combo_key, syn_num_key, pathway_key, all_total_mean
-                                dtemp['all_total_mean']=all_total_mean
-                                dtemp['all_total_std']=all_total_std
-                                dtemp['all_total_sem']=all_total_sem
-                                dtemp['dw_mean'] = dw_mean
-                                dtemp['dw_std'] = dw_std
-                                dtemp['dw_sem'] = dw_sem
-        
-        # fit sigmoid to num of synapses vs spikes/synapse
-        io = {}
-        for path_combo_key, path_combo in spikes_temp.iteritems():
-            if path_combo_key not in io:
-                io[path_combo_key]={}
-            for syn_dist_key, syn_dist in path_combo.iteritems():
-                if syn_dist_key not in io[path_combo_key]:
-                    io[path_combo_key][syn_dist_key]={}
-                for syn_num_key, syn_num in syn_dist.iteritems():
-                    for polarity_key, polarity in syn_num.iteritems():
-                        if polarity_key not in io[path_combo_key][syn_dist_key]:
-                            io[path_combo_key][syn_dist_key][polarity_key]={}
-                        for pathway_key, pathway in polarity.iteritems():
-                            if pathway_key not in io[path_combo_key][syn_dist_key][polarity_key]:
-                                io[path_combo_key][syn_dist_key][polarity_key][pathway_key]={'syn_num':[],'all_total_mean':[]}
-                            if float(syn_num_key) not in io[path_combo_key][syn_dist_key][polarity_key][pathway_key]['syn_num']:
-                                spikes_total = pathway['all_total_mean']
-
-                                if spikes_total<1.1:
-                                    io[path_combo_key][syn_dist_key][polarity_key][pathway_key]['syn_num'].append(float(syn_num_key))
-                                
-                                    io[path_combo_key][syn_dist_key][polarity_key][pathway_key]['all_total_mean'].append(spikes_total)
-
-        # iterate over conditions, fit sigmoid to data
-        save_string = 'sigmoid_params.pkl'
-        sigmoid_params = self._load_group_data(experiment='exp_4a', save_string=save_string)
-        plots={}
-        polarities = ['-20', '0', '20']
-        polarity_colors = ['blue','black','red']
-        for path_combo_key, path_combo in io.iteritems():
-            if path_combo_key not in sigmoid_params:
-                sigmoid_params[path_combo_key]={}
-
-            if '_'in path_combo_key:
-                for syn_dist_key, syn_dist in path_combo.iteritems():
-                    if syn_dist_key not in sigmoid_params[path_combo_key]:
-                        sigmoid_params[path_combo_key][syn_dist_key]={}
-                    if syn_dist_key not in plots:
-                        plots[syn_dist_key] = {}
-                        # plots_dw[syn_dist_key] = {}
-                    for polarity_key, polarity in syn_dist.iteritems():
-                        if polarity_key not in sigmoid_params[path_combo_key][syn_dist_key]:
-                            sigmoid_params[path_combo_key][syn_dist_key][polarity_key]={}
-                        for pathway_key, pathway in polarity.iteritems():
-                            if pathway_key not in plots[syn_dist_key]:
-                                plots[syn_dist_key][pathway_key]=plt.figure()
-                            if pathway_key not in sigmoid_params[path_combo_key][syn_dist_key][polarity_key]:
-                                sigmoid_params[path_combo_key][syn_dist_key][polarity_key][pathway_key]={}
-
-                                # fit sigmoid 
-                                params=[1.,10.,1.]
-                                x = np.array(pathway['syn_num'])
-                                y = np.array(pathway['all_total_mean'])
-                                # print 'x:',x
-                                # print 'y:',y
-                                data_pass = [x,y]
-                                param_opt_obj = scipy.optimize.minimize(self._sigmoid_opt, params, (x, y))
-                                if param_opt_obj.success:
-                                    param_opt=param_opt_obj.x
-                                else:
-                                    print 'optimization unsuccessful'
-                                    print param_opt_obj.message
-                                x = np.array(pathway['syn_num'])
-                                ymax = float(param_opt[0])
-                                x50 = float(param_opt[1])
-                                s = float(param_opt[2])
-                                # print 'ymax:', ymax, 'x50:', x50, 's:', s
-                                x_fit = np.arange(min(pathway['syn_num']),max(pathway['syn_num']), 0.1)
-                                y_fit = ymax/(1.+np.exp((x50-x_fit)/s))
-
-
-                                sigmoid_params[path_combo_key][syn_dist_key][polarity_key][pathway_key]['syn_num'] = pathway['syn_num']
-                                sigmoid_params[path_combo_key][syn_dist_key][polarity_key][pathway_key]['all_total_mean'] = pathway['all_total_mean']
-                                sigmoid_params[path_combo_key][syn_dist_key][polarity_key][pathway_key]['params'] = param_opt
-                                sigmoid_params[path_combo_key][syn_dist_key][polarity_key][pathway_key]['sigmoid_fit'] = y_fit
-                                sigmoid_params[path_combo_key][syn_dist_key][polarity_key][pathway_key]['x_fit'] = x_fit
-
+                # print input_i
+                # print len(group_data['input_times']['locations'])
+                # print len(group_data['v']['locations'])
+                # list for storing all input times for the current location
+                times_all = []
+                # iterate over locations indices in the input times array
+                for idx in input_i:
+                    # get corresponding input times
+                    times = group_data['input_times']['data'][idx]
+                    # add each time to list
+                    for time_i, time in np.ndenumerate(times):
+                        times_all.append(time)
+                # print 'times:',times_all
+                # create boolean vector of same length as time vector (dim: samples)
+                x = np.zeros(t.shape)
+                # cut off number of decimals to prevent rounding error
+                t = np.around(t, 4)
+                # find input times and to boolean vector
+                for t_i, t_t in enumerate(times_all):
                             
+                    if t_t not in t:
+                        x[int(np.argmin(np.absolute(t-t_t)))]=1
+                        # print np.absolute(t-t_t)
+                        # print min
+                        print 'test:',int(np.argmin(np.absolute(t-t_t)))
+                    else:
+                        # store input times
+                        x[np.where(t==t_t)]=1
 
-                            # plot color and marker
-                            color = polarity_colors[polarities.index(polarity_key)]
+                # add to full group data array
+                input_array_temp[location_i-ninput, :]=x
+        
+        # if input array already in group_data, append the new temporary array
+        if 'input_array' in group_data:
+            group_data['input_array']['data'] = np.append(group_data['input_array']['data'], input_array_temp, axis=0)
 
-                            size = 30.
-                            opacity = 0.7
-                            marker_soma = '.'
-                            marker_dend= 'x'
-                            if '_' in path_combo_key:
-                                marker_all= '^'
+        # if input array not in group data, copy temporary array 
+        else:
+            group_data['input_array']={'data':input_array_temp}
+            group_data['input_array']['data'][ninput:,:]=input_array_temp
+
+        # copy all other condition lists from voltage data (dimensions should be the same)
+        for key, val in group_data['v'].iteritems():
+            if key!='data':
+                group_data['input_array'][key]= copy.copy(val)
+
+        return group_data
+
+    def _add_parameter_to_group_data(self, group_data, parameter, path=False):
+        '''
+        '''
+        for variable_key, variable in group_data.iteritems():
+            if variable_key != 'processed':
+                if parameter not in variable:
+                    variable[parameter]=[]
+
+                nparam = len(variable[parameter])
+                ntotal = len(variable['locations'])
+
+                if ntotal > nparam:
+
+                    for location_i, location in enumerate(variable['locations']):
+                        if location_i>=nparam:
+
+                            # print variable_key, parameter, variable[parameter]
+                            # print type(variable)
+                            if not path:
+                                variable[parameter].append(variable['p'][location_i][parameter])
                             else:
-                                marker_all='.'
-                                # print path_combo_key, pathway_key, all_total_mean, float(syn_num_key)
-                            print 'xfit:',sigmoid_params[path_combo_key][syn_dist_key][polarity_key][pathway_key]['x_fit']
-                            print 'yfit:',sigmoid_params[path_combo_key][syn_dist_key][polarity_key][pathway_key]['sigmoid_fit']
-                            # plot with errorbars
-                            plt.figure(plots[syn_dist_key][pathway_key].number)
+                                # get all paths that the 
+                                variable[parameter].append([])
+                                if 'None' not in variable['p_path'][location_i]:
+                                    for p_path in variable['p_path'][location_i]:
 
-                            plt.plot(sigmoid_params[path_combo_key][syn_dist_key][polarity_key][pathway_key]['syn_num'], sigmoid_params[path_combo_key][syn_dist_key][polarity_key][pathway_key]['all_total_mean'], color=color, marker=marker_all, markersize=size, alpha=opacity, linewidth=0)
+                                        variable[parameter][-1].append(p_path[parameter])
+
+        return group_data
+
+    def _add_path_to_group_data(self, group_data):
+        '''
+        ==Args==
+        -group_data : as group_data[variable][info type]
+        ==Out==
+
+        ==Updates==
+        -adds an info type named 'path' organized as [location][path number]. Since each location can belong to multiple paths, each location entry is a list of paths.  If the location doesnt belong to any paths 'None' is put in the list as a place holder
+        ==Comments==
+        '''
+        print 'adding path info'
+        # print group_data['processed']
+        print 'group_data shape:',group_data['v']['data'].shape
+        # iterate over variables
+        for variable_key, variable in group_data.iteritems(): 
+            
+            if variable_key != 'processed':
+
+                # print variable_keae.y, type(variable)
+                # add path info list if doesnt exist
+                if 'p_path' not in variable:
+                    variable['p_path'] =[]
+                if 'path_name' not in variable:
+                    variable['path_name']=[]
+
+                # print variable_key, type(variable), variable['path_name']
+                # number of path entries
+                npath = len(variable['p_path'])
+                # total number of entries
+                ntotal = len(variable['locations'])
+
+                # if there are unprocessed locations
+                if ntotal>npath:
+
+                    # iterate over locations
+                    for location_i, location in enumerate(variable['locations']):
+                        # holder for paths for the current location (can be more than one)
+                        p_paths = []
+                        path_names=[]
+                        # if location hasnt been added to path yet
+                        if location_i>=npath:
+
+                            # get parameter dictionary
+                            p = variable['p'][location_i]
+                            # iterate over paths
+                            for path_key, path in p['p_path'].iteritems():
+                                # if the current location is in the current path
+                                if location in path['syn_idx']:
+                                    # add path to list
+                                    p_paths.append(path)
+                                    path_names.append(path_key)
+
+                            # if location doesnt belong to any paths, add 'None' as placeholder
+                            if len(p_paths)==0:
+                                p_paths.append('None')
+                                path_names.append('None')
                             
-                            plt.plot(sigmoid_params[path_combo_key][syn_dist_key][polarity_key][pathway_key]['x_fit'], sigmoid_params[path_combo_key][syn_dist_key][polarity_key][pathway_key]['sigmoid_fit'], color=color, linewidth=5)
-                            plt.xlabel('Number of active synapses')
-                            plt.ylabel('Number of spikes/synapse')
-                            # if '200' in syn_dist_key:
-                            #     plt.xlim([0,14])
-                            # elif '600' in syn_dist_key:
-                            #     plt.xlim([15,42])
-                            # plt.ylim([-0.1, 1.1])
-                            plt.title(pathway_key+'_pathway_' + syn_dist_key +'_um')
+                            # add to main list
+                            variable['p_path'].append(copy.copy(p_paths))
+                            variable['path_name'].append(copy.copy(path_names))
 
-        # save structure of all raw spike data
-        save_group_data = sigmoid_params
-        with open(data_folder+save_string, 'wb') as output:
-            pickle.dump(save_group_data, output,protocol=pickle.HIGHEST_PROTOCOL)
-        print 'spike data saved'
+        return group_data
 
-        # save and close figure
-        for syn_dist_key, syn_dist in plots.iteritems():
-            for pathway_key, plot in syn_dist.iteritems():
-                plt.figure(plot.number)
-                plot_file_name = 'syn_num_x_spikes_total_sigfit_'+pathway_key+'_pathway_' + syn_dist_key +'_um'
-                plot.savefig(data_folder+plot_file_name+'.png', dpi=250)
-                with open(data_folder+plot_file_name+'.pkl', 'wb') as output:
-                    pickle.dump(plots[syn_dist_key][pathway_key], output,protocol=pickle.HIGHEST_PROTOCOL)
-                print 'figure: ', plot_file_name, ' saved'
-                plt.close(plot)
+    def _add_polarity_to_group_data(self, group_data):
+        '''
+        '''
+        # iterate over variables
+        for variable_key, variable in group_data.iteritems(): 
+            
+            if variable_key !='processed':
 
-        # reorganize so the 
-        spikes_temp_norm={}
-        plots={}
-        plots_dw={}
-        for path_combo_key, path_combo in self.group_spike_data.iteritems():
-            if path_combo_key != id_list_key:
-                spikes_temp_norm[path_combo_key]={}
-                for syn_dist_key, syn_dist in path_combo.iteritems():
-                    if syn_dist_key not in plots:
-                        plots[syn_dist_key] = {}
-                        plots_dw[syn_dist_key] = {}
-                    spikes_temp_norm[path_combo_key][syn_dist_key]={}
-                    for syn_num_key, syn_num in syn_dist.iteritems():
-                        spikes_temp_norm[path_combo_key][syn_dist_key][syn_num_key]={}
-                        for polarity_key, polarity in syn_num.iteritems():
-                            spikes_temp_norm[path_combo_key][syn_dist_key][syn_num_key][polarity_key]={}
-                            for pathway_key, pathway in polarity.iteritems():
-                                if pathway_key not in plots[syn_dist_key]:
-                                    plots[syn_dist_key][pathway_key]=plt.figure()
-                                    plots_dw[syn_dist_key][pathway_key]=plt.figure()
-                                spikes_temp_norm[path_combo_key][syn_dist_key][syn_num_key][polarity_key][pathway_key]={}
-                                for dtype_key, dtype in spikes_temp[path_combo_key][syn_dist_key][syn_num_key][polarity_key][pathway_key].iteritems():
-                                    # print dtype_key, dtype
-                                    # print 'denom:',spikes_temp[pathway_key][syn_dist_key][syn_num_key]['0'][pathway_key][dtype_key]
-                                    spikes_temp_norm[path_combo_key][syn_dist_key][syn_num_key][polarity_key][pathway_key][dtype_key]= dtype#/spikes_temp[pathway_key][syn_dist_key][syn_num_key]['0'][pathway_key][dtype_key]
-                                # print 'all_total_mean:', all_total_mean
-                                all_total_mean = spikes_temp_norm[path_combo_key][syn_dist_key][syn_num_key][polarity_key][pathway_key]['all_total_mean']
+                variable['polarity']=[]
+                for field_i, field in enumerate(variable['field']):
+                    if float(field)==0:
+                        variable['polarity'].append('control')
+                    elif float(field)<0:
+                        variable['polarity'].append('cathodal')
+                    elif float(field)>0:
+                        variable['polarity'].append('anodal')
+        return group_data
 
-                                all_total_sem = spikes_temp_norm[path_combo_key][syn_dist_key][syn_num_key][polarity_key][pathway_key]['all_total_sem']
+    def _save_group_data(self, group_data, directory, file_name):
+        '''
+        ===Args===
+        ===Out===
+        ===Updates===
+        ===Comments===
+        '''
+        print 'saving group data'
+        with open(directory+file_name, 'wb') as output:
+            pickle.dump(group_data, output,protocol=pickle.HIGHEST_PROTOCOL)
 
-                                dw_sem = spikes_temp_norm[path_combo_key][syn_dist_key][syn_num_key][polarity_key][pathway_key]['dw_sem']
+        print 'group data saved as:', file_name 
 
-                                dw_mean = spikes_temp_norm[path_combo_key][syn_dist_key][syn_num_key][polarity_key][pathway_key]['dw_mean']
+    def _split_group_data(self, group_data, directory, file_name, conditions):
+        '''
+        '''
+        assert len(conditions)==1, 'multiple conditions given; only one at a time please'
 
-                                dw_std = spikes_temp_norm[path_combo_key][syn_dist_key][syn_num_key][polarity_key][pathway_key]['dw_std']
-                                
-                                
-                                # get polarity index
-                                polarity_i = [f_i for f_i, f in enumerate(pathway['p'][0]['field']) if str(f)==polarity_key][0]
+        group_data_split={}
+        for variable_key, variable in group_data.iteritems():
+            
+            if variable_key=='processed':
+                group_data_split['processed']=variable
 
-                                # plot color and marker
-                                color = pathway['p'][0]['field_color'][polarity_i]
+            else:
+                ig = IndexGetter(group_data=group_data, variable=variable_key, conditions=conditions)
+                idx_set = ig.idx_sets[0]
+                combo = ig.combos[0]
+                
+                group_data_split[variable_key]={}
+                for info_type, info in variable.iteritems():
 
-                                size = 25.
-                                opacity = 0.7
-                                marker_soma = '.'
-                                marker_dend= 'x'
-                                if '_' in path_combo_key:
-                                    marker_all= '^'
-                                else:
-                                    marker_all='.'
-                                    # print path_combo_key, pathway_key, all_total_mean, float(syn_num_key)
+                    if info_type=='t':
+                        info_new=copy.deepcopy(info)
+                    else:
+                        if type(info)==list:
 
-                                
-                                # plot with errorbars
-                                plt.figure(plots[syn_dist_key][pathway_key].number)
+                            info_new = [ info[temp] for temp in idx_set ]
 
-                                plt.plot(float(syn_num_key), all_total_mean, color=color, marker=marker_all, markersize=size, alpha=opacity)
-                                
-                                plt.errorbar(float(syn_num_key), all_total_mean, yerr=all_total_sem, color=color, alpha=opacity)
-                                plt.xlabel('Number of active synapses')
-                                plt.ylabel('Number of spikes/synapse')
-                                if '200' in syn_dist_key:
-                                    plt.xlim([0,14])
-                                elif '600' in syn_dist_key:
-                                    plt.xlim([15,42])
-                                plt.ylim([-0.1, 1.1])
-                                plt.title(pathway_key+'_pathway_' + syn_dist_key +'_um')
+                        elif type(info)==np.ndarray:
+                            print info_type, info.shape, len(idx_set)
+                            info_new = info[idx_set,:]
 
-                                # weight plots
-                                # plot with errorbars
-                                plt.figure(plots_dw[syn_dist_key][pathway_key].number)
+                    group_data_split[variable_key][info_type]=info_new
 
-                                plt.plot(float(syn_num_key), dw_mean, color=color, marker=marker_all, markersize=size, alpha=opacity)
-                                
-                                plt.errorbar(float(syn_num_key), dw_mean, yerr=dw_sem, color=color, alpha=opacity)
-                                plt.xlabel('Number of synapses')
-                                plt.ylabel('Weight change')
-                                plt.title(pathway_key+'_pathway_' + syn_dist_key +'_um')
+        print conditions
+        split_name=''
+        for condition in conditions:
+            print condition
+            add_string = '_' + condition[0] + '_' +str(condition[1])
+            split_name+= add_string
 
-        # save and close figure
-        for syn_dist_key, syn_dist in plots.iteritems():
-            for pathway_key, plot in syn_dist.iteritems():
-                plt.figure(plot.number)
-                plot_file_name = 'syn_num_x_spikes_total_'+pathway_key+'_pathway_' + syn_dist_key +'_um'
-                plot.savefig(data_folder+plot_file_name+'.png', dpi=250)
-                with open(data_folder+plot_file_name+'.pkl', 'wb') as output:
-                    pickle.dump(plots[syn_dist_key][pathway_key], output,protocol=pickle.HIGHEST_PROTOCOL)
-                print 'figure: ', plot_file_name, ' saved'
-                plt.close(plot)
+        file_name_new = file_name[:file_name.index('.pkl')] + split_name +'.pkl'
 
-        # save and close figure
-        for syn_dist_key, syn_dist in plots_dw.iteritems():
-            for pathway_key, plot in syn_dist.iteritems():
-                plt.figure(plot.number)
-                plot_file_name = 'syn_num_x_dw_'+pathway_key+'_pathway_' + syn_dist_key +'_um'
-                plot.savefig(data_folder+plot_file_name+'.png', dpi=250)
-                with open(data_folder+plot_file_name+'.pkl', 'wb') as output:
-                    pickle.dump(plots_dw[syn_dist_key][pathway_key], output,protocol=pickle.HIGHEST_PROTOCOL)
-                print 'figure: ', plot_file_name, ' saved'
-                plt.close(plot)
+        return group_data_split, file_name_new
 
+    def _add_spikes_to_group_data(self, group_data, threshold=-30):
+        '''
+        '''
+        print 'adding spike times to group_data'
+        self.Spikes= Spikes()
+        if 'spike_times' not in group_data:
+            group_data['spike_times']={}
+            group_data['spike_idx']={}
+            group_data['spike_train']={}
+            spike_idx, spike_train, spike_times = self.Spikes._get_spikes(data=group_data['v']['data'], threshold=-30, dt=.025)
+            group_data['spike_times']['data']=spike_times
+            group_data['spike_idx']['data']=spike_idx
+            group_data['spike_train']['data'] = spike_train
+            for key, val in group_data['v'].iteritems():
+                if key!='data':
+                    group_data['spike_times'][key]=copy.deepcopy(val)
+                    group_data['spike_idx'][key]=copy.deepcopy(val)
+                    group_data['spike_train'][key]=copy.deepcopy(val)
 
-        # def _fit_sigmoid(self, params, x, y, **kwargs):
-        #     """
-        #     """
-        #     data_folder = 'Data/'+kwargs['experiment']+'/'
-        
-        #     # all files in directory
-        #     files = os.listdir(data_folder)
+        else:
+            ntotal = group_data['v']['data'].shape[0]
+            nspikes = len(group_data['spike_times']['data'])
+            ndiff = ntotal-nspikes
+            if ndiff>0:
 
-        #     save_string = kwargs['save_string']
+                spike_idx, spike_train, spike_times = self.Spikes._get_spikes(data=group_data['v']['data'][-ndiff:,:], threshold=-30, dt=.025)
+                group_data['spike_times']['data']+=spike_times
+                group_data['spike_idx']['data']+=spike_idx
+                group_data['spike_train']['data'] = np.append(group_data['spike_train']['data'], spike_train, axis=0)
+                for key, val in group_data['v'].iteritems():
+                    if key!='data':
+                        group_data['spike_times'][key]=copy.deepcopy(val)
+                        group_data['spike_idx'][key]=copy.deepcopy(val)
+                        group_data['spike_train'][key]=copy.deepcopy(val)
 
-        #     if save_string in files:
-        #         print 'group data found:', save_string
-        #         with open(data_folder+save_string, 'rb') as pkl_file:
-        #         param_opt = pickle.load(pkl_file)
-        #         print 'group data loaded'
+        return group_data
 
-        #     else:
-        #         param_opt_obj = scipy.optimize.minimize(Experiment._sigmoid_opt(), params)
-        #         if param_opt_obj.success:
-        #             param_opt=param_opt_obj.x
-        #         else:
-        #             print 'optimization unsuccessful'
-        #             print param_opt_obj.message
+    def _add_xcorr_to_group_data(self, group_data):
+        '''
+        '''
+        print 'adding cross correlation with soma to group data'
+        spike_train = group_data['spike_train']['data']
+        if 'soma_xcorr' not in group_data:
+            group_data['soma_xcorr']={}
+            for key, val in group_data['spike_train'].iteritems():
+                if key!= 'data':
+                    group_data['soma_xcorr'][key] = copy.deepcopy(val)
 
-        #     return param_opt
+            group_data['soma_xcorr']['data']= np.zeros((spike_train.shape[0], spike_train.shape[1]+spike_train.shape[1]-1))
+            nxcorr=0
+
+        else:
+            ntotal = group_data['spike_train']['data'].shape[0]
+            nxcorr =group_data['soma_xcorr']['data'].shape[0]
+            ndiff = ntotal-nxcorr
+            group_data['soma_xcorr']['data'] = np.append(group_data['soma_xcorr']['data'], np.zeros((ndiff, group_data['soma_xcorr']['data'].shape[1])), axis=0)
+            for key, val in group_data['spike_train'].iteritems():
+                if key!= 'data':
+                    group_data['soma_xcorr'][key] = copy.deepcopy(val)
+
+        soma_idx = IndexGetter()._find_soma(group_data=group_data, variable='spike_train')
+        for loc_i, loc in enumerate(group_data['spike_train']['locations']):
+            if loc_i >= nxcorr:
+
+                print loc_i, 'of', spike_train.shape[0]
+                group_data['soma_xcorr']['data'][loc_i,:] = np.correlate(spike_train[loc_i, :], spike_train[soma_idx[loc_i],:], mode='full')
+
+        group_data['soma_xcorr']['soma_idx']=soma_idx
+
+        return group_data
 
 
 
-        #     # check if parameters are already stored
-        #     if 'save_string' in kwargs:
-        #         print 'group data found:', save_string
-        #     with open(data_folder+save_string, 'rb') as pkl_file:
-        #         group_data= pickle.load(pkl_file)
-        #     print 'group data loaded'
 
 
-if __name__ =="__main__":
-    # Weights(param.exp_3().p)
-    # # Spikes(param.exp_3().p)
-    # kwargs = run_control.Arguments('exp_8').kwargs
-    # plots = Voltage()
-    # plots.plot_all(param.Experiment(**kwargs).p)
-    # kwargs = {'experiment':'exp_4a'}
-    # Experiment(**kwargs)
-    # FitFD()
-    pass
+        # soma_idx = IndexGetter()._find_soma(group_data=group_data, variable='spike_train')
+        # spike_train = group_data['spike_train']['data']
+        # xcorr = np.zeros((spike_train.shape[0], spike_train.shape[1]+spike_train.shape[1]-1))
+        # for loc_i, loc in enumerate(group_data['spike_train']['locations']):
+        #     print loc_i, 'of', spike_train.shape[0]
+        #     xcorr[loc_i,:] = np.correlate(spike_train[loc_i, :], spike_train[soma_idx[loc_i],:], mode='full')
+
+
+        # group_data['soma_xcorr']={'data':xcorr}
+        # for key, val in group_data['spike_train'].iteritems():
+        #     if key!= 'data':
+        #         group_data['soma_xcorr'][key] = copy.deepcopy(val)
+        # group_data['soma_xcorr']['soma_idx']=soma_idx
+
+        # return group_data, 
+
